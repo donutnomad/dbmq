@@ -151,6 +151,41 @@ func FetchMessages(ctx context.Context, db *gorm.DB, topic string, partition uin
 	return messages, err
 }
 
+// PartitionRequest 表示单个分区的获取请求
+type PartitionRequest struct {
+	Topic     string // Topic名称
+	Partition uint   // 分区号
+	Offset    int64  // 起始偏移量
+	Limit     int    // 获取限制
+}
+
+// FetchMessagesBatch 批量从多个分区获取消息
+// 使用UNION ALL查询一次性获取多个分区的消息，提高数据库查询效率
+func FetchMessagesBatch(ctx context.Context, db *gorm.DB, requests []PartitionRequest) ([]types.Message, error) {
+	if len(requests) == 0 {
+		return nil, nil
+	}
+
+	// 构建UNION ALL查询
+	var unionParts []string
+	var args []any
+
+	for _, req := range requests {
+		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
+		args = append(args, req.Topic, req.Partition, req.Offset, req.Limit)
+	}
+
+	// 组合所有UNION查询，最后按ID排序以保证消息的全局顺序
+	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `id` ASC"
+
+	var messages []types.Message
+	err := db.WithContext(ctx).
+		Raw(sql, args...).
+		Scan(&messages).Error
+
+	return messages, err
+}
+
 // GetCommittedOffsets 获取消费组对一组分区的已提交偏移量
 // 返回PartitionInfo到已提交偏移量的映射。没有已提交偏移量的分区将不在映射中
 func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
@@ -163,7 +198,7 @@ func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, parti
 
 	// 为每个分区构建OR子句，因为GORM在复杂IN查询上有问题
 	var conditions []string
-	var args []interface{}
+	var args []any
 	args = append(args, groupID) // group_id的第一个参数
 
 	for _, p := range partitions {
@@ -295,6 +330,15 @@ func GetAllTopics(ctx context.Context, db *gorm.DB) ([]types.Topic, error) {
 	var topics []types.Topic
 	err := db.WithContext(ctx).Find(&topics).Error
 	return topics, err
+}
+
+// GetLatestOffset 获取指定分区的最新偏移量（最大消息ID）
+// 如果分区没有消息，返回0
+func GetLatestOffset(ctx context.Context, db *gorm.DB, topic string, partition uint) (int64, error) {
+	var maxID int64
+	sql := "SELECT COALESCE(MAX(id), 0) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ?"
+	err := db.WithContext(ctx).Raw(sql, topic, partition).Scan(&maxID).Error
+	return maxID, err
 }
 
 // DeleteMessagesByPartition deletes messages from a partition that are older than a certain offset AND a certain time.

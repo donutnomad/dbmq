@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"regexp"
 	"testing"
+	"time"
 
 	"dbmq/pkg/types"
 
@@ -85,5 +86,94 @@ func TestGetConsumerGroupLowWatermarks_Fail(t *testing.T) {
 	_, err := GetConsumerGroupLowWatermarks(ctx, db)
 	assert.Error(t, err)
 	assert.Equal(t, sql.ErrConnDone, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestFetchMessagesBatch(t *testing.T) {
+	db, mock := newMockDB(t)
+	ctx := context.Background()
+
+	// 准备测试数据
+	requests := []PartitionRequest{
+		{Topic: "topic-a", Partition: 0, Offset: 100, Limit: 10},
+		{Topic: "topic-b", Partition: 1, Offset: 200, Limit: 5},
+	}
+
+	// 构建期望的SQL查询
+	expectedSQL := "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?) UNION ALL (SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?) ORDER BY `id` ASC"
+
+	// 模拟返回的数据
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "topic", "partition", "message_key", "headers", "body", "created_at"}).
+		AddRow(101, "topic-a", 0, nil, []byte("{}"), []byte("message1"), now).
+		AddRow(102, "topic-a", 0, nil, []byte("{}"), []byte("message2"), now).
+		AddRow(201, "topic-b", 1, nil, []byte("{}"), []byte("message3"), now)
+
+	mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
+		WithArgs("topic-a", 0, int64(100), 10, "topic-b", 1, int64(200), 5).
+		WillReturnRows(rows)
+
+	// 执行测试
+	messages, err := FetchMessagesBatch(ctx, db, requests)
+	require.NoError(t, err)
+	require.Len(t, messages, 3)
+
+	// 验证结果
+	assert.Equal(t, int64(101), messages[0].ID)
+	assert.Equal(t, "topic-a", messages[0].Topic)
+	assert.Equal(t, uint(0), messages[0].Partition)
+	assert.Equal(t, []byte("message1"), messages[0].Body)
+
+	assert.Equal(t, int64(102), messages[1].ID)
+	assert.Equal(t, "topic-a", messages[1].Topic)
+
+	assert.Equal(t, int64(201), messages[2].ID)
+	assert.Equal(t, "topic-b", messages[2].Topic)
+	assert.Equal(t, uint(1), messages[2].Partition)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestFetchMessagesBatch_EmptyRequests(t *testing.T) {
+	db, _ := newMockDB(t)
+	ctx := context.Background()
+
+	// 测试空请求列表
+	messages, err := FetchMessagesBatch(ctx, db, []PartitionRequest{})
+	require.NoError(t, err)
+	assert.Len(t, messages, 0)
+}
+
+func TestFetchMessagesBatch_SingleRequest(t *testing.T) {
+	db, mock := newMockDB(t)
+	ctx := context.Background()
+
+	// 准备单个请求
+	requests := []PartitionRequest{
+		{Topic: "topic-a", Partition: 0, Offset: 100, Limit: 10},
+	}
+
+	// 构建期望的SQL查询（单个请求）
+	expectedSQL := "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?) ORDER BY `id` ASC"
+
+	// 模拟返回的数据
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "topic", "partition", "message_key", "headers", "body", "created_at"}).
+		AddRow(101, "topic-a", 0, nil, []byte("{}"), []byte("message1"), now)
+
+	mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
+		WithArgs("topic-a", 0, int64(100), 10).
+		WillReturnRows(rows)
+
+	// 执行测试
+	messages, err := FetchMessagesBatch(ctx, db, requests)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+
+	// 验证结果
+	assert.Equal(t, int64(101), messages[0].ID)
+	assert.Equal(t, "topic-a", messages[0].Topic)
+	assert.Equal(t, uint(0), messages[0].Partition)
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

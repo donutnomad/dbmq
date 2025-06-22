@@ -45,6 +45,16 @@ type ErrUnknownTopicOrPartition struct {
 	Partition uint   // 分区号
 }
 
+// ErrTopicAlreadyExists 当尝试创建已存在的Topic时返回此错误
+// 这模仿了Kafka的TopicExistsException行为
+// 客户端可以根据需要决定是否忽略此错误或采取其他行动
+type ErrTopicAlreadyExists struct {
+	TopicName string // 已存在的Topic名称
+}
+
+func (e *ErrTopicAlreadyExists) Error() string {
+	return fmt.Sprintf("topic '%s' already exists", e.TopicName)
+}
 func (e *ErrUnknownTopicOrPartition) Error() string {
 	return fmt.Sprintf("unknown topic or partition: %s-%d", e.Topic, e.Partition)
 }

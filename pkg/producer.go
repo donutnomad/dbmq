@@ -113,7 +113,7 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 
 	// 3. 选择目标分区
 	var partition uint
-	if msg.Key != nil && len(msg.Key) > 0 {
+	if len(msg.Key) > 0 {
 		// 如果消息有Key，使用哈希分区确保相同Key的消息总是路由到同一分区
 		partition = p.hashPartition(msg.Key, partitionCount)
 	} else {
@@ -169,22 +169,22 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 	stateKey := fmt.Sprintf("mq_notify_state:%s:%d", topic, partition) // 状态键，用于防止重复通知
 	channelKey := fmt.Sprintf("mq_notify:%s:%d", topic, partition)     // 通知频道
 	keys := []string{stateKey, channelKey}
-	args := []interface{}{"new_message", p.config.NotificationStateTTL.Seconds()}
+	args := []any{"new_message", p.config.NotificationStateTTL.Seconds()}
 
 	// 执行Lua脚本
 	res, err := notifyScript.Run(ctx, p.redis, keys, args...).Result()
 	if err != nil {
 		// 记录错误但不影响消息发送操作
 		// 通知失败不应该影响消息的可靠性
-		fmt.Printf("Failed to run notification script for %s: %v\n", channelKey, err)
+		fmt.Printf("❌ [生产者通知] Redis通知脚本执行失败 %s: %v\n", channelKey, err)
 		return
 	}
 
 	// 调试信息：记录通知是否被发送或合并
 	if val, ok := res.(int64); ok && val == 1 {
-		// fmt.Printf("Notification sent for %s\n", channelKey)
+		fmt.Printf("📢 [生产者通知] 成功发送通知到 %s\n", channelKey)
 	} else {
-		// fmt.Printf("Notification coalesced for %s\n", channelKey)
+		fmt.Printf("🔄 [生产者通知] 通知被合并（已有通知在处理中）%s\n", channelKey)
 	}
 }
 

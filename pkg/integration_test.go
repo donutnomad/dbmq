@@ -4,7 +4,6 @@ package pkg
 
 import (
 	"context"
-	"database/sql"
 	"dbmq/pkg/types"
 	"fmt"
 	"log"
@@ -18,12 +17,16 @@ import (
 func TestIntegration_FullFlow(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. Create a Topic for the test
-	testTopic := &types.Topic{
-		TopicName:      "integration-topic",
-		PartitionCount: 1,
+	// 1. Create a Topic for the test using AdminClient
+	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	require.NoError(t, err)
+	defer admin.Close()
+
+	topicReq := NewTopicRequest{
+		Name:          "integration-topic",
+		NumPartitions: 1,
 	}
-	err := dbClient.Create(testTopic).Error
+	err = admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
 	// 2. Start Coordinator
@@ -46,12 +49,12 @@ func TestIntegration_FullFlow(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             consumerGroup,
 		NotificationEnabled: false, // 禁用通知以避免超时
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	}
 	consumer, err := NewConsumer(consumerConf)
 	require.NoError(t, err)
-	err = consumer.Subscribe(testTopic.TopicName)
+	err = consumer.Subscribe(topicReq.Name)
 	require.NoError(t, err)
 	defer consumer.Close()
 
@@ -78,7 +81,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	testKey := []byte("test-key")
 	testValue := []byte("hello world")
 	sentMsg := &ProducerMessage{
-		Topic: testTopic.TopicName,
+		Topic: topicReq.Name,
 		Key:   testKey,
 		Value: testValue,
 	}
@@ -98,7 +101,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.Len(t, receivedMsgs, 1, "Consumer should have received exactly one message")
 
 	receivedMsg := receivedMsgs[0]
-	assert.Equal(t, testTopic.TopicName, receivedMsg.Topic)
+	assert.Equal(t, topicReq.Name, receivedMsg.Topic)
 	assert.Equal(t, testKey, receivedMsg.Key)
 	assert.Equal(t, testValue, receivedMsg.Value)
 	assert.Equal(t, sendResult.Offset, receivedMsg.Offset)
@@ -111,7 +114,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	var committedOffset types.ConsumerGroupOffset
 	err = dbClient.Where(&types.ConsumerGroupOffset{
 		GroupID:   consumerGroup,
-		Topic:     testTopic.TopicName,
+		Topic:     topicReq.Name,
 		Partition: 0,
 	}).First(&committedOffset).Error
 	require.NoError(t, err, "Failed to find the committed offset in the database")
@@ -122,12 +125,16 @@ func TestIntegration_FullFlow(t *testing.T) {
 func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. 创建测试主题（2个分区）
-	testTopic := &types.Topic{
-		TopicName:      "multi-group-topic",
-		PartitionCount: 2,
+	// 1. 创建测试主题（2个分区）使用AdminClient
+	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	require.NoError(t, err)
+	defer admin.Close()
+
+	topicReq := NewTopicRequest{
+		Name:          "multi-group-topic",
+		NumPartitions: 2,
 	}
-	err := dbClient.Create(testTopic).Error
+	err = admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
 	// 2. 启动协调器
@@ -153,7 +160,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             group1,
 		NotificationEnabled: false, // 禁用通知以避免超时
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
@@ -164,7 +171,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             group1,
 		NotificationEnabled: false, // 禁用通知以避免超时
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
@@ -176,16 +183,16 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             group2,
 		NotificationEnabled: false, // 禁用通知以避免超时
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
 	defer consumer2.Close()
 
 	// 订阅主题
-	require.NoError(t, consumer1_1.Subscribe(testTopic.TopicName))
-	require.NoError(t, consumer1_2.Subscribe(testTopic.TopicName))
-	require.NoError(t, consumer2.Subscribe(testTopic.TopicName))
+	require.NoError(t, consumer1_1.Subscribe(topicReq.Name))
+	require.NoError(t, consumer1_2.Subscribe(topicReq.Name))
+	require.NoError(t, consumer2.Subscribe(topicReq.Name))
 
 	// 等待所有消费者准备就绪
 	consumers := []*Consumer{consumer1_1, consumer1_2, consumer2}
@@ -217,7 +224,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	for _, msg := range messages {
 		_, err := producer.Send(context.Background(), &ProducerMessage{
-			Topic: testTopic.TopicName,
+			Topic: topicReq.Name,
 			Key:   []byte(msg.key),
 			Value: []byte(msg.value),
 		})
@@ -255,12 +262,16 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 func TestIntegration_ConsumerFailover(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. 创建测试主题
-	testTopic := &types.Topic{
-		TopicName:      "failover-topic",
-		PartitionCount: 2,
+	// 1. 创建测试主题使用AdminClient
+	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	require.NoError(t, err)
+	defer admin.Close()
+
+	topicReq := NewTopicRequest{
+		Name:          "failover-topic",
+		NumPartitions: 2,
 	}
-	err := dbClient.Create(testTopic).Error
+	err = admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
 	// 2. 启动协调器
@@ -281,11 +292,11 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             "failover-group",
 		NotificationEnabled: false, // 禁用通知
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
-	require.NoError(t, consumer1.Subscribe(testTopic.TopicName))
+	require.NoError(t, consumer1.Subscribe(topicReq.Name))
 
 	// 等待消费者准备就绪
 	require.Eventually(t, consumer1.IsReady, 10*time.Second, 500*time.Millisecond)
@@ -301,7 +312,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		_, err := producer.Send(context.Background(), &ProducerMessage{
-			Topic: testTopic.TopicName,
+			Topic: topicReq.Name,
 			Key:   []byte(fmt.Sprintf("key-%d", i)),
 			Value: []byte(fmt.Sprintf("value-%d", i)),
 		})
@@ -324,12 +335,12 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             "failover-group",
 		NotificationEnabled: false,
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
 	defer consumer2.Close()
-	require.NoError(t, consumer2.Subscribe(testTopic.TopicName))
+	require.NoError(t, consumer2.Subscribe(topicReq.Name))
 
 	// 等待重新平衡
 	time.Sleep(3 * time.Second)
@@ -367,16 +378,20 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 func TestIntegration_MessageCleanup(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. 创建测试主题
-	testTopic := &types.Topic{
-		TopicName:      "cleanup-topic",
-		PartitionCount: 1,
-		Configs: sql.NullString{
-			String: `{"retention_hours": 1}`,
-			Valid:  true,
+	// 1. 创建测试主题使用AdminClient
+	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	require.NoError(t, err)
+	defer admin.Close()
+
+	retentionHours := 1
+	topicReq := NewTopicRequest{
+		Name:          "cleanup-topic",
+		NumPartitions: 1,
+		Config: &TopicConfig{
+			RetentionHours: &retentionHours,
 		},
 	}
-	err := dbClient.Create(testTopic).Error
+	err = admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
 	// 2. 启动协调器
@@ -420,7 +435,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	for _, msg := range messages {
 		result, err := producer.Send(context.Background(), &ProducerMessage{
-			Topic: testTopic.TopicName,
+			Topic: topicReq.Name,
 			Key:   []byte(msg.key),
 			Value: []byte(msg.value),
 		})
@@ -466,12 +481,16 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 func TestIntegration_RedisNotification(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. 创建测试主题
-	testTopic := &types.Topic{
-		TopicName:      "notification-topic",
-		PartitionCount: 1,
+	// 1. 创建测试主题使用AdminClient
+	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	require.NoError(t, err)
+	defer admin.Close()
+
+	topicReq := NewTopicRequest{
+		Name:          "notification-topic",
+		NumPartitions: 1,
 	}
-	err := dbClient.Create(testTopic).Error
+	err = admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
 	// 2. 启动协调器
@@ -492,13 +511,13 @@ func TestIntegration_RedisNotification(t *testing.T) {
 		Redis:               redisClient,
 		GroupID:             "notification-group",
 		NotificationEnabled: true, // 启用通知进行测试
-		Topics:              []string{testTopic.TopicName},
+		Topics:              []string{topicReq.Name},
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
 	defer consumer.Close()
 
-	require.NoError(t, consumer.Subscribe(testTopic.TopicName))
+	require.NoError(t, consumer.Subscribe(topicReq.Name))
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 500*time.Millisecond)
 
 	// 等待额外的时间确保Redis订阅完全建立
@@ -515,7 +534,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 
 	// 5. 发送消息并验证基本功能
 	_, err = producer.Send(context.Background(), &ProducerMessage{
-		Topic: testTopic.TopicName,
+		Topic: topicReq.Name,
 		Key:   []byte("test-key"),
 		Value: []byte("test-value"),
 	})
@@ -547,7 +566,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	var offset types.ConsumerGroupOffset
 	err = dbClient.Where(&types.ConsumerGroupOffset{
 		GroupID:   "notification-group",
-		Topic:     testTopic.TopicName,
+		Topic:     topicReq.Name,
 		Partition: 0,
 	}).First(&offset).Error
 	require.NoError(t, err)

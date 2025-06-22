@@ -3,7 +3,6 @@ package pkg
 import (
 	"dbmq/pkg/types"
 	"reflect"
-	"sort"
 	"testing"
 )
 
@@ -28,12 +27,7 @@ func makeTestPartitions(topic string, count uint) []types.PartitionInfo {
 // Helper function to sort the results for consistent comparison.
 func sortAssignments(assignments map[string][]types.PartitionInfo) map[string][]types.PartitionInfo {
 	for cid := range assignments {
-		sort.Slice(assignments[cid], func(i, j int) bool {
-			if assignments[cid][i].Topic != assignments[cid][j].Topic {
-				return assignments[cid][i].Topic < assignments[cid][j].Topic
-			}
-			return assignments[cid][i].Partition < assignments[cid][j].Partition
-		})
+		SortPartitionsByTopicAndPartition(assignments[cid])
 	}
 	return assignments
 }

@@ -16,7 +16,8 @@ import (
 
 const (
 	leaderLockName      = "mq_coordinator_leader_lock" // 全局领导者锁名称
-	lockRefreshInterval = 5 * time.Second              // 锁刷新间隔，应小于数据库会话超时时间
+	lockRefreshInterval = 10 * time.Second             // 锁刷新间隔，10秒
+	lockTimeout         = 30                           // 锁超时时间，30秒
 	cleanupBatchSize    = 1000                         // 每批删除的消息数量
 	cleanupBatchSleep   = 100 * time.Millisecond       // 批处理间的睡眠时间
 )
@@ -163,8 +164,8 @@ func (c *Coordinator) attemptToBecomeLeader() {
 	var result int
 	// GET_LOCK是会话特定的。结果为1表示我们获得了锁
 	// 0表示另一个会话持有锁。NULL表示发生了错误
-	// 超时为0表示我们不等待锁
-	err := c.db.Raw("SELECT GET_LOCK(?, 0)", leaderLockName).Scan(&result).Error
+	// 使用30秒超时，如果当前持有者死亡，允许接管
+	err := c.db.Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockTimeout).Scan(&result).Error
 	if err != nil {
 		log.Printf("Error in leader election: %v", err)
 		if c.IsLeader() {
@@ -174,16 +175,19 @@ func (c *Coordinator) attemptToBecomeLeader() {
 	}
 	switch result {
 	case 0:
-		// 我们是领导者但失去了锁（例如，数据库连接断开并重新建立）
-		// 另一个协调器可能已经接管
-		log.Printf("Coordinator failed to renew lock.")
-		c.setLeader(false)
+		// 无法获得锁，可能有其他协调器持有锁，或者锁获取超时
+		if c.IsLeader() {
+			log.Printf("Coordinator lost leadership (unable to acquire lock).")
+			c.setLeader(false)
+		}
+		// 如果我们不是领导者，这是正常情况
 	case 1:
-		// 我们是领导者
+		// 我们获得了锁，成为或保持领导者
 		if !c.IsLeader() {
+			log.Printf("Coordinator acquired leadership.")
 			c.setLeader(true)
 		}
-		// 如果我们已经是领导者，这只是刷新会话活动
+		// 如果我们已经是领导者，这只是刷新锁
 	}
 	// 如果result == 0且!c.IsLeader()，我们是追随者，无需操作
 }

@@ -18,17 +18,44 @@ import (
 	"gorm.io/gorm"
 )
 
+// ConsumeStrategy 消费策略枚举
+type ConsumeStrategy int
+
+const (
+	// ConsumeFromEarliest 从最早的消息开始消费（偏移量0）
+	ConsumeFromEarliest ConsumeStrategy = iota
+	// ConsumeFromLatest 从最新的消息开始消费（跳过历史消息）
+	ConsumeFromLatest
+	// ConsumeFromCommitted 从已提交的偏移量开始消费，如果没有则使用Latest策略（默认）
+	ConsumeFromCommitted
+)
+
+// String 返回消费策略的字符串表示
+func (s ConsumeStrategy) String() string {
+	switch s {
+	case ConsumeFromEarliest:
+		return "earliest"
+	case ConsumeFromLatest:
+		return "latest"
+	case ConsumeFromCommitted:
+		return "committed"
+	default:
+		return "unknown"
+	}
+}
+
 // ConsumerConfig 消费者配置结构
 // 包含数据库连接、Redis连接、消费组设置和性能参数
 type ConsumerConfig struct {
-	DB                  *gorm.DB      // 数据库连接，用于消息拉取和偏移量提交
-	Redis               *redis.Client // Redis连接，用于实时通知（可选）
-	GroupID             string        // 消费组ID，同一消费组内的消费者共同消费Topic
-	NotificationEnabled bool          // 是否启用Redis实时通知优化
-	HeartbeatInterval   time.Duration // 心跳间隔，用于向协调器报告存活状态
-	Topics              []string      // 要订阅的Topic列表
-	PollFetchLimit      int           // 每次Poll操作从单个分区最多拉取的消息数
-	PollFetchTimeout    time.Duration // Poll操作中数据库查询的超时时间
+	DB                  *gorm.DB        // 数据库连接，用于消息拉取和偏移量提交
+	Redis               *redis.Client   // Redis连接，用于实时通知（可选）
+	GroupID             string          // 消费组ID，同一消费组内的消费者共同消费Topic
+	NotificationEnabled bool            // 是否启用Redis实时通知优化
+	HeartbeatInterval   time.Duration   // 心跳间隔，用于向协调器报告存活状态
+	Topics              []string        // 要订阅的Topic列表
+	PollFetchLimit      int             // 每次Poll操作从单个分区最多拉取的消息数
+	PollFetchTimeout    time.Duration   // Poll操作中数据库查询的超时时间
+	ConsumeStrategy     ConsumeStrategy // 消费策略，决定消费者首次注册时从哪里开始消费
 }
 
 // ConsumerMessage 消费者接收到的消息（重复定义，为了保持兼容性）
@@ -53,9 +80,11 @@ type Consumer struct {
 	topics []string       // 订阅的Topic列表
 
 	// Redis发布/订阅，用于实时通知
-	pubsub   *redis.PubSub         // Redis订阅对象
-	notifyCh <-chan *redis.Message // 通知消息频道
-	muSub    sync.Mutex            // 保护pubsub对象的互斥锁
+	pubsub         *redis.PubSub         // Redis订阅对象
+	notifyCh       <-chan *redis.Message // 通知消息频道
+	muSub          sync.Mutex            // 保护pubsub对象的互斥锁
+	pubsubHealthy  atomic.Bool           // PubSub连接健康状态
+	lastPubsubTime atomic.Int64          // 最后一次PubSub活动时间戳
 
 	// 重新均衡和轮询状态管理
 	mu               sync.RWMutex                  // 保护内部状态的读写锁
@@ -72,11 +101,17 @@ type Consumer struct {
 
 // NewConsumer 创建新的消费者实例
 // 如果HeartbeatInterval为0，则默认使用3秒
+// 如果ConsumeStrategy未设置，则默认使用ConsumeFromCommitted策略
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 3 * time.Second
 	}
-	return &Consumer{
+	// 如果没有设置消费策略，默认使用ConsumeFromCommitted
+	// 这与Kafka的默认行为一致：从已提交的偏移量开始，如果没有则从最新开始
+	if config.ConsumeStrategy == 0 {
+		config.ConsumeStrategy = ConsumeFromCommitted
+	}
+	consumer := &Consumer{
 		config:           config,
 		id:               uuid.NewString(), // 生成唯一的消费者ID
 		db:               config.DB,
@@ -86,7 +121,13 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		assignment:       make(map[string][]uint),
 		committedOffsets: make(map[types.PartitionInfo]int64),
 		polledOffsets:    make(map[types.PartitionInfo]int64),
-	}, nil
+	}
+
+	// 初始化原子变量
+	consumer.pubsubHealthy.Store(false)
+	consumer.lastPubsubTime.Store(time.Now().Unix())
+
+	return consumer, nil
 }
 
 // Subscribe 注册消费者要监听的Topic列表
@@ -159,26 +200,55 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 
 	// 如果启用了通知优化，使用Redis Pub/Sub等待通知
 	if c.config.NotificationEnabled && c.redis != nil {
+		// 检查并确保PubSub连接健康
+		c.ensurePubSubConnection()
+
 		c.muSub.Lock()
-		if c.pubsub != nil {
+		if c.pubsub != nil && c.pubsubHealthy.Load() {
 			// 先排空任何在我们开始等待之前到达的消息
 			select {
 			case <-c.notifyCh:
 				// 有消息在等待，我们将立即进行拉取
 				log.Printf("Drained pending notification for consumer %s", c.id)
+				c.lastPubsubTime.Store(time.Now().Unix())
 			default:
-				// 没有消息在等待，继续等待超时
-				_, err := c.pubsub.ReceiveTimeout(ctx, timeout)
-				if err != nil {
-					// 这可能是超时错误，这是预期的
-					// 无论如何我们都会继续进行拉取阶段
-					if !errors.Is(err, redis.ErrClosed) {
-						log.Printf("Notification wait ended for consumer %s (may be a timeout): %v", c.id, err)
+				// 没有消息在等待，使用非阻塞方式等待通知
+				waitTimeout := timeout
+				if waitTimeout > 3*time.Second {
+					waitTimeout = 3 * time.Second // 最多等待3秒，避免长时间阻塞
+				}
+
+				// 使用带超时的上下文
+				waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+
+				// 使用channel接收通知，而不是ReceiveTimeout
+				select {
+				case msg := <-c.notifyCh:
+					if msg != nil {
+						log.Printf("Received notification for consumer %s: %s", c.id, msg.Channel)
+						c.lastPubsubTime.Store(time.Now().Unix())
 					}
+					cancel()
+				case <-waitCtx.Done():
+					// 超时或上下文取消，这是正常的
+					cancel()
 				}
 			}
+		} else {
+			// PubSub连接不健康，标记为不健康并回退到轮询模式
+			log.Printf("PubSub connection unhealthy for consumer %s, falling back to polling", c.id)
+			c.pubsubHealthy.Store(false)
 		}
 		c.muSub.Unlock()
+
+		// 如果PubSub不可用，回退到简单的睡眠
+		if !c.pubsubHealthy.Load() {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(min(timeout, 1*time.Second)): // 缩短轮询间隔
+			}
+		}
 	} else {
 		// 如果禁用了通知，回退到简单的睡眠
 		select {
@@ -188,15 +258,8 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		}
 	}
 
-	// 并发地从所有分配的分区拉取消息
+	// 使用批量查询从所有分配的分区拉取消息
 	// 这个拉取操作在通知或超时后执行
-	type fetchResult struct {
-		messages  []types.Message
-		partition types.PartitionInfo
-		err       error
-	}
-	resultsCh := make(chan fetchResult, len(assignedPartitions))
-
 	// 为拉取本身使用较短的上下文，因为主要的等待已经发生了
 	fetchTimeout := 5 * time.Second
 	if c.config.PollFetchTimeout > 0 {
@@ -205,56 +268,52 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	var fetchWg sync.WaitGroup
+	// 构建批量请求
+	var batchRequests []dal.PartitionRequest
 	for _, p := range assignedPartitions {
-		fetchWg.Add(1)
-		go func(partition types.PartitionInfo) {
-			defer fetchWg.Done()
-			// 获取该分区的当前偏移量
-			offset := c.getOffset(partition)
-			limit := 100
-			if c.config.PollFetchLimit > 0 {
-				limit = c.config.PollFetchLimit
-			}
-			// 从数据库拉取消息
-			messages, err := dal.FetchMessages(fetchCtx, c.db, partition.Topic, partition.Partition, offset, limit)
-			resultsCh <- fetchResult{messages: messages, partition: partition, err: err}
-		}(p)
+		offset := c.getOffset(p)
+		limit := 100
+		if c.config.PollFetchLimit > 0 {
+			limit = c.config.PollFetchLimit
+		}
+		batchRequests = append(batchRequests, dal.PartitionRequest{
+			Topic:     p.Topic,
+			Partition: p.Partition,
+			Offset:    offset,
+			Limit:     limit,
+		})
 	}
 
-	fetchWg.Wait()
-	close(resultsCh)
+	// 批量获取消息
+	allMessages, err := dal.FetchMessagesBatch(fetchCtx, c.db, batchRequests)
+	if err != nil {
+		// 如果批量查询失败，记录错误并返回
+		log.Printf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err)
+		return nil, fmt.Errorf("batch fetch failed: %w", err)
+	}
 
-	// 收集所有拉取结果
-	var allMessages []types.Message
-	var lastErr error
-	for res := range resultsCh {
-		if res.err != nil {
-			// 收集最后一个错误，更健壮的策略可能需要更复杂的错误处理
-			if !errors.Is(res.err, context.Canceled) && !errors.Is(res.err, context.DeadlineExceeded) {
-				lastErr = res.err
-				log.Printf("ERROR: failed to fetch from partition %v: %v", res.partition, res.err)
-			}
-			continue
-		}
-		if len(res.messages) > 0 {
-			allMessages = append(allMessages, res.messages...)
+	// 按分区分组消息，用于更新偏移量和通知状态
+	messagesByPartition := make(map[types.PartitionInfo][]types.Message)
+	for _, msg := range allMessages {
+		partition := types.PartitionInfo{Topic: msg.Topic, Partition: msg.Partition}
+		messagesByPartition[partition] = append(messagesByPartition[partition], msg)
+	}
+
+	// 更新每个分区的已拉取偏移量和通知状态
+	for partition, messages := range messagesByPartition {
+		if len(messages) > 0 {
 			// 更新该分区的已拉取偏移量
-			lastMessage := res.messages[len(res.messages)-1]
-			c.setPolledOffset(res.partition, lastMessage.ID)
+			lastMessage := messages[len(messages)-1]
+			c.setPolledOffset(partition, lastMessage.ID)
 
 			// "重新装填"该分区的通知触发器，因为我们刚刚拉取了数据
 			if c.config.NotificationEnabled && c.redis != nil {
-				go c.resetNotificationState(context.Background(), res.partition)
+				go c.resetNotificationState(context.Background(), partition)
 			}
 		}
 	}
 
-	if lastErr != nil && len(allMessages) == 0 {
-		return nil, fmt.Errorf("all fetch attempts failed, last error: %w", lastErr)
-	}
-
-	return toConsumerMessages(allMessages), lastErr
+	return toConsumerMessages(allMessages), nil
 }
 
 // heartbeatLoop 消费者的核心后台进程，负责：
@@ -313,6 +372,8 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	if hb.GenerationID == currentGenID {
 		return // 没有变化，无需操作
 	}
+
+	log.Printf("Consumer %s: Generation ID changed from %d to %d, starting rebalance", c.id, currentGenID, hb.GenerationID)
 
 	// ---- 需要重新均衡 ----
 	log.Printf("Rebalance detected for consumer %s. New Generation ID: %d", c.id, hb.GenerationID)
@@ -423,7 +484,6 @@ func (c *Consumer) CommitSync() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 在不持有锁的情况下调用commitOffsetsWithoutLock，因为我们已经有了需要的数据
 	err := c.commitOffsetsWithoutLock(ctx, partitions, generationID)
 
 	return err
@@ -492,20 +552,26 @@ func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 		return
 	}
 
+	// 确保PubSub连接健康
+	c.ensurePubSubConnection()
+
 	c.muSub.Lock()
 	defer c.muSub.Unlock()
 
-	// If we don't have a pubsub connection yet, create one.
-	if c.pubsub == nil {
-		c.pubsub = c.redis.Subscribe(context.Background())
-		c.notifyCh = c.pubsub.Channel()
-	}
+	if c.pubsub != nil && c.pubsubHealthy.Load() {
+		channels := toChannelNames(partitions)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	channels := toChannelNames(partitions)
-	if err := c.pubsub.Subscribe(context.Background(), channels...); err != nil {
-		log.Printf("ERROR: failed to subscribe to redis channels %v: %v", channels, err)
+		if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
+			log.Printf("ERROR: failed to subscribe to redis channels %v: %v", channels, err)
+			c.pubsubHealthy.Store(false)
+		} else {
+			log.Printf("Consumer %s subscribed to channels: %v", c.id, channels)
+			c.lastPubsubTime.Store(time.Now().Unix())
+		}
 	} else {
-		log.Printf("Consumer %s subscribed to channels: %v", c.id, channels)
+		log.Printf("WARN: PubSub connection not available for consumer %s", c.id)
 	}
 }
 
@@ -517,21 +583,24 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	c.muSub.Lock()
 	defer c.muSub.Unlock()
 
-	if c.pubsub == nil {
-		return // Nothing to unsubscribe from
+	if c.pubsub == nil || !c.pubsubHealthy.Load() {
+		return // Nothing to unsubscribe from or connection not healthy
 	}
 
 	channels := toChannelNames(partitions)
-	if err := c.pubsub.Unsubscribe(context.Background(), channels...); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.pubsub.Unsubscribe(ctx, channels...); err != nil {
 		log.Printf("ERROR: failed to unsubscribe from redis channels %v: %v", channels, err)
+		c.pubsubHealthy.Store(false)
 	} else {
 		log.Printf("Consumer %s unsubscribed from channels: %v", c.id, channels)
+		c.lastPubsubTime.Store(time.Now().Unix())
 	}
 
-	if c.pubsub != nil {
-		c.pubsub.Close()
-		c.pubsub = nil
-	}
+	// 不要关闭pubsub连接，保持连接以便重用
+	// pubsub连接只在消费者关闭时才关闭
 }
 
 // --- Helper methods ---
@@ -579,6 +648,30 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 		log.Printf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err)
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
+
+	// 只对没有已提交偏移量的分区应用消费策略
+	// 有已提交偏移量的分区会继续从上次的位置消费，不受策略影响
+	for _, p := range partitionsToFetch {
+		if _, exists := fetchedOffsets[p]; !exists {
+			// 该消费组第一次消费此分区，根据消费策略决定起始位置
+			startOffset, err := c.determineStartOffset(ctx, p)
+			if err != nil {
+				log.Printf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err)
+				// 发生错误时回退到从0开始
+				fetchedOffsets[p] = 0
+				log.Printf("Consumer %s: fallback to offset 0 for partition %v due to error", c.id, p)
+			} else {
+				fetchedOffsets[p] = startOffset
+				log.Printf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
+					c.id, p, c.config.ConsumeStrategy.String(), startOffset)
+			}
+		} else {
+			// 有已提交偏移量，继续从上次的位置消费
+			log.Printf("Consumer %s: 🔄 continuing partition %v from committed offset %d",
+				c.id, p, fetchedOffsets[p])
+		}
+	}
+
 	log.Printf("Consumer %s: fetched offsets: %v", c.id, fetchedOffsets)
 
 	c.mu.Lock()
@@ -678,5 +771,97 @@ func (c *Consumer) resetNotificationState(ctx context.Context, p types.Partition
 	key := fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
 	if err := c.redis.Del(ctx, key).Err(); err != nil {
 		log.Printf("WARN: failed to reset notification state for %v: %v", p, err)
+	}
+}
+
+// ensurePubSubConnection 确保PubSub连接健康，如果不健康则尝试重新连接
+func (c *Consumer) ensurePubSubConnection() {
+	c.muSub.Lock()
+	defer c.muSub.Unlock()
+
+	// 检查连接是否健康
+	now := time.Now().Unix()
+	lastActivity := c.lastPubsubTime.Load()
+
+	// 如果超过30秒没有活动，或者连接标记为不健康，尝试重新连接
+	if c.pubsub == nil || !c.pubsubHealthy.Load() || (now-lastActivity > 30) {
+		log.Printf("PubSub connection needs refresh for consumer %s", c.id)
+
+		// 关闭旧连接
+		if c.pubsub != nil {
+			c.pubsub.Close()
+			c.pubsub = nil
+			c.notifyCh = nil
+		}
+
+		// 创建新连接
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		c.pubsub = c.redis.Subscribe(ctx)
+		if c.pubsub != nil {
+			c.notifyCh = c.pubsub.Channel()
+			c.pubsubHealthy.Store(true)
+			c.lastPubsubTime.Store(now)
+
+			// 重新订阅当前分配的分区
+			assignedPartitions := c.getAssignedPartitions()
+			if len(assignedPartitions) > 0 {
+				channels := toChannelNames(assignedPartitions)
+				if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
+					log.Printf("ERROR: failed to resubscribe to channels %v: %v", channels, err)
+					c.pubsubHealthy.Store(false)
+				} else {
+					log.Printf("Consumer %s resubscribed to channels: %v", c.id, channels)
+				}
+			}
+		} else {
+			log.Printf("ERROR: failed to create PubSub connection for consumer %s", c.id)
+			c.pubsubHealthy.Store(false)
+		}
+	}
+}
+
+// min 返回两个time.Duration中的较小值
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// determineStartOffset 根据消费策略确定分区的起始偏移量
+// 注意：此方法只在消费组第一次消费某个分区时调用（即没有已提交偏移量时）
+// 如果分区已有提交的偏移量，将直接使用该偏移量，不会调用此方法
+func (c *Consumer) determineStartOffset(ctx context.Context, partition types.PartitionInfo) (int64, error) {
+	switch c.config.ConsumeStrategy {
+	case ConsumeFromEarliest:
+		// 从分区的第一条消息开始消费（偏移量0）
+		log.Printf("Consumer %s: applying EARLIEST strategy for partition %v", c.id, partition)
+		return 0, nil
+
+	case ConsumeFromLatest:
+		// 从最新的消息之后开始消费（跳过所有历史消息）
+		log.Printf("Consumer %s: applying LATEST strategy for partition %v", c.id, partition)
+		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get latest offset: %w", err)
+		}
+		// 从最新偏移量的下一条消息开始消费
+		return latestOffset + 1, nil
+
+	case ConsumeFromCommitted:
+		// 从已提交的偏移量开始消费，如果没有已提交偏移量则从最新开始
+		// 由于此方法只在没有已提交偏移量时被调用，所以使用Latest作为后备策略
+		log.Printf("Consumer %s: applying COMMITTED strategy (fallback to LATEST) for partition %v", c.id, partition)
+		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get latest offset for committed strategy fallback: %w", err)
+		}
+		// 从最新偏移量的下一条消息开始消费
+		return latestOffset + 1, nil
+
+	default:
+		return 0, fmt.Errorf("unknown consume strategy: %v", c.config.ConsumeStrategy)
 	}
 }

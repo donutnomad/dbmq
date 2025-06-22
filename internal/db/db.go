@@ -53,8 +53,11 @@ func InitMySQL(mysqlConf MySQLConfig) (*gorm.DB, error) {
 // InitRedis initializes the database connection for Redis.
 func InitRedis(redisConf RedisConfig) (*redis.Client, error) {
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", redisConf.Host, redisConf.Port),
-		DB:   redisConf.DB,
+		Addr:         fmt.Sprintf("%s:%d", redisConf.Host, redisConf.Port),
+		DB:           redisConf.DB,
+		ReadTimeout:  30 * time.Second, // 增加读超时，避免PubSub连接频繁断开
+		WriteTimeout: 10 * time.Second, // 增加写超时
+		PoolTimeout:  30 * time.Second, // 连接池超时
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
