@@ -532,3 +532,58 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 
 	return assignments
 }
+
+// CleanupExpiredMessages 执行消息清理，删除过期的消息。
+// 它会根据每个主题的保留策略来删除消息。
+func (c *Coordinator) CleanupExpiredMessages(ctx context.Context) error {
+	// 获取所有主题
+	var topics []types.Topic
+	if err := c.db.Find(&topics).Error; err != nil {
+		return fmt.Errorf("failed to fetch topics: %v", err)
+	}
+
+	for _, topic := range topics {
+		// 获取主题的保留时间配置
+		retentionHours, ok := topic.GetConfig("retention_hours")
+		if !ok {
+			// 使用默认保留时间
+			retentionHours = float64(c.config.DefaultRetentionAge.Hours())
+		}
+
+		// 计算截止时间
+		cutoffTime := time.Now().Add(-time.Duration(retentionHours) * time.Hour)
+
+		// 分批删除过期消息
+		for {
+			// 获取一批要删除的消息ID
+			var messageIDs []int64
+			err := c.db.Table("mq_messages").
+				Where("topic = ? AND created_at < ?", topic.TopicName, cutoffTime).
+				Limit(cleanupBatchSize).
+				Pluck("id", &messageIDs).Error
+			if err != nil {
+				return fmt.Errorf("failed to fetch expired message IDs: %v", err)
+			}
+
+			if len(messageIDs) == 0 {
+				break // 没有更多过期消息
+			}
+
+			// 删除这批消息
+			err = c.db.Delete(&types.Message{}, messageIDs).Error
+			if err != nil {
+				return fmt.Errorf("failed to delete expired messages: %v", err)
+			}
+
+			// 检查是否需要停止
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(cleanupBatchSleep):
+				// 继续下一批
+			}
+		}
+	}
+
+	return nil
+}

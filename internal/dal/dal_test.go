@@ -36,7 +36,7 @@ func TestUpsertHeartbeat(t *testing.T) {
 	consumerID := "consumer-1"
 	topics := []byte(`["topic-a"]`)
 
-	expectedSQL := "INSERT INTO mq_consumer_heartbeats (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE subscribed_topics = VALUES(subscribed_topics), last_heartbeat = VALUES(last_heartbeat)"
+	expectedSQL := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`)"
 
 	mock.ExpectExec(regexp.QuoteMeta(expectedSQL)).
 		WithArgs(groupID, consumerID, topics, []byte("{}"), sqlmock.AnyArg()). // sqlmock.AnyArg for time.Now()

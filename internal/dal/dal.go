@@ -4,6 +4,7 @@ import (
 	"context"
 	"dbmq/pkg/dbmq/types"
 	"errors"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -12,7 +13,7 @@ import (
 // FindActiveConsumers finds all consumers in a group that have sent a heartbeat within the timeout period.
 func FindActiveConsumers(ctx context.Context, db *gorm.DB, groupID string, timeout time.Duration) ([]types.ConsumerHeartbeat, error) {
 	var activeConsumers []types.ConsumerHeartbeat
-	sql := "SELECT * FROM mq_consumer_heartbeats WHERE group_id = ? AND last_heartbeat > ?"
+	sql := "SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `last_heartbeat` > ?"
 	err := db.WithContext(ctx).
 		Raw(sql, groupID, time.Now().Add(-timeout)).
 		Scan(&activeConsumers).Error
@@ -22,7 +23,7 @@ func FindActiveConsumers(ctx context.Context, db *gorm.DB, groupID string, timeo
 // GetConsumerGroupGeneration retrieves the current generation metadata for a consumer group.
 func GetConsumerGroupGeneration(ctx context.Context, db *gorm.DB, groupID string) (*types.ConsumerGroupGeneration, error) {
 	var gen types.ConsumerGroupGeneration
-	sql := "SELECT * FROM mq_consumer_group_generations WHERE group_id = ?"
+	sql := "SELECT * FROM `mq_consumer_group_generations` WHERE `group_id` = ?"
 	err := db.WithContext(ctx).Raw(sql, groupID).Scan(&gen).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -40,7 +41,7 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Use FOR UPDATE to lock the row
-		err := tx.Raw("SELECT * FROM mq_consumer_group_generations WHERE group_id = ? FOR UPDATE", groupID).Scan(&gen).Error
+		err := tx.Raw("SELECT * FROM `mq_consumer_group_generations` WHERE `group_id` = ? FOR UPDATE", groupID).Scan(&gen).Error
 		if err != nil {
 			// If the record is not found, we create it.
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -50,7 +51,7 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 					ProtocolType: "consumer",
 					UpdatedAt:    time.Now(),
 				}
-				insertSQL := "INSERT INTO mq_consumer_group_generations (group_id, generation_id, protocol_type, updated_at) VALUES (?, ?, ?, ?)"
+				insertSQL := "INSERT INTO `mq_consumer_group_generations` (`group_id`, `generation_id`, `protocol_type`, `updated_at`) VALUES (?, ?, ?, ?)"
 				if err := tx.Exec(insertSQL, gen.GroupID, gen.GenerationID, gen.ProtocolType, gen.UpdatedAt).Error; err != nil {
 					return err
 				}
@@ -61,7 +62,7 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 
 		// If found, increment generation ID
 		gen.GenerationID++
-		updateSQL := "UPDATE mq_consumer_group_generations SET generation_id = ? WHERE group_id = ?"
+		updateSQL := "UPDATE `mq_consumer_group_generations` SET `generation_id` = ? WHERE `group_id` = ?"
 		return tx.Exec(updateSQL, gen.GenerationID, gen.GroupID).Error
 	})
 
@@ -74,7 +75,7 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 // UpdateAssignmentsInTx updates the partition assignments for multiple consumers within a single transaction.
 // The assignments map is consumerID -> partition JSON.
 func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, generationID uint, assignments map[string][]byte) error {
-	updateSQL := "UPDATE mq_consumer_heartbeats SET generation_id = ?, assigned_partitions = ? WHERE group_id = ? AND consumer_id = ?"
+	updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
 	for consumerID, partitionsJSON := range assignments {
 		err := tx.WithContext(ctx).Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID).Error
 		if err != nil {
@@ -90,7 +91,7 @@ func FindTopicsByNames(ctx context.Context, db *gorm.DB, topicNames []string) ([
 		return nil, nil
 	}
 	var topics []types.Topic
-	sql := "SELECT * FROM mq_topics WHERE topic_name IN (?)"
+	sql := "SELECT * FROM `mq_topics` WHERE `topic_name` IN (?)"
 	err := db.WithContext(ctx).Raw(sql, topicNames).Scan(&topics).Error
 	return topics, err
 }
@@ -98,7 +99,7 @@ func FindTopicsByNames(ctx context.Context, db *gorm.DB, topicNames []string) ([
 // GetHeartbeat retrieves a single consumer's heartbeat record.
 func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) (*types.ConsumerHeartbeat, error) {
 	var hb types.ConsumerHeartbeat
-	sql := "SELECT * FROM mq_consumer_heartbeats WHERE group_id = ? AND consumer_id = ?"
+	sql := "SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?"
 	err := db.WithContext(ctx).Raw(sql, groupID, consumerID).Scan(&hb).Error
 	if err != nil {
 		return nil, err
@@ -110,12 +111,7 @@ func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) 
 // It updates the last_heartbeat time and ensures the consumer's subscribed topics are current.
 // This is the primary function used by the consumer's heartbeat loop.
 func UpsertHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string, subscribedTopics []byte) error {
-	sql := `
-INSERT INTO mq_consumer_heartbeats (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat)
-VALUES (?, ?, 0, ?, ?, ?)
-ON DUPLICATE KEY UPDATE
-subscribed_topics = VALUES(subscribed_topics),
-last_heartbeat = VALUES(last_heartbeat)`
+	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`)"
 	return db.WithContext(ctx).Exec(sql,
 		groupID,
 		consumerID,
@@ -134,7 +130,7 @@ func GetConsumerAssignment(ctx context.Context, db *gorm.DB, groupID, consumerID
 // FetchMessages fetches messages from a specific partition after a given offset.
 func FetchMessages(ctx context.Context, db *gorm.DB, topic string, partition uint, offset int64, limit int) ([]types.Message, error) {
 	var messages []types.Message
-	sql := "SELECT * FROM mq_messages WHERE topic = ? AND partition = ? AND id > ? ORDER BY id ASC LIMIT ?"
+	sql := "SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
 	err := db.WithContext(ctx).
 		Raw(sql, topic, partition, offset, limit).
 		Scan(&messages).Error
@@ -151,16 +147,21 @@ func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, parti
 
 	var offsets []types.ConsumerGroupOffset
 
-	// WHERE (topic, partition) IN ((?, ?), ...) is more efficient and safer
-	// than building a long chain of OR clauses.
-	var values []interface{}
+	// Build OR clauses for each partition since GORM has issues with complex IN queries
+	var conditions []string
+	var args []interface{}
+	args = append(args, groupID) // First argument for group_id
+
 	for _, p := range partitions {
-		values = append(values, []interface{}{p.Topic, p.Partition})
+		conditions = append(conditions, "(`topic` = ? AND `partition` = ?)")
+		args = append(args, p.Topic, p.Partition)
 	}
+
+	whereClause := "`group_id` = ? AND (" + strings.Join(conditions, " OR ") + ")"
 
 	err := db.WithContext(ctx).
 		Model(&types.ConsumerGroupOffset{}).
-		Where("group_id = ? AND (topic, partition) IN ?", groupID, values).
+		Where(whereClause, args...).
 		Find(&offsets).Error
 
 	if err != nil {
@@ -195,13 +196,7 @@ func CommitOffset(ctx context.Context, db *gorm.DB, groupID string, generationID
 	// The IF(VALUES(generation_id) >= generation_id, ...) clause is the key to fencing.
 	// It prevents a consumer from a previous generation (with a smaller generation_id)
 	// from overwriting the offset of a consumer from the current or a future generation.
-	sql := `
-INSERT INTO mq_consumer_group_offsets (group_id, topic, partition, committed_offset, generation_id, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE
-committed_offset = IF(VALUES(generation_id) >= generation_id, VALUES(committed_offset), committed_offset),
-generation_id = IF(VALUES(generation_id) >= generation_id, VALUES(generation_id), generation_id),
-updated_at = IF(VALUES(generation_id) >= generation_id, VALUES(updated_at), updated_at)`
+	sql := "INSERT INTO `mq_consumer_group_offsets` (`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `committed_offset` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`committed_offset`), `committed_offset`), `generation_id` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`generation_id`), `generation_id`), `updated_at` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`updated_at`), `updated_at`)"
 	return db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, offset, generationID, time.Now()).Error
 }
 
@@ -215,13 +210,7 @@ func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
 // This should be called when a consumer starts or changes its subscriptions.
 func RegisterConsumer(ctx context.Context, db *gorm.DB, heartbeat *types.ConsumerHeartbeat) error {
 	// This operation ensures a consumer's record exists and its subscribed topics are up-to-date.
-	sql := `
-INSERT INTO mq_consumer_heartbeats (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat)
-VALUES (?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE
-subscribed_topics = VALUES(subscribed_topics),
-generation_id = VALUES(generation_id),
-last_heartbeat = VALUES(last_heartbeat)`
+	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `subscribed_topics` = VALUES(`subscribed_topics`), `generation_id` = VALUES(`generation_id`), `last_heartbeat` = VALUES(`last_heartbeat`)"
 	return db.WithContext(ctx).Exec(sql,
 		heartbeat.GroupID,
 		heartbeat.ConsumerID,
@@ -235,21 +224,21 @@ last_heartbeat = VALUES(last_heartbeat)`
 // UpdateHeartbeat updates only the last_heartbeat timestamp for a consumer.
 // This is the lightweight operation that should be called periodically.
 func UpdateHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) error {
-	sql := "UPDATE mq_consumer_heartbeats SET last_heartbeat = ? WHERE group_id = ? AND consumer_id = ?"
+	sql := "UPDATE `mq_consumer_heartbeats` SET `last_heartbeat` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
 	return db.WithContext(ctx).Exec(sql, time.Now(), groupID, consumerID).Error
 }
 
 // DeleteHeartbeat removes a consumer's heartbeat record entirely.
 // This is used for a graceful shutdown, signaling an immediate leave from the group.
 func DeleteHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) error {
-	sql := "DELETE FROM mq_consumer_heartbeats WHERE group_id = ? AND consumer_id = ?"
+	sql := "DELETE FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?"
 	return db.WithContext(ctx).Exec(sql, groupID, consumerID).Error
 }
 
 // FindAllActiveGroups finds all distinct group IDs that have sent a heartbeat within the timeout period.
 func FindAllActiveGroups(ctx context.Context, db *gorm.DB, timeout time.Duration) ([]string, error) {
 	var groupIDs []string
-	sql := "SELECT DISTINCT group_id FROM mq_consumer_heartbeats WHERE last_heartbeat > ?"
+	sql := "SELECT DISTINCT `group_id` FROM `mq_consumer_heartbeats` WHERE `last_heartbeat` > ?"
 	err := db.WithContext(ctx).
 		Raw(sql, time.Now().Add(-timeout)).
 		Pluck("group_id", &groupIDs).Error
@@ -293,7 +282,7 @@ func GetAllTopics(ctx context.Context, db *gorm.DB) ([]types.Topic, error) {
 // DeleteMessagesByPartition deletes messages from a partition that are older than a certain offset AND a certain time.
 func DeleteMessagesByPartition(ctx context.Context, db *gorm.DB, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
 	// We must use a raw query because GORM does not support DELETE with table alias and JOIN.
-	sql := "DELETE FROM mq_messages WHERE topic = ? AND `partition` = ? AND id < ? AND created_at < ? LIMIT ?"
+	sql := "DELETE FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` < ? AND `created_at` < ? LIMIT ?"
 	res := db.WithContext(ctx).Exec(sql, topic, partition, maxOffset, retentionDate, limit)
 	return res.RowsAffected, res.Error
 }
@@ -301,7 +290,7 @@ func DeleteMessagesByPartition(ctx context.Context, db *gorm.DB, topic string, p
 // DeleteMessagesByPartitionUnconsumed deletes messages from a partition that are older than a certain time.
 // This is used for partitions that have no active consumers.
 func DeleteMessagesByPartitionUnconsumed(ctx context.Context, db *gorm.DB, topic string, partition uint, retentionDate time.Time, limit int) (int64, error) {
-	sql := "DELETE FROM mq_messages WHERE topic = ? AND `partition` = ? AND created_at < ? LIMIT ?"
+	sql := "DELETE FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `created_at` < ? LIMIT ?"
 	res := db.WithContext(ctx).Exec(sql, topic, partition, retentionDate, limit)
 	return res.RowsAffected, res.Error
 }

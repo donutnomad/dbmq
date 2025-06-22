@@ -311,11 +311,13 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	c.rebalancing.Store(true)
 	defer c.rebalancing.Store(false)
 
+	log.Printf("Consumer %s: received assignment data: %s", c.id, string(hb.AssignedPartitions))
 	newPartitions, err := c.parsePartitions(hb.AssignedPartitions)
 	if err != nil {
 		log.Printf("ERROR: failed to parse new partition assignment for consumer %s: %v", c.id, err)
 		return
 	}
+	log.Printf("Consumer %s: parsed new partitions: %v", c.id, newPartitions)
 
 	// 1. Find which partitions were revoked.
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
@@ -331,10 +333,12 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	}
 
 	// 3. Clear internal state and fetch offsets for the new assignment.
+	log.Printf("Consumer %s: clearing and fetching offsets for new assignment", c.id)
 	if err := c.clearAndFetchOffsetsForNewAssignment(newPartitions); err != nil {
 		log.Printf("ERROR: failed to fetch offsets for new assignment on consumer %s: %v", c.id, err)
 		return // This is a fatal error for the rebalance.
 	}
+	log.Printf("Consumer %s: successfully fetched offsets for new assignment", c.id)
 
 	// 4. Update Redis subscriptions if enabled.
 	if c.config.NotificationEnabled && c.redis != nil {
@@ -383,11 +387,20 @@ func (c *Consumer) register(ctx context.Context) error {
 	return dal.UpsertHeartbeat(ctx, c.db, c.config.GroupID, c.id, topicsData)
 }
 
+// IsReady returns true if the consumer is not rebalancing and has assigned partitions.
+func (c *Consumer) IsReady() bool {
+	if c.rebalancing.Load() {
+		return false
+	}
+	assignedPartitions := c.getAssignedPartitions()
+	return len(assignedPartitions) > 0
+}
+
 // CommitSync commits the offsets for all currently assigned partitions.
 // This is a blocking operation.
 func (c *Consumer) CommitSync() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Merge polled offsets into committed offsets before committing.
 	for p, offset := range c.polledOffsets {
@@ -396,22 +409,26 @@ func (c *Consumer) CommitSync() error {
 	// Clear polled offsets after merging.
 	c.polledOffsets = make(map[types.PartitionInfo]int64)
 
+	// Get the current assignment and generation ID
+	partitions := c.getAssignedPartitionsLocked()
+	generationID := c.generationID
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	return c.commitOffsets(ctx, c.getAssignedPartitions(), c.generationID)
+	// Call commitOffsetsWithoutLock without the lock since we already have the data we need
+	err := c.commitOffsetsWithoutLock(ctx, partitions, generationID)
+
+	return err
 }
 
-// commitOffsets handles the database logic for committing a batch of offsets.
-func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+// commitOffsetsWithoutLock handles the database logic for committing a batch of offsets.
+// This version doesn't acquire any locks and is used internally.
+func (c *Consumer) commitOffsetsWithoutLock(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
 	offsetsToCommit := make(map[types.PartitionInfo]int64)
 	for _, p := range partitions {
-		// Commit the polled offset if it exists, otherwise, there's nothing new to commit for this partition.
-		if offset, ok := c.polledOffsets[p]; ok {
-			c.committedOffsets[p] = offset
+		// Commit the committed offset (which includes merged polled offsets)
+		if offset, ok := c.committedOffsets[p]; ok {
 			offsetsToCommit[p] = offset
 		}
 	}
@@ -420,6 +437,37 @@ func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.Partiti
 		return nil
 	}
 	return dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
+}
+
+// commitOffsets handles the database logic for committing a batch of offsets.
+// This is the legacy method that acquires locks internally.
+func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
+	offsetsToCommit := make(map[types.PartitionInfo]int64)
+	c.mu.RLock()
+	for _, p := range partitions {
+		// Commit the committed offset (which includes merged polled offsets)
+		if offset, ok := c.committedOffsets[p]; ok {
+			offsetsToCommit[p] = offset
+		}
+	}
+	c.mu.RUnlock()
+
+	if len(offsetsToCommit) == 0 {
+		return nil
+	}
+	return dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
+}
+
+// getAssignedPartitionsLocked returns assigned partitions without acquiring locks.
+// This should only be called when the caller already holds the appropriate lock.
+func (c *Consumer) getAssignedPartitionsLocked() []types.PartitionInfo {
+	partitions := make([]types.PartitionInfo, 0)
+	for topic, parts := range c.assignment {
+		for _, pNum := range parts {
+			partitions = append(partitions, types.PartitionInfo{Topic: topic, Partition: pNum})
+		}
+	}
+	return partitions
 }
 
 // --- Redis Notification Helpers ---
@@ -497,11 +545,18 @@ func (c *Consumer) getAssignedPartitions() []types.PartitionInfo {
 // clearAndFetchOffsetsForNewAssignment clears old state and fetches committed offsets for a new assignment.
 // It must be called after the new assignment has been set on the consumer.
 func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string][]uint) error {
+	// Build the list of partitions to fetch before acquiring any locks
+	var partitionsToFetch []types.PartitionInfo
+	for topic, parts := range newAssignment {
+		for _, pNum := range parts {
+			partitionsToFetch = append(partitionsToFetch, types.PartitionInfo{Topic: topic, Partition: pNum})
+		}
+	}
+
 	c.mu.Lock()
 	c.polledOffsets = make(map[types.PartitionInfo]int64)
 	c.committedOffsets = make(map[types.PartitionInfo]int64)
 	c.assignment = newAssignment
-	partitionsToFetch := c.getAssignedPartitions()
 	c.mu.Unlock()
 
 	if len(partitionsToFetch) == 0 {
@@ -512,10 +567,13 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	log.Printf("Consumer %s: fetching offsets for partitions: %v", c.id, partitionsToFetch)
 	fetchedOffsets, err := dal.GetCommittedOffsets(ctx, c.db, c.config.GroupID, partitionsToFetch)
 	if err != nil {
+		log.Printf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err)
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
+	log.Printf("Consumer %s: fetched offsets: %v", c.id, fetchedOffsets)
 
 	c.mu.Lock()
 	c.committedOffsets = fetchedOffsets
@@ -554,11 +612,19 @@ func (c *Consumer) findRevokedPartitions(newPartitions map[string][]uint) []type
 
 // parsePartitions decodes the JSON partition assignment data.
 func (c *Consumer) parsePartitions(data []byte) (map[string][]uint, error) {
-	var partitions map[string][]uint
+	var partitions []types.PartitionInfo
 	if err := json.Unmarshal(data, &partitions); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal partition assignment: %w", err)
 	}
-	return partitions, nil
+	var m = make(map[string][]uint)
+	for _, partition := range partitions {
+		if _, ok := m[partition.Topic]; !ok {
+			m[partition.Topic] = []uint{partition.Partition}
+		} else {
+			m[partition.Topic] = append(m[partition.Topic], partition.Partition)
+		}
+	}
+	return m, nil
 }
 
 func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
