@@ -173,12 +173,13 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		}
 		return
 	}
-	if result == 0 {
+	switch result {
+	case 0:
 		// 我们是领导者但失去了锁（例如，数据库连接断开并重新建立）
 		// 另一个协调器可能已经接管
 		log.Printf("Coordinator failed to renew lock.")
 		c.setLeader(false)
-	} else if result == 1 {
+	case 1:
 		// 我们是领导者
 		if !c.IsLeader() {
 			c.setLeader(true)
@@ -231,12 +232,6 @@ func (c *Coordinator) leaderLoop() {
 			c.runRetentionCleanup()
 		}
 	}
-}
-
-// lockName 返回全局锁名称
-// 注意：此实现已更改为单个全局锁，以符合设计文档中央协调器领导者的目标
-func (c *Coordinator) lockName() string {
-	return leaderLockName
 }
 
 // runRetentionCleanup 运行消息保留清理
@@ -332,18 +327,20 @@ func (c *Coordinator) scanAndRebalanceAllGroups() {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	activeGroups, err := dal.FindAllActiveGroups(ctx, c.db, c.config.HeartbeatTimeout)
+	// 找到活跃的消费组IDs
+	activeGroupIds, err := dal.FindAllActiveGroups(ctx, c.db, c.config.HeartbeatTimeout)
 	if err != nil {
 		log.Printf("ERROR: Failed to scan for active groups: %v", err)
 		return
 	}
+	if len(activeGroupIds) == 0 {
+		return
+	}
 
-	if len(activeGroups) > 0 {
-		log.Printf("Found active consumer groups: %v", activeGroups)
-		for _, groupID := range activeGroups {
-			if err := c.rebalanceIfNeeded(groupID); err != nil {
-				log.Printf("ERROR: Rebalance failed for group '%s': %v", groupID, err)
-			}
+	log.Printf("[scanAndRebalanceAllGroups] 找到活动的消费组 Found active consumer groups: %v", activeGroupIds)
+	for _, groupID := range activeGroupIds {
+		if err := c.rebalanceIfNeeded(groupID); err != nil {
+			log.Printf("ERROR: Rebalance failed for group '%s': %v", groupID, err)
 		}
 	}
 }
@@ -374,10 +371,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 
 	// 设置重新均衡操作的超时时间，防止操作无限期阻塞
 	// 默认15秒，可通过配置调整。超时机制确保系统的响应性。
-	timeout := 15 * time.Second
-	if c.config.RebalanceTimeout > 0 {
-		timeout = c.config.RebalanceTimeout
-	}
+	timeout := max(15*time.Second, c.config.RebalanceTimeout)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -389,6 +383,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to find active consumers: %w", err)
 	}
+	fmt.Printf("寻找到消费组%s，中活动的消费者 %v \n", groupID, activeConsumers)
 
 	// 将活跃消费者列表转换为ID集合，便于后续比较和处理
 	// 使用map[string]struct{}作为集合类型，内存效率高且查找快速
@@ -530,6 +525,8 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, activeConsumerIDs map[st
 // 参数：
 //   - groupID: 消费组ID
 //   - newMembers: 新的消费者成员ID集合
+//
+// 存储消费组ID中活动的消费者ID
 func (c *Coordinator) updateMembers(groupID string, newMembers map[string]struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -547,6 +544,7 @@ func (c *Coordinator) updateMembers(groupID string, newMembers map[string]struct
 func (c *Coordinator) getMemberIDs(groupID string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	ids := make([]string, 0, len(c.members[groupID]))
 	for id := range c.members[groupID] {
 		ids = append(ids, id)
