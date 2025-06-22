@@ -18,44 +18,44 @@ import (
 	"gorm.io/gorm"
 )
 
-// ProducerConfig holds configuration for the producer.
+// ProducerConfig 生产者配置结构
+// 包含数据库连接、Redis连接和通知相关配置
 type ProducerConfig struct {
-	// NotificationEnabled enables the Redis real-time notification optimization.
-	// This is a "fire-and-forget" operation.
+	// NotificationEnabled 启用Redis实时通知优化
+	// 这是一个"即发即忘"的操作，失败不影响消息发送
 	NotificationEnabled bool
-	// NotificationStateTTL sets the expiration for the notification state key in Redis.
-	// This prevents a lock-in if a consumer crashes before resetting the state.
-	// Defaults to 60 seconds.
+	// NotificationStateTTL 设置Redis中通知状态键的过期时间
+	// 防止消费者崩溃导致状态锁定，默认60秒
 	NotificationStateTTL time.Duration
-	DB                   *gorm.DB
-	Redis                *redis.Client
+	DB                   *gorm.DB      // 数据库连接，用于消息持久化
+	Redis                *redis.Client // Redis连接，用于实时通知（可选）
 }
 
-// ProducerMessage is the message to be sent by the producer.
+// ProducerMessage 生产者发送的消息结构（重复定义，为了保持兼容性）
 type ProducerMessage struct {
-	Topic   string
-	Key     []byte
-	Value   []byte
-	Headers map[string]string
+	Topic   string            // 目标Topic名称
+	Key     []byte            // 消息Key，用于分区路由
+	Value   []byte            // 消息内容
+	Headers map[string]string // 消息头，键值对格式
 }
 
-// SendResult is the metadata for a record that has been sent.
+// SendResult 消息发送后返回的结果（重复定义，为了保持兼容性）
 type SendResult struct {
-	Topic     string
-	Partition uint
-	Offset    int64
+	Topic     string // 消息所在的Topic
+	Partition uint   // 消息所在的分区
+	Offset    int64  // 消息在分区中的偏移量
 }
 
 const (
-	// producerNotifyScript is a Lua script that implements the "Intelligent Notification Coalescing" logic.
-	// It only sends a notification if the notification state key for a partition does not exist.
+	// producerNotifyScript 实现"智能通知合并"逻辑的Lua脚本
+	// 只有当分区的通知状态键不存在时才发送通知，避免惊群效应
 	//
-	// KEYS[1]: The state key (e.g., "mq_notify_state:{topic}:{partition}")
-	// KEYS[2]: The notification channel (e.g., "mq_notify:{topic}:{partition}")
-	// ARGV[1]: The notification message (e.g., "new_message")
-	// ARGV[2]: The expiration time for the state key in seconds.
+	// KEYS[1]: 状态键 (例如: "mq_notify_state:{topic}:{partition}")
+	// KEYS[2]: 通知频道 (例如: "mq_notify:{topic}:{partition}")
+	// ARGV[1]: 通知消息内容 (例如: "new_message")
+	// ARGV[2]: 状态键的过期时间（秒）
 	//
-	// Returns 1 if the notification was sent, 0 if it was coalesced.
+	// 返回值: 1表示发送了通知，0表示通知被合并（即已有其他通知在处理中）
 	producerNotifyScript = `
 if redis.call("SET", KEYS[1], "notified", "NX", "EX", ARGV[2]) then
   redis.call("PUBLISH", KEYS[2], ARGV[1])
@@ -64,23 +64,25 @@ else
   return 0
 end
 `
-	defaultNotificationStateTTL = 60 * time.Second
+	defaultNotificationStateTTL = 60 * time.Second // 默认通知状态TTL
 )
 
 var (
-	notifyScript = redis.NewScript(producerNotifyScript)
+	notifyScript = redis.NewScript(producerNotifyScript) // 预编译的Lua脚本
 )
 
-// Producer is a message producer that is safe for concurrent use.
+// Producer 消息生产者，线程安全，可以并发使用
+// 负责将消息发送到指定的Topic和分区
 type Producer struct {
-	config             ProducerConfig
-	db                 *gorm.DB
-	redis              *redis.Client
-	topicMetadataCache sync.Map // map[string]*types.Topic
-	roundRobinCounters sync.Map // map[string]*atomic.Uint32 for thread-safe counters
+	config             ProducerConfig // 生产者配置
+	db                 *gorm.DB       // 数据库连接
+	redis              *redis.Client  // Redis连接（可选）
+	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*types.Topic
+	roundRobinCounters sync.Map       // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
 }
 
-// NewProducer creates a new Producer instance.
+// NewProducer 创建新的生产者实例
+// 如果NotificationStateTTL为0，则使用默认值60秒
 func NewProducer(config ProducerConfig) (*Producer, error) {
 	if config.NotificationStateTTL == 0 {
 		config.NotificationStateTTL = defaultNotificationStateTTL
@@ -94,27 +96,32 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 	}, nil
 }
 
-// Send sends a message to a topic. This operation is blocking.
+// Send 发送消息到指定Topic，这是一个阻塞操作
+// 核心流程：验证 -> 获取Topic元数据 -> 选择分区 -> 持久化 -> 可选通知
 func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult, error) {
+	// 1. 验证消息和Topic名称
 	if msg == nil || msg.Topic == "" {
 		return nil, errors.New("producer message and topic cannot be empty")
 	}
 
+	// 2. 获取Topic元数据（带缓存优化）
 	topicMeta, err := p.getTopicMetadata(ctx, msg.Topic)
 	if err != nil {
 		return nil, err
 	}
 	partitionCount := topicMeta.PartitionCount
 
-	// Select partition
+	// 3. 选择目标分区
 	var partition uint
 	if msg.Key != nil && len(msg.Key) > 0 {
+		// 如果消息有Key，使用哈希分区确保相同Key的消息总是路由到同一分区
 		partition = p.hashPartition(msg.Key, partitionCount)
 	} else {
+		// 如果消息没有Key，使用轮询分区实现负载均衡
 		partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
 	}
 
-	// Send the message to the database
+	// 4. 构造数据库消息对象并持久化
 	dbMsg := &types.Message{
 		Topic:     msg.Topic,
 		Partition: partition,
@@ -122,10 +129,12 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 		CreatedAt: time.Now(),
 	}
 
+	// 设置消息Key（如果有）
 	if msg.Key != nil {
 		dbMsg.MessageKey.String = string(msg.Key)
 		dbMsg.MessageKey.Valid = true
 	}
+	// 序列化消息头（如果有）
 	if msg.Headers != nil {
 		headersJSON, err := json.Marshal(msg.Headers)
 		if err != nil {
@@ -134,37 +143,44 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 		dbMsg.Headers = headersJSON
 	}
 
+	// 5. 持久化消息到数据库
 	if err := dal.CreateMessage(ctx, p.db, dbMsg); err != nil {
 		return nil, fmt.Errorf("failed to create message in db: %w", err)
 	}
 
-	// Optionally, send an intelligent notification
+	// 6. 可选的智能通知机制
+	// 在后台goroutine中执行，不影响消息发送的性能和可靠性
 	if p.config.NotificationEnabled && p.redis != nil {
 		go p.sendNotification(context.Background(), msg.Topic, partition)
 	}
 
+	// 7. 返回发送结果，包含消息的精确位置信息
 	return &SendResult{
 		Topic:     msg.Topic,
 		Partition: partition,
-		Offset:    dbMsg.ID,
+		Offset:    dbMsg.ID, // 数据库自增ID作为偏移量
 	}, nil
 }
 
+// sendNotification 发送智能通知到Redis
+// 使用Lua脚本确保原子性，实现"智能通知合并"逻辑
 func (p *Producer) sendNotification(ctx context.Context, topic string, partition uint) {
-	stateKey := fmt.Sprintf("mq_notify_state:%s:%d", topic, partition)
-	channelKey := fmt.Sprintf("mq_notify:%s:%d", topic, partition)
+	// 构造Redis键名
+	stateKey := fmt.Sprintf("mq_notify_state:%s:%d", topic, partition) // 状态键，用于防止重复通知
+	channelKey := fmt.Sprintf("mq_notify:%s:%d", topic, partition)     // 通知频道
 	keys := []string{stateKey, channelKey}
 	args := []interface{}{"new_message", p.config.NotificationStateTTL.Seconds()}
 
+	// 执行Lua脚本
 	res, err := notifyScript.Run(ctx, p.redis, keys, args...).Result()
 	if err != nil {
-		// Log the error but don't fail the send operation
+		// 记录错误但不影响消息发送操作
+		// 通知失败不应该影响消息的可靠性
 		fmt.Printf("Failed to run notification script for %s: %v\n", channelKey, err)
 		return
 	}
 
-	// For debugging/logging purposes, you might want to know if a notification was sent or coalesced.
-	// For example:
+	// 调试信息：记录通知是否被发送或合并
 	if val, ok := res.(int64); ok && val == 1 {
 		// fmt.Printf("Notification sent for %s\n", channelKey)
 	} else {
@@ -172,11 +188,15 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 	}
 }
 
+// getTopicMetadata 获取Topic元数据，带内存缓存优化
+// 缓存可以显著减少数据库查询，提高性能
 func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*types.Topic, error) {
+	// 首先检查缓存
 	if metadata, ok := p.topicMetadataCache.Load(topicName); ok {
 		return metadata.(*types.Topic), nil
 	}
 
+	// 缓存未命中，从数据库查询
 	topics, err := dal.FindTopicsByNames(ctx, p.db, []string{topicName})
 	if err != nil {
 		return nil, fmt.Errorf("failed to find topic '%s': %w", topicName, err)
@@ -185,11 +205,14 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*typ
 		return nil, &dberrors.ErrUnknownTopicOrPartition{Topic: topicName}
 	}
 
+	// 缓存查询结果
 	topic := &topics[0]
 	p.topicMetadataCache.Store(topicName, topic)
 	return topic, nil
 }
 
+// nextRoundRobinPartition 使用轮询策略选择下一个分区
+// 使用原子操作确保线程安全，每个Topic独立维护计数器
 func (p *Producer) nextRoundRobinPartition(topic string, partitionCount uint) uint {
 	if partitionCount == 0 {
 		return 0
@@ -197,22 +220,26 @@ func (p *Producer) nextRoundRobinPartition(topic string, partitionCount uint) ui
 	if partitionCount == 1 {
 		return 0
 	}
+	// 获取或创建该Topic的计数器
 	counter, _ := p.roundRobinCounters.LoadOrStore(topic, &atomic.Uint32{})
-	// Increment counter and wrap around if it exceeds partitionCount
+	// 原子性递增并取模，实现轮询
 	newVal := counter.(*atomic.Uint32).Add(1)
 	return uint(newVal-1) % partitionCount
 }
 
+// hashPartition 使用哈希算法选择分区
+// 使用FNV-1a哈希算法，确保相同Key总是路由到同一分区，保证消息顺序
 func (p *Producer) hashPartition(key []byte, partitionCount uint) uint {
 	if partitionCount == 0 {
 		return 0
 	}
-	hasher := fnv.New64a()
+	hasher := fnv.New64a() // FNV-1a哈希算法，速度快且分布均匀
 	hasher.Write(key)
 	return uint(hasher.Sum64() % uint64(partitionCount))
 }
 
-// Close is a placeholder for future cleanup logic.
+// Close 关闭生产者，释放资源
+// 目前是占位符，因为数据库和Redis连接由外部管理
 func (p *Producer) Close() {
-	// No-op for now as DB/Redis connections are managed externally.
+	// 当前无需特殊清理逻辑，数据库和Redis连接由外部管理
 }

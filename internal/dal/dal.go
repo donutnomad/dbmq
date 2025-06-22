@@ -10,7 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// FindActiveConsumers finds all consumers in a group that have sent a heartbeat within the timeout period.
+// FindActiveConsumers 查找在超时期间内发送过心跳的消费组中的所有活跃消费者
+// 这是协调器判断消费组成员变化的核心函数
 func FindActiveConsumers(ctx context.Context, db *gorm.DB, groupID string, timeout time.Duration) ([]types.ConsumerHeartbeat, error) {
 	var activeConsumers []types.ConsumerHeartbeat
 	sql := "SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `last_heartbeat` > ?"
@@ -20,34 +21,36 @@ func FindActiveConsumers(ctx context.Context, db *gorm.DB, groupID string, timeo
 	return activeConsumers, err
 }
 
-// GetConsumerGroupGeneration retrieves the current generation metadata for a consumer group.
+// GetConsumerGroupGeneration 获取消费组的当前代际元数据
+// 代际是重新均衡机制的核心，每次重新均衡时递增
 func GetConsumerGroupGeneration(ctx context.Context, db *gorm.DB, groupID string) (*types.ConsumerGroupGeneration, error) {
 	var gen types.ConsumerGroupGeneration
 	sql := "SELECT * FROM `mq_consumer_group_generations` WHERE `group_id` = ?"
 	err := db.WithContext(ctx).Raw(sql, groupID).Scan(&gen).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil // Not an error, the group might be new
+			return nil, nil // 不是错误，消费组可能是新的
 		}
 		return nil, err
 	}
 	return &gen, nil
 }
 
-// IncrementAndGetGenerationID atomically increments the generation ID for a group and returns the new value.
-// If the group does not exist, it creates one.
+// IncrementAndGetGenerationID 原子性地递增消费组的代际ID并返回新值
+// 如果消费组不存在，则创建一个新的
+// 这是重新均衡过程中最关键的操作，确保了代际的原子性更新
 func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID string) (uint, error) {
 	var gen types.ConsumerGroupGeneration
 
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Use FOR UPDATE to lock the row
+		// 使用FOR UPDATE锁定行，确保并发安全
 		err := tx.Raw("SELECT * FROM `mq_consumer_group_generations` WHERE `group_id` = ? FOR UPDATE", groupID).Scan(&gen).Error
 		if err != nil {
-			// If the record is not found, we create it.
+			// 如果记录不存在，我们创建它
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				gen = types.ConsumerGroupGeneration{
 					GroupID:      groupID,
-					GenerationID: 1, // Start with generation 1
+					GenerationID: 1, // 从代际1开始
 					ProtocolType: "consumer",
 					UpdatedAt:    time.Now(),
 				}
@@ -55,12 +58,12 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 				if err := tx.Exec(insertSQL, gen.GroupID, gen.GenerationID, gen.ProtocolType, gen.UpdatedAt).Error; err != nil {
 					return err
 				}
-				return nil // End transaction successfully
+				return nil // 成功结束事务
 			}
-			return err // Other DB error
+			return err // 其他数据库错误
 		}
 
-		// If found, increment generation ID
+		// 如果找到，递增代际ID
 		gen.GenerationID++
 		updateSQL := "UPDATE `mq_consumer_group_generations` SET `generation_id` = ? WHERE `group_id` = ?"
 		return tx.Exec(updateSQL, gen.GenerationID, gen.GroupID).Error
@@ -72,8 +75,9 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 	return gen.GenerationID, nil
 }
 
-// UpdateAssignmentsInTx updates the partition assignments for multiple consumers within a single transaction.
-// The assignments map is consumerID -> partition JSON.
+// UpdateAssignmentsInTx 在单个事务中更新多个消费者的分区分配
+// assignments map是 consumerID -> partition JSON 的映射
+// 这确保了所有消费者的分区分配是原子性更新的
 func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, generationID uint, assignments map[string][]byte) error {
 	updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
 	for consumerID, partitionsJSON := range assignments {
@@ -85,7 +89,8 @@ func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, gen
 	return nil
 }
 
-// FindTopicsByNames finds all topics that match the given names.
+// FindTopicsByNames 查找所有匹配给定名称的Topic
+// 主要用于验证Topic是否存在和获取分区数量
 func FindTopicsByNames(ctx context.Context, db *gorm.DB, topicNames []string) ([]types.Topic, error) {
 	if len(topicNames) == 0 {
 		return nil, nil
@@ -96,7 +101,8 @@ func FindTopicsByNames(ctx context.Context, db *gorm.DB, topicNames []string) ([
 	return topics, err
 }
 
-// GetHeartbeat retrieves a single consumer's heartbeat record.
+// GetHeartbeat 获取单个消费者的心跳记录
+// 包含了消费者的分区分配、订阅信息和最后心跳时间
 func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) (*types.ConsumerHeartbeat, error) {
 	var hb types.ConsumerHeartbeat
 	sql := "SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?"
@@ -107,27 +113,28 @@ func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) 
 	return &hb, nil
 }
 
-// UpsertHeartbeat atomically creates or updates a consumer's heartbeat.
-// It updates the last_heartbeat time and ensures the consumer's subscribed topics are current.
-// This is the primary function used by the consumer's heartbeat loop.
+// UpsertHeartbeat 原子性地创建或更新消费者的心跳
+// 更新最后心跳时间并确保消费者的订阅Topic是最新的
+// 这是消费者心跳循环使用的主要函数
 func UpsertHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string, subscribedTopics []byte) error {
 	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`)"
 	return db.WithContext(ctx).Exec(sql,
 		groupID,
 		consumerID,
 		subscribedTopics,
-		[]byte("{}"), // Default to empty JSON object
+		[]byte("{}"), // 默认为空JSON对象
 		time.Now(),
 	).Error
 }
 
-// GetConsumerAssignment retrieves the partition assignment for a single consumer.
-// It is an alias for GetHeartbeat as the assignment is stored in the heartbeat record.
+// GetConsumerAssignment 获取单个消费者的分区分配
+// 这是GetHeartbeat的别名，因为分配存储在心跳记录中
 func GetConsumerAssignment(ctx context.Context, db *gorm.DB, groupID, consumerID string) (*types.ConsumerHeartbeat, error) {
 	return GetHeartbeat(ctx, db, groupID, consumerID)
 }
 
-// FetchMessages fetches messages from a specific partition after a given offset.
+// FetchMessages 从特定分区在给定偏移量之后获取消息
+// 这是消费者Poll操作的核心数据库查询
 func FetchMessages(ctx context.Context, db *gorm.DB, topic string, partition uint, offset int64, limit int) ([]types.Message, error) {
 	var messages []types.Message
 	sql := "SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
@@ -137,8 +144,8 @@ func FetchMessages(ctx context.Context, db *gorm.DB, topic string, partition uin
 	return messages, err
 }
 
-// GetCommittedOffsets gets the committed offsets for a set of partitions for a group.
-// It returns a map of PartitionInfo to the committed offset. Partitions with no committed offset will be absent from the map.
+// GetCommittedOffsets 获取消费组对一组分区的已提交偏移量
+// 返回PartitionInfo到已提交偏移量的映射。没有已提交偏移量的分区将不在映射中
 func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
 	results := make(map[types.PartitionInfo]int64)
 	if len(partitions) == 0 {
@@ -147,10 +154,10 @@ func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, parti
 
 	var offsets []types.ConsumerGroupOffset
 
-	// Build OR clauses for each partition since GORM has issues with complex IN queries
+	// 为每个分区构建OR子句，因为GORM在复杂IN查询上有问题
 	var conditions []string
 	var args []interface{}
-	args = append(args, groupID) // First argument for group_id
+	args = append(args, groupID) // group_id的第一个参数
 
 	for _, p := range partitions {
 		conditions = append(conditions, "(`topic` = ? AND `partition` = ?)")
@@ -168,6 +175,7 @@ func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, parti
 		return nil, err
 	}
 
+	// 将结果转换为map
 	for _, offset := range offsets {
 		p := types.PartitionInfo{Topic: offset.Topic, Partition: offset.Partition}
 		results[p] = offset.CommittedOffset
@@ -176,7 +184,8 @@ func GetCommittedOffsets(ctx context.Context, db *gorm.DB, groupID string, parti
 	return results, nil
 }
 
-// BatchCommitOffsets commits a batch of offsets for a consumer group in a single transaction.
+// BatchCommitOffsets 在单个事务中为消费组提交一批偏移量
+// 这确保了偏移量提交的原子性，要么全部成功要么全部失败
 func BatchCommitOffsets(ctx context.Context, db *gorm.DB, groupID string, generationID uint, offsets map[types.PartitionInfo]int64) error {
 	if len(offsets) == 0 {
 		return nil
@@ -191,51 +200,53 @@ func BatchCommitOffsets(ctx context.Context, db *gorm.DB, groupID string, genera
 	})
 }
 
-// CommitOffset commits an offset for a single partition.
+// CommitOffset 为单个分区提交偏移量
+// 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
 func CommitOffset(ctx context.Context, db *gorm.DB, groupID string, generationID uint, p types.PartitionInfo, offset int64) error {
-	// The IF(VALUES(generation_id) >= generation_id, ...) clause is the key to fencing.
-	// It prevents a consumer from a previous generation (with a smaller generation_id)
-	// from overwriting the offset of a consumer from the current or a future generation.
+	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
+	// 它防止来自先前代际（具有较小generation_id）的消费者
+	// 覆盖来自当前或未来代际的消费者的偏移量
 	sql := "INSERT INTO `mq_consumer_group_offsets` (`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `committed_offset` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`committed_offset`), `committed_offset`), `generation_id` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`generation_id`), `generation_id`), `updated_at` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`updated_at`), `updated_at`)"
 	return db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, offset, generationID, time.Now()).Error
 }
 
-// CreateMessage inserts a new message into the database.
-// It uses GORM's Create method to ensure the message's ID is populated post-insert.
+// CreateMessage 向数据库插入新消息
+// 使用GORM的Create方法确保消息的ID在插入后被填充
 func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
 	return db.WithContext(ctx).Create(msg).Error
 }
 
-// RegisterConsumer creates or updates a consumer's registration, including its topic subscriptions.
-// This should be called when a consumer starts or changes its subscriptions.
+// RegisterConsumer 创建或更新消费者的注册，包括其Topic订阅
+// 应该在消费者启动或更改其订阅时调用
 func RegisterConsumer(ctx context.Context, db *gorm.DB, heartbeat *types.ConsumerHeartbeat) error {
-	// This operation ensures a consumer's record exists and its subscribed topics are up-to-date.
+	// 此操作确保消费者的记录存在且其订阅的Topic是最新的
 	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `subscribed_topics` = VALUES(`subscribed_topics`), `generation_id` = VALUES(`generation_id`), `last_heartbeat` = VALUES(`last_heartbeat`)"
 	return db.WithContext(ctx).Exec(sql,
 		heartbeat.GroupID,
 		heartbeat.ConsumerID,
 		heartbeat.GenerationID,
 		heartbeat.SubscribedTopics,
-		heartbeat.AssignedPartitions, // Initially empty
+		heartbeat.AssignedPartitions, // 初始为空
 		heartbeat.LastHeartbeat,
 	).Error
 }
 
-// UpdateHeartbeat updates only the last_heartbeat timestamp for a consumer.
-// This is the lightweight operation that should be called periodically.
+// UpdateHeartbeat 仅更新消费者的last_heartbeat时间戳
+// 这是应该定期调用的轻量级操作
 func UpdateHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) error {
 	sql := "UPDATE `mq_consumer_heartbeats` SET `last_heartbeat` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
 	return db.WithContext(ctx).Exec(sql, time.Now(), groupID, consumerID).Error
 }
 
-// DeleteHeartbeat removes a consumer's heartbeat record entirely.
-// This is used for a graceful shutdown, signaling an immediate leave from the group.
+// DeleteHeartbeat 完全删除消费者的心跳记录
+// 用于优雅关闭，表示立即离开消费组
 func DeleteHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) error {
 	sql := "DELETE FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?"
 	return db.WithContext(ctx).Exec(sql, groupID, consumerID).Error
 }
 
-// FindAllActiveGroups finds all distinct group IDs that have sent a heartbeat within the timeout period.
+// FindAllActiveGroups 查找在超时期间内发送过心跳的所有不同消费组ID
+// 用于协调器的全局扫描，找出所有活跃的消费组
 func FindAllActiveGroups(ctx context.Context, db *gorm.DB, timeout time.Duration) ([]string, error) {
 	var groupIDs []string
 	sql := "SELECT DISTINCT `group_id` FROM `mq_consumer_heartbeats` WHERE `last_heartbeat` > ?"
