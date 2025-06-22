@@ -111,8 +111,8 @@ func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) 
 // This is the primary function used by the consumer's heartbeat loop.
 func UpsertHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string, subscribedTopics []byte) error {
 	sql := `
-INSERT INTO mq_consumer_heartbeats (group_id, consumer_id, subscribed_topics, assigned_partitions, last_heartbeat)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO mq_consumer_heartbeats (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat)
+VALUES (?, ?, 0, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
 subscribed_topics = VALUES(subscribed_topics),
 last_heartbeat = VALUES(last_heartbeat)`
@@ -267,10 +267,7 @@ type LowWatermark struct {
 // This is the "consumption low watermark".
 func GetConsumerGroupLowWatermarks(ctx context.Context, db *gorm.DB) (map[types.PartitionInfo]int64, error) {
 	var results []LowWatermark
-	sql := `
-SELECT topic, partition, MIN(committed_offset) as low_watermark
-FROM mq_consumer_group_offsets
-GROUP BY topic, partition`
+	sql := "SELECT `topic`, `partition`, MIN(`committed_offset`) as low_watermark FROM `mq_consumer_group_offsets` GROUP BY `topic`, `partition`"
 
 	err := db.WithContext(ctx).Raw(sql).Scan(&results).Error
 	if err != nil {
@@ -296,7 +293,7 @@ func GetAllTopics(ctx context.Context, db *gorm.DB) ([]types.Topic, error) {
 // DeleteMessagesByPartition deletes messages from a partition that are older than a certain offset AND a certain time.
 func DeleteMessagesByPartition(ctx context.Context, db *gorm.DB, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
 	// We must use a raw query because GORM does not support DELETE with table alias and JOIN.
-	sql := `DELETE FROM mq_messages WHERE topic = ? AND partition = ? AND id < ? AND created_at < ? LIMIT ?`
+	sql := "DELETE FROM mq_messages WHERE topic = ? AND `partition` = ? AND id < ? AND created_at < ? LIMIT ?"
 	res := db.WithContext(ctx).Exec(sql, topic, partition, maxOffset, retentionDate, limit)
 	return res.RowsAffected, res.Error
 }
@@ -304,7 +301,7 @@ func DeleteMessagesByPartition(ctx context.Context, db *gorm.DB, topic string, p
 // DeleteMessagesByPartitionUnconsumed deletes messages from a partition that are older than a certain time.
 // This is used for partitions that have no active consumers.
 func DeleteMessagesByPartitionUnconsumed(ctx context.Context, db *gorm.DB, topic string, partition uint, retentionDate time.Time, limit int) (int64, error) {
-	sql := `DELETE FROM mq_messages WHERE topic = ? AND partition = ? AND created_at < ? LIMIT ?`
+	sql := "DELETE FROM mq_messages WHERE topic = ? AND `partition` = ? AND created_at < ? LIMIT ?"
 	res := db.WithContext(ctx).Exec(sql, topic, partition, retentionDate, limit)
 	return res.RowsAffected, res.Error
 }
