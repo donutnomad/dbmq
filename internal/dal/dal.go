@@ -3,7 +3,9 @@ package dal
 import (
 	"context"
 	"dbmq/pkg/types"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -76,12 +78,17 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 }
 
 // UpdateAssignmentsInTx 在单个事务中更新多个消费者的分区分配
-// assignments map是 consumerID -> partition JSON 的映射
+// assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
-func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, generationID uint, assignments map[string][]byte) error {
+func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
 	updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
-	for consumerID, partitionsJSON := range assignments {
-		err := tx.WithContext(ctx).Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID).Error
+	for consumerID, partitions := range assignments {
+		// 将分区列表序列化为JSON格式存储
+		partitionsJSON, err := json.Marshal(partitions)
+		if err != nil {
+			return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
+		}
+		err = tx.WithContext(ctx).Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID).Error
 		if err != nil {
 			return err
 		}

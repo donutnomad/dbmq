@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -446,20 +445,10 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 将新的分区分配持久化到数据库中。这一步必须在事务中完成，
 	// 确保所有消费者的分配要么全部成功，要么全部失败，
 	// 维护分配状态的一致性。
-	assignmentsForDAL := make(map[string][]byte)
-	for consumerID, parts := range newAssignments {
-		// 将分区列表序列化为JSON格式存储
-		jsonBytes, err := json.Marshal(parts)
-		if err != nil {
-			return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
-		}
-		assignmentsForDAL[consumerID] = jsonBytes
-	}
-
 	// 在数据库事务中更新分配信息，确保原子性
 	// 事务包括：更新代际ID、更新每个消费者的分区分配
 	err = c.db.Transaction(func(tx *gorm.DB) error {
-		return dal.UpdateAssignmentsInTx(ctx, tx, groupID, newGenerationID, assignmentsForDAL)
+		return dal.UpdateAssignmentsInTx(ctx, tx, groupID, newGenerationID, newAssignments)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update assignments: %w", err)
@@ -634,18 +623,11 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 	// ========== 关键步骤：排序以确保确定性分配 ==========
 	// 对消费者按ID排序，确保分配顺序的一致性
 	// 这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
-	sort.Slice(consumers, func(i, j int) bool {
-		return consumers[i].ConsumerID < consumers[j].ConsumerID
-	})
+	SortConsumersByID(consumers)
 
 	// 对分区按主题名称和分区号排序
 	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
-	sort.Slice(partitions, func(i, j int) bool {
-		if partitions[i].Topic != partitions[j].Topic {
-			return partitions[i].Topic < partitions[j].Topic
-		}
-		return partitions[i].Partition < partitions[j].Partition
-	})
+	SortPartitionsByTopicAndPartition(partitions)
 	// ========== 排序完成 ==========
 
 	// 提取消费者ID列表，并初始化每个消费者的分区分配为空
@@ -688,24 +670,26 @@ func (c *Coordinator) CleanupExpiredMessages(ctx context.Context) error {
 
 		// 分批删除过期消息
 		for {
-			// 获取一批要删除的消息ID
-			var messageIDs []int64
-			err := c.db.Table("mq_messages").
-				Where("topic = ? AND created_at < ?", topic.TopicName, cutoffTime).
-				Limit(cleanupBatchSize).
-				Pluck("id", &messageIDs).Error
-			if err != nil {
-				return fmt.Errorf("failed to fetch expired message IDs: %v", err)
+			// 使用DELETE结合子查询和LIMIT进行批量删除
+			// 这种方式避免了先查询ID再删除的两步操作，提高了效率
+			deleteSQL := `
+				DELETE FROM mq_messages 
+				WHERE id IN (
+					SELECT id FROM (
+						SELECT id FROM mq_messages 
+						WHERE topic = ? AND created_at < ? 
+						LIMIT ?
+					) AS temp
+				)`
+
+			result := c.db.Exec(deleteSQL, topic.TopicName, cutoffTime, cleanupBatchSize)
+			if result.Error != nil {
+				return fmt.Errorf("failed to delete expired messages: %v", result.Error)
 			}
 
-			if len(messageIDs) == 0 {
-				break // 没有更多过期消息
-			}
-
-			// 删除这批消息
-			err = c.db.Delete(&types.Message{}, messageIDs).Error
-			if err != nil {
-				return fmt.Errorf("failed to delete expired messages: %v", err)
+			// 如果删除的行数少于批次大小，说明没有更多过期消息了
+			if result.RowsAffected < int64(cleanupBatchSize) {
+				break
 			}
 
 			// 检查是否需要停止

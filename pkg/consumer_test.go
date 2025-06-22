@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -19,12 +18,7 @@ import (
 
 // Helper function to sort PartitionInfo slices for consistent comparison
 func sortPartitions(partitions []types.PartitionInfo) {
-	sort.Slice(partitions, func(i, j int) bool {
-		if partitions[i].Topic != partitions[j].Topic {
-			return partitions[i].Topic < partitions[j].Topic
-		}
-		return partitions[i].Partition < partitions[j].Partition
-	})
+	SortPartitionsByTopicAndPartition(partitions)
 }
 
 func TestFindRevokedPartitions(t *testing.T) {
@@ -252,16 +246,17 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer1Conf.GroupID, consumer1.id).First(&heartbeat1).Error
 	require.NoError(t, err)
 
+	var assignedPartitions1List []types.PartitionInfo
+	err = json.Unmarshal(heartbeat1.AssignedPartitions, &assignedPartitions1List)
+	require.NoError(t, err)
+
 	assignedPartitions1 := make(map[string][]uint)
-	var aa []types.PartitionInfo
-	err = json.Unmarshal([]byte(heartbeat1.AssignedPartitions), &aa)
-	for _, p := range aa {
+	for _, p := range assignedPartitions1List {
 		if _, ok := assignedPartitions1[p.Topic]; !ok {
 			assignedPartitions1[p.Topic] = make([]uint, 0)
 		}
 		assignedPartitions1[p.Topic] = append(assignedPartitions1[p.Topic], p.Partition)
 	}
-	require.NoError(t, err)
 	assert.Len(t, assignedPartitions1[testTopic.TopicName], 4)
 
 	// 创建第二个消费者
@@ -294,13 +289,29 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer2Conf.GroupID, consumer2.id).First(&heartbeat2After).Error
 	require.NoError(t, err)
 
+	var assignedPartitions1AfterList []types.PartitionInfo
+	err = json.Unmarshal(heartbeat1After.AssignedPartitions, &assignedPartitions1AfterList)
+	require.NoError(t, err)
+
 	assignedPartitions1After := make(map[string][]uint)
-	err = json.Unmarshal([]byte(heartbeat1After.AssignedPartitions), &assignedPartitions1After)
+	for _, p := range assignedPartitions1AfterList {
+		if _, ok := assignedPartitions1After[p.Topic]; !ok {
+			assignedPartitions1After[p.Topic] = make([]uint, 0)
+		}
+		assignedPartitions1After[p.Topic] = append(assignedPartitions1After[p.Topic], p.Partition)
+	}
+
+	var assignedPartitions2AfterList []types.PartitionInfo
+	err = json.Unmarshal(heartbeat2After.AssignedPartitions, &assignedPartitions2AfterList)
 	require.NoError(t, err)
 
 	assignedPartitions2After := make(map[string][]uint)
-	err = json.Unmarshal([]byte(heartbeat2After.AssignedPartitions), &assignedPartitions2After)
-	require.NoError(t, err)
+	for _, p := range assignedPartitions2AfterList {
+		if _, ok := assignedPartitions2After[p.Topic]; !ok {
+			assignedPartitions2After[p.Topic] = make([]uint, 0)
+		}
+		assignedPartitions2After[p.Topic] = append(assignedPartitions2After[p.Topic], p.Partition)
+	}
 
 	// 验证分区被平均分配
 	assert.Len(t, assignedPartitions1After[testTopic.TopicName], 2)
@@ -327,9 +338,17 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer1Conf.GroupID, consumer1.id).First(&heartbeat1Final).Error
 	require.NoError(t, err)
 
-	assignedPartitions1Final := make(map[string][]uint)
-	err = json.Unmarshal([]byte(heartbeat1Final.AssignedPartitions), &assignedPartitions1Final)
+	var assignedPartitions1FinalList []types.PartitionInfo
+	err = json.Unmarshal(heartbeat1Final.AssignedPartitions, &assignedPartitions1FinalList)
 	require.NoError(t, err)
+
+	assignedPartitions1Final := make(map[string][]uint)
+	for _, p := range assignedPartitions1FinalList {
+		if _, ok := assignedPartitions1Final[p.Topic]; !ok {
+			assignedPartitions1Final[p.Topic] = make([]uint, 0)
+		}
+		assignedPartitions1Final[p.Topic] = append(assignedPartitions1Final[p.Topic], p.Partition)
+	}
 	assert.Len(t, assignedPartitions1Final[testTopic.TopicName], 4)
 }
 
