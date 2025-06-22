@@ -56,6 +56,7 @@ type Consumer struct {
 
 	// State for rebalancing and polling
 	mu               sync.RWMutex
+	rebalancing      atomic.Bool // True if a rebalance is currently in progress
 	generationID     uint
 	assignment       map[string][]uint // topic -> partitions
 	committedOffsets map[types.PartitionInfo]int64
@@ -92,15 +93,9 @@ func (c *Consumer) Subscribe(topics ...string) error {
 	c.topics = topics
 	c.mu.Unlock()
 
-	// Start the heartbeat loop on subscribe, which allows the consumer to join the group
-	// even if Poll() is not called immediately.
+	// Start the heartbeat loop on subscribe. The loop itself will handle
+	// registration and all subsequent state reconciliation.
 	if c.heartbeatStarted.CompareAndSwap(false, true) {
-		// Register the consumer immediately.
-		if err := c.register(); err != nil {
-			// If we can't even register, stop everything.
-			c.heartbeatStarted.Store(false)
-			return fmt.Errorf("initial registration failed: %w", err)
-		}
 		c.wg.Add(1)
 		go c.heartbeatLoop()
 	}
@@ -141,14 +136,9 @@ func (c *Consumer) Close() {
 // Poll fetches messages for the subscribed topics and partitions.
 // It is the core of the consumer's logic.
 func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
-	// Check for rebalance and update assignments if necessary.
-	rebalanced, err := c.ensureAssignment()
-	if err != nil {
-		return nil, fmt.Errorf("failed to ensure partition assignment: %w", err)
-	}
-	if rebalanced {
-		// Signal to the user that a rebalance occurred and their partition set may have changed.
-		// They should not process messages from this Poll call.
+	// If a rebalance is in progress, signal to the user and return immediately.
+	// The heartbeat loop is responsible for handling the rebalance process.
+	if c.rebalancing.Load() {
 		return nil, &dberrors.ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 
@@ -255,55 +245,149 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		return nil, fmt.Errorf("all fetch attempts failed, last error: %w", lastErr)
 	}
 
-	return toConsumerMessages(allMessages), nil
+	return toConsumerMessages(allMessages), lastErr
 }
 
-// heartbeatLoop is the background goroutine that periodically sends heartbeats.
+// heartbeatLoop is the core background process for the consumer. It is responsible for:
+// 1. Periodically sending heartbeats to the coordinator.
+// 2. Fetching its latest assignment and generation ID.
+// 3. Triggering and executing the rebalance protocol if a change is detected.
+// This decouples the network I/O of state management from the main Poll() loop.
 func (c *Consumer) heartbeatLoop() {
 	defer c.wg.Done()
-	log.Printf("Heartbeat loop started for consumer %s", c.id)
+
+	// Perform an initial state reconciliation before starting the ticker.
+	c.reconcileState(context.Background())
 
 	ticker := time.NewTicker(c.config.HeartbeatInterval)
 	defer ticker.Stop()
 
-	// The initial registration is done in Subscribe. This loop just sends lightweight heartbeats.
 	for {
 		select {
-		case <-c.stopCh:
-			log.Printf("Heartbeat loop stopped for consumer %s.", c.id)
-			return
 		case <-ticker.C:
-			if err := dal.UpdateHeartbeat(context.Background(), c.db, c.config.GroupID, c.id); err != nil {
-				log.Printf("ERROR: heartbeat failed for consumer %s: %v", c.id, err)
-			}
+			// The context here should be short-lived for this specific task.
+			ctx, cancel := context.WithTimeout(context.Background(), c.config.HeartbeatInterval)
+			c.reconcileState(ctx)
+			cancel()
+		case <-c.stopCh:
+			return
 		}
 	}
 }
 
-// register sends the consumer's initial registration, including subscriptions.
-func (c *Consumer) register() error {
+// reconcileState performs a single cycle of sending a heartbeat, fetching the
+// consumer's current state, and handling a rebalance if necessary.
+func (c *Consumer) reconcileState(ctx context.Context) {
+	// Register/update heartbeat first.
+	if err := c.register(ctx); err != nil {
+		log.Printf("ERROR: failed to send heartbeat for consumer %s: %v", c.id, err)
+		return // Don't proceed if we can't even heartbeat.
+	}
+
+	// Fetch our own state back from the database.
+	hb, err := dal.GetHeartbeat(ctx, c.db, c.config.GroupID, c.id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// This can happen in rare race conditions where we are kicked out
+			// between our heartbeat and fetch. The next heartbeat will re-register.
+			log.Printf("WARN: could not find our own heartbeat for consumer %s, will retry.", c.id)
+		} else {
+			log.Printf("ERROR: failed to fetch consumer state for %s: %v", c.id, err)
+		}
+		return
+	}
+
 	c.mu.RLock()
-	subsJSON, err := json.Marshal(c.topics)
+	currentGenID := c.generationID
+	c.mu.RUnlock()
+
+	// Check if a rebalance is needed.
+	if hb.GenerationID == currentGenID {
+		return // No change, nothing to do.
+	}
+
+	// ---- REBALANCE REQUIRED ----
+	log.Printf("Rebalance detected for consumer %s. New Generation ID: %d", c.id, hb.GenerationID)
+	c.rebalancing.Store(true)
+	defer c.rebalancing.Store(false)
+
+	newPartitions, err := c.parsePartitions(hb.AssignedPartitions)
+	if err != nil {
+		log.Printf("ERROR: failed to parse new partition assignment for consumer %s: %v", c.id, err)
+		return
+	}
+
+	// 1. Find which partitions were revoked.
+	revokedPartitions := c.findRevokedPartitions(newPartitions)
+
+	// 2. Commit offsets for revoked partitions to ensure no work is lost.
+	// Use the new generation ID for the commit to prevent stale commits.
+	if len(revokedPartitions) > 0 {
+		log.Printf("Consumer %s revoking partitions: %v", c.id, revokedPartitions)
+		if err := c.commitOffsets(ctx, revokedPartitions, hb.GenerationID); err != nil {
+			log.Printf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err)
+			// Continue with rebalance even if commit fails.
+		}
+	}
+
+	// 3. Clear internal state and fetch offsets for the new assignment.
+	if err := c.clearAndFetchOffsetsForNewAssignment(newPartitions); err != nil {
+		log.Printf("ERROR: failed to fetch offsets for new assignment on consumer %s: %v", c.id, err)
+		return // This is a fatal error for the rebalance.
+	}
+
+	// 4. Update Redis subscriptions if enabled.
+	if c.config.NotificationEnabled && c.redis != nil {
+		// This can be done concurrently, but for simplicity, we do it inline.
+		// A more advanced implementation could manage this more smoothly.
+		var oldPartitionsList []types.PartitionInfo
+		c.mu.RLock()
+		for topic, partitions := range c.assignment {
+			for _, pID := range partitions {
+				oldPartitionsList = append(oldPartitionsList, types.PartitionInfo{Topic: topic, Partition: pID})
+			}
+		}
+		c.mu.RUnlock()
+
+		var newPartitionsList []types.PartitionInfo
+		for topic, parts := range newPartitions {
+			for _, p := range parts {
+				newPartitionsList = append(newPartitionsList, types.PartitionInfo{Topic: topic, Partition: p})
+			}
+		}
+
+		c.unsubscribeFromChannels(oldPartitionsList)
+		c.subscribeToChannels(newPartitionsList)
+	}
+
+	// 5. Atomically update the consumer's state.
+	c.mu.Lock()
+	c.generationID = hb.GenerationID
+	c.assignment = newPartitions
+	c.mu.Unlock()
+
+	log.Printf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions)
+}
+
+// register sends a heartbeat to the coordinator, effectively registering or
+// updating the consumer's liveness and topic subscription information.
+func (c *Consumer) register(ctx context.Context) error {
+	c.mu.RLock()
+	topicsData, err := json.Marshal(c.topics)
 	c.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("failed to marshal subscribed topics: %w", err)
 	}
 
-	heartbeat := &types.ConsumerHeartbeat{
-		GroupID:            c.config.GroupID,
-		ConsumerID:         c.id,
-		SubscribedTopics:   subsJSON,
-		AssignedPartitions: []byte(`{}`), // Start with empty assignment
-		LastHeartbeat:      time.Now(),
-	}
-	return dal.RegisterConsumer(context.Background(), c.db, heartbeat)
+	// Heartbeat also serves as registration. It's an upsert operation.
+	return dal.UpsertHeartbeat(ctx, c.db, c.config.GroupID, c.id, topicsData)
 }
 
 // CommitSync commits the offsets for all currently assigned partitions.
 // This is a blocking operation.
 func (c *Consumer) CommitSync() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	// Merge polled offsets into committed offsets before committing.
 	for p, offset := range c.polledOffsets {
@@ -315,97 +399,35 @@ func (c *Consumer) CommitSync() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for p, offset := range c.committedOffsets {
-		if err := dal.CommitOffset(ctx, c.db, c.config.GroupID, c.generationID, p, offset); err != nil {
-			// In a real scenario, we might retry or collect errors.
-			return fmt.Errorf("failed to commit offset for partition %v: %w", p, err)
-		}
-	}
-	return nil
+	return c.commitOffsets(ctx, c.getAssignedPartitions(), c.generationID)
 }
 
-// ensureAssignment checks if the consumer's partition assignment is up to date.
-// It returns true if a rebalance just happened.
-func (c *Consumer) ensureAssignment() (bool, error) {
-	hb, err := dal.GetHeartbeat(context.Background(), c.db, c.config.GroupID, c.id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// This can happen if the coordinator hasn't processed the first heartbeat yet.
-			// Not an error, but no assignment is available yet.
-			return false, nil
-		}
-		return false, fmt.Errorf("could not get own heartbeat: %w", err)
-	}
-
-	isRebalance := hb.GenerationID != c.generationID
-	if !isRebalance {
-		return false, nil // No rebalance needed.
-	}
-
-	// Rebalance is needed. All information (new generation, new assignment) is in the heartbeat record.
-	log.Printf("Rebalance detected for consumer %s. Old gen: %d, New gen: %d", c.id, c.generationID, hb.GenerationID)
-
-	newPartitionsMap, err := c.parsePartitions(hb.AssignedPartitions)
-	if err != nil {
-		// If we can't parse our new assignment, it's a critical failure.
-		return false, fmt.Errorf("failed to parse new assignment: %w", err)
-	}
-
-	// Commit offsets for revoked partitions in a transaction
-	err = c.db.Transaction(func(tx *gorm.DB) error {
-		revokedPartitions := c.findRevokedPartitions(newPartitionsMap)
-		if len(revokedPartitions) > 0 {
-			// Unsubscribe from Redis channels for revoked partitions
-			c.unsubscribeFromChannels(revokedPartitions)
-
-			// CRITICAL FIX: Use the NEW generation ID for committing offsets of revoked partitions.
-			// This proves to the coordinator that this consumer is aware of the rebalance.
-			if err := c.commitOffsets(tx.Statement.Context, revokedPartitions, hb.GenerationID); err != nil {
-				return err // Rollback transaction
-			}
-		}
-		return nil // Commit transaction
-	})
-	if err != nil {
-		// Log but continue, joining the new generation is more critical.
-		log.Printf("ERROR: could not commit offsets for revoked partitions: %v", err)
-	}
-
-	// Update internal state
-	c.mu.Lock()
-	c.generationID = hb.GenerationID
-	c.assignment = newPartitionsMap
-	if err := c.clearAndFetchOffsetsForNewAssignment(); err != nil {
-		// This is a critical failure, as we cannot determine the correct starting point.
-		c.mu.Unlock()
-		return false, fmt.Errorf("failed to refresh offsets for new assignment: %w", err)
-	}
-	c.mu.Unlock()
-
-	// Subscribe to new channels
-	c.subscribeToChannels(c.getAssignedPartitions())
-
-	return true, nil
-}
-
-// commitOffsets commits the offsets for revoked partitions.
+// commitOffsets handles the database logic for committing a batch of offsets.
 func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	offsetsToCommit := make(map[types.PartitionInfo]int64)
 	for _, p := range partitions {
-		if offset, ok := c.committedOffsets[p]; ok {
-			if err := dal.CommitOffset(ctx, c.db, c.config.GroupID, generationID, p, offset); err != nil {
-				return fmt.Errorf("failed to commit offset for revoked partition %v: %w", p, err)
-			}
+		// Commit the polled offset if it exists, otherwise, there's nothing new to commit for this partition.
+		if offset, ok := c.polledOffsets[p]; ok {
+			c.committedOffsets[p] = offset
+			offsetsToCommit[p] = offset
 		}
 	}
-	return nil
+
+	if len(offsetsToCommit) == 0 {
+		return nil
+	}
+	return dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
 }
 
 // --- Redis Notification Helpers ---
 
 func toChannelNames(partitions []types.PartitionInfo) []string {
-	channels := make([]string, len(partitions))
-	for i, p := range partitions {
-		channels[i] = fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition)
+	channels := make([]string, 0, len(partitions))
+	for _, p := range partitions {
+		channels = append(channels, fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition))
 	}
 	return channels
 }
@@ -450,6 +472,12 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	} else {
 		log.Printf("Consumer %s unsubscribed from channels: %v", c.id, channels)
 	}
+
+	if c.pubsub != nil {
+		c.pubsub.Close()
+		c.pubsub = nil
+	}
+	c.muSub.Unlock()
 }
 
 // --- Helper methods ---
@@ -466,60 +494,71 @@ func (c *Consumer) getAssignedPartitions() []types.PartitionInfo {
 	return partitions
 }
 
-func (c *Consumer) clearAndFetchOffsetsForNewAssignment() error {
-	newPartitionsList := c.getAssignedPartitions()
-	c.committedOffsets = make(map[types.PartitionInfo]int64) // Clear old offsets
-	c.polledOffsets = make(map[types.PartitionInfo]int64)    // Also clear polled offsets
+// clearAndFetchOffsetsForNewAssignment clears old state and fetches committed offsets for a new assignment.
+// It must be called after the new assignment has been set on the consumer.
+func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string][]uint) error {
+	c.mu.Lock()
+	c.polledOffsets = make(map[types.PartitionInfo]int64)
+	c.committedOffsets = make(map[types.PartitionInfo]int64)
+	c.assignment = newAssignment
+	partitionsToFetch := c.getAssignedPartitions()
+	c.mu.Unlock()
 
-	// Fetch committed offsets for the new assignment.
-	if len(newPartitionsList) > 0 {
-		fetchedOffsets, err := dal.GetCommittedOffsets(context.Background(), c.db, c.config.GroupID, newPartitionsList)
-		if err != nil {
-			log.Printf("ERROR: failed to fetch committed offsets for new assignment: %v", err)
-			return fmt.Errorf("failed to fetch committed offsets for new assignment: %w", err)
-		}
-
-		for p, offset := range fetchedOffsets {
-			c.committedOffsets[p] = offset
-		}
+	if len(partitionsToFetch) == 0 {
+		return nil
 	}
+
+	// This now happens in the background, so use a background context.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	fetchedOffsets, err := dal.GetCommittedOffsets(ctx, c.db, c.config.GroupID, partitionsToFetch)
+	if err != nil {
+		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
+	}
+
+	c.mu.Lock()
+	c.committedOffsets = fetchedOffsets
+	c.mu.Unlock()
+
 	return nil
 }
 
+// findRevokedPartitions calculates which partitions are present in the old assignment
+// but not in the new one.
 func (c *Consumer) findRevokedPartitions(newPartitions map[string][]uint) []types.PartitionInfo {
+	oldSet := make(map[types.PartitionInfo]struct{})
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	for topic, partitions := range c.assignment {
+		for _, pID := range partitions {
+			oldSet[types.PartitionInfo{Topic: topic, Partition: pID}] = struct{}{}
+		}
+	}
+	c.mu.RUnlock()
+
+	newSet := make(map[types.PartitionInfo]struct{})
+	for topic, partitions := range newPartitions {
+		for _, pID := range partitions {
+			newSet[types.PartitionInfo{Topic: topic, Partition: pID}] = struct{}{}
+		}
+	}
+
 	var revoked []types.PartitionInfo
-
-	for topic, currentPartitions := range c.assignment {
-		newParts, ok := newPartitions[topic]
-		if !ok { // Topic is no longer assigned
-			for _, p := range currentPartitions {
-				revoked = append(revoked, types.PartitionInfo{Topic: topic, Partition: p})
-			}
-			continue
-		}
-
-		newPartsSet := make(map[uint]struct{})
-		for _, p := range newParts {
-			newPartsSet[p] = struct{}{}
-		}
-
-		for _, p := range currentPartitions {
-			if _, exists := newPartsSet[p]; !exists {
-				revoked = append(revoked, types.PartitionInfo{Topic: topic, Partition: p})
-			}
+	for p := range oldSet {
+		if _, ok := newSet[p]; !ok {
+			revoked = append(revoked, p)
 		}
 	}
 	return revoked
 }
 
+// parsePartitions decodes the JSON partition assignment data.
 func (c *Consumer) parsePartitions(data []byte) (map[string][]uint, error) {
-	var parsed map[string][]uint
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal partitions json: %w", err)
+	var partitions map[string][]uint
+	if err := json.Unmarshal(data, &partitions); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal partition assignment: %w", err)
 	}
-	return parsed, nil
+	return partitions, nil
 }
 
 func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
@@ -564,10 +603,8 @@ func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 // resetNotificationState deletes the notification state key in Redis, allowing a subsequent
 // producer to trigger a new notification. This is part of the "Intelligent Notification Coalescing" pattern.
 func (c *Consumer) resetNotificationState(ctx context.Context, p types.PartitionInfo) {
-	stateKey := fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
-	if err := c.redis.Del(ctx, stateKey).Err(); err != nil {
-		log.Printf("ERROR: failed to reset notification state for partition %v: %v", p, err)
-	} else {
-		// log.Printf("Notification state reset for partition %v", p)
+	key := fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
+	if err := c.redis.Del(ctx, key).Err(); err != nil {
+		log.Printf("WARN: failed to reset notification state for %v: %v", p, err)
 	}
 }

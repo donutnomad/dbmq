@@ -2,6 +2,7 @@ package types
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -14,19 +15,44 @@ type Topic struct {
 	CreatedAt time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3)"`
 }
 
+// GetConfig retrieves a configuration value from the topic's JSON config.
+// It returns the value as a float64 and a boolean indicating if it was found.
+func (t *Topic) GetConfig(key string) (float64, bool) {
+	if !t.Configs.Valid {
+		return 0, false
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(t.Configs.String), &config); err != nil {
+		return 0, false // Invalid JSON
+	}
+
+	val, ok := config[key]
+	if !ok {
+		return 0, false
+	}
+
+	// JSON numbers are unmarshaled as float64
+	if num, ok := val.(float64); ok {
+		return num, true
+	}
+
+	return 0, false
+}
+
 func (t *Topic) TableName() string {
 	return "mq_topics"
 }
 
 // Message corresponds to the mq_messages table. It holds the core message data.
 type Message struct {
-	ID         int64          `gorm:"primaryKey;autoIncrement"`
-	Topic      string         `gorm:"not null"`
-	Partition  uint           `gorm:"not null"`
-	MessageKey sql.NullString `gorm:"index"`
-	Headers    []byte         `gorm:"type:json"`
-	Body       []byte         `gorm:"not null"`
-	CreatedAt  time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_consume_pull,priority:3"`
+	ID         int64  `gorm:"primaryKey;autoIncrement"`
+	Topic      string `gorm:"not null;index:idx_consume_pull,priority:1"`
+	Partition  uint   `gorm:"not null;index:idx_consume_pull,priority:2"`
+	MessageKey sql.NullString
+	Headers    []byte    `gorm:"type:json"`
+	Body       []byte    `gorm:"not null"`
+	CreatedAt  time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_consume_pull,priority:3;index:idx_created_at"`
 }
 
 func (m *Message) TableName() string {
@@ -39,7 +65,7 @@ type ConsumerGroupGeneration struct {
 	GroupID      string `gorm:"primaryKey"`
 	GenerationID uint   `gorm:"not null"`
 	ProtocolType string `gorm:"not null;default:'consumer'"`
-	LeaderID     string
+	LeaderID     sql.NullString
 	UpdatedAt    time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"`
 }
 
@@ -55,7 +81,7 @@ type ConsumerHeartbeat struct {
 	GenerationID       uint      `gorm:"not null"`
 	SubscribedTopics   []byte    `gorm:"type:json;not null"`
 	AssignedPartitions []byte    `gorm:"type:json;not null"`
-	LastHeartbeat      time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index"`
+	LastHeartbeat      time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_last_heartbeat"`
 }
 
 func (c *ConsumerHeartbeat) TableName() string {
@@ -70,7 +96,7 @@ type ConsumerGroupOffset struct {
 	Partition       uint   `gorm:"primaryKey"`
 	CommittedOffset int64  `gorm:"not null"`
 	GenerationID    uint   `gorm:"not null"`
-	Metadata        string
+	Metadata        sql.NullString
 	UpdatedAt       time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"`
 }
 

@@ -503,28 +503,30 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 		return assignments
 	}
 
-	// Sort consumers by ID for deterministic assignment
+	// --- CRITICAL: Sort for deterministic assignment ---
+	// Sort consumers by their ID
 	sort.Slice(consumers, func(i, j int) bool {
 		return consumers[i].ConsumerID < consumers[j].ConsumerID
 	})
 
-	// Sort partitions by topic then partition number
+	// Sort partitions by topic then by partition number
 	sort.Slice(partitions, func(i, j int) bool {
 		if partitions[i].Topic != partitions[j].Topic {
 			return partitions[i].Topic < partitions[j].Topic
 		}
 		return partitions[i].Partition < partitions[j].Partition
 	})
+	// --- End of sorting ---
 
-	consumerIDs := make([]string, len(consumers))
-	for i, c := range consumers {
-		consumerIDs[i] = c.ConsumerID
-		assignments[c.ConsumerID] = make([]types.PartitionInfo, 0)
+	consumerIDs := make([]string, 0, len(consumers))
+	for _, consumer := range consumers {
+		consumerIDs = append(consumerIDs, consumer.ConsumerID)
+		assignments[consumer.ConsumerID] = []types.PartitionInfo{}
 	}
 
+	// Round-robin assignment
 	for i, p := range partitions {
-		consumerIndex := i % len(consumerIDs)
-		consumerID := consumerIDs[consumerIndex]
+		consumerID := consumerIDs[i%len(consumerIDs)]
 		assignments[consumerID] = append(assignments[consumerID], p)
 	}
 
