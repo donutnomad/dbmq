@@ -501,6 +501,9 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	require.NoError(t, consumer.Subscribe(testTopic.TopicName))
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 500*time.Millisecond)
 
+	// 等待额外的时间确保Redis订阅完全建立
+	time.Sleep(2 * time.Second)
+
 	// 4. 创建生产者（启用通知）
 	producer, err := NewProducer(ProducerConfig{
 		DB:                  dbClient,
@@ -517,6 +520,9 @@ func TestIntegration_RedisNotification(t *testing.T) {
 		Value: []byte("test-value"),
 	})
 	require.NoError(t, err)
+
+	// 等待一小段时间让Redis通知传播
+	time.Sleep(100 * time.Millisecond)
 
 	// 6. 验证消费者可以接收消息（使用较短的超时）
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

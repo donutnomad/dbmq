@@ -525,7 +525,6 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 		c.pubsub.Close()
 		c.pubsub = nil
 	}
-	c.muSub.Unlock()
 }
 
 // --- Helper methods ---

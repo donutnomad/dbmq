@@ -253,7 +253,14 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 	require.NoError(t, err)
 
 	assignedPartitions1 := make(map[string][]uint)
-	err = json.Unmarshal([]byte(heartbeat1.AssignedPartitions), &assignedPartitions1)
+	var aa []types.PartitionInfo
+	err = json.Unmarshal([]byte(heartbeat1.AssignedPartitions), &aa)
+	for _, p := range aa {
+		if _, ok := assignedPartitions1[p.Topic]; !ok {
+			assignedPartitions1[p.Topic] = make([]uint, 0)
+		}
+		assignedPartitions1[p.Topic] = append(assignedPartitions1[p.Topic], p.Partition)
+	}
 	require.NoError(t, err)
 	assert.Len(t, assignedPartitions1[testTopic.TopicName], 4)
 
