@@ -1,4 +1,4 @@
-package dbmq
+package pkg
 
 import (
 	"context"

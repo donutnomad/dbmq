@@ -1,7 +1,7 @@
-package dbmq
+package pkg
 
 import (
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 	"reflect"
 	"sort"
 	"testing"

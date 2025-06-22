@@ -1,11 +1,11 @@
 //go:build integration
 
-package dbmq
+package pkg
 
 import (
 	"context"
 	"database/sql"
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 	"fmt"
 	"log"
 	"testing"

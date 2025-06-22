@@ -1,10 +1,10 @@
-package dbmq
+package pkg
 
 import (
 	"context"
 	"dbmq/internal/dal"
-	dberrors "dbmq/pkg/dbmq/errors"
-	"dbmq/pkg/dbmq/types"
+	dberrors "dbmq/pkg/errors"
+	"dbmq/pkg/types"
 	"encoding/json"
 	"errors"
 	"fmt"

@@ -1,8 +1,8 @@
-package dbmq
+package pkg
 
 import (
 	"context"
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 	"encoding/json"
 	"fmt"
 	"reflect"

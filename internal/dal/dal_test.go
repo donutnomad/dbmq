@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"testing"
 
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"

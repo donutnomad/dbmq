@@ -2,7 +2,7 @@ package dal
 
 import (
 	"context"
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 	"errors"
 	"strings"
 	"time"

@@ -1,9 +1,9 @@
-package dbmq
+package pkg
 
 import (
 	"context"
 	"dbmq/internal/dal"
-	"dbmq/pkg/dbmq/types"
+	"dbmq/pkg/types"
 	"encoding/json"
 	"fmt"
 	"log"
