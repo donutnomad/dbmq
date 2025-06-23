@@ -2,17 +2,17 @@ package pkg
 
 import (
 	"context"
-	dberrors "dbmq/pkg/errors"
-	"dbmq/pkg/types"
 	"encoding/json"
 	"errors"
 	"fmt"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dal"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"

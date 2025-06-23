@@ -4,8 +4,8 @@ package pkg
 
 import (
 	"context"
-	"dbmq/pkg/types"
 	"fmt"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"log"
 	"testing"
 	"time"
@@ -54,7 +54,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	}
 	consumer, err := NewConsumer(consumerConf)
 	require.NoError(t, err)
-	err = consumer.Subscribe(topicReq.Name)
+	err = consumer.SubscribeTopics(topicReq.Name)
 	require.NoError(t, err)
 	defer consumer.Close()
 
@@ -190,9 +190,9 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	defer consumer2.Close()
 
 	// 订阅主题
-	require.NoError(t, consumer1_1.Subscribe(topicReq.Name))
-	require.NoError(t, consumer1_2.Subscribe(topicReq.Name))
-	require.NoError(t, consumer2.Subscribe(topicReq.Name))
+	require.NoError(t, consumer1_1.SubscribeTopics(topicReq.Name))
+	require.NoError(t, consumer1_2.SubscribeTopics(topicReq.Name))
+	require.NoError(t, consumer2.SubscribeTopics(topicReq.Name))
 
 	// 等待所有消费者准备就绪
 	consumers := []*Consumer{consumer1_1, consumer1_2, consumer2}
@@ -296,7 +296,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
-	require.NoError(t, consumer1.Subscribe(topicReq.Name))
+	require.NoError(t, consumer1.SubscribeTopics(topicReq.Name))
 
 	// 等待消费者准备就绪
 	require.Eventually(t, consumer1.IsReady, 10*time.Second, 500*time.Millisecond)
@@ -340,7 +340,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer consumer2.Close()
-	require.NoError(t, consumer2.Subscribe(topicReq.Name))
+	require.NoError(t, consumer2.SubscribeTopics(topicReq.Name))
 
 	// 等待重新平衡
 	time.Sleep(3 * time.Second)
@@ -517,7 +517,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer.Close()
 
-	require.NoError(t, consumer.Subscribe(topicReq.Name))
+	require.NoError(t, consumer.SubscribeTopics(topicReq.Name))
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 500*time.Millisecond)
 
 	// 等待额外的时间确保Redis订阅完全建立

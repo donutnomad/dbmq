@@ -2,10 +2,10 @@ package dal
 
 import (
 	"context"
-	"dbmq/pkg/types"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"strings"
 	"time"
 

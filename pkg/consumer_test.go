@@ -2,9 +2,9 @@ package pkg
 
 import (
 	"context"
-	"dbmq/pkg/types"
 	"encoding/json"
 	"fmt"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"reflect"
 	"sync"
 	"testing"
@@ -170,7 +170,7 @@ func TestConsumerHeartbeat(t *testing.T) {
 	defer consumer.Close()
 
 	// 订阅Topic
-	err = consumer.Subscribe(testTopic.TopicName)
+	err = consumer.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待消费者准备就绪
@@ -234,7 +234,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer1.Close()
 
-	err = consumer1.Subscribe(testTopic.TopicName)
+	err = consumer1.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待第一个消费者准备就绪
@@ -272,7 +272,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer2.Close()
 
-	err = consumer2.Subscribe(testTopic.TopicName)
+	err = consumer2.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待第二个消费者准备就绪和再均衡完成
@@ -419,7 +419,7 @@ func TestConsumerOffsetCommitAndRestore(t *testing.T) {
 	}
 	consumer1, err := NewConsumer(consumer1Conf)
 	require.NoError(t, err)
-	err = consumer1.Subscribe(testTopic.TopicName)
+	err = consumer1.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待消费者准备就绪
@@ -464,7 +464,7 @@ func TestConsumerOffsetCommitAndRestore(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer2.Close()
 
-	err = consumer2.Subscribe(testTopic.TopicName)
+	err = consumer2.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待消费者准备就绪
@@ -559,7 +559,7 @@ func TestConsumerOffsetReset(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer.Close()
 
-	err = consumer.Subscribe(testTopic.TopicName)
+	err = consumer.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待消费者准备就绪
@@ -589,7 +589,7 @@ func TestConsumerOffsetReset(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer.Close()
 
-	err = consumer.Subscribe(testTopic.TopicName)
+	err = consumer.SubscribeTopics(testTopic.TopicName)
 	require.NoError(t, err)
 
 	// 等待消费者准备就绪

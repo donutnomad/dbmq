@@ -2,8 +2,8 @@
 package main
 
 import (
-	"dbmq/examples"
 	"fmt"
+	"github.com/donutnomad/dbmq/examples"
 	"os"
 	"strings"
 )

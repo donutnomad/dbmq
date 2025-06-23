@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"dbmq/internal/dal"
-	"dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/pkg/types"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"

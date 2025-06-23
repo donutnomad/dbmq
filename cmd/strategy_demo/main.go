@@ -1,7 +1,7 @@
 package main
 
 import (
-	"dbmq/examples"
+	"github.com/donutnomad/dbmq/examples"
 )
 
 func main() {

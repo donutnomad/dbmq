@@ -4,12 +4,12 @@ package examples
 
 import (
 	"context"
-	"dbmq/internal/db"
-	"dbmq/pkg"
-	dberrors "dbmq/pkg/errors"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/pkg"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 	"log"
 	"sync"
 	"time"
@@ -198,17 +198,17 @@ func SuperDemo() {
 
 	// 6. 启动消费者订阅
 	fmt.Println("🔄 启动消费者订阅...")
-	err = consumer001.Subscribe(topicName)
+	err = consumer001.SubscribeTopics(topicName)
 	if err != nil {
 		log.Fatalf("❌ 消费者001订阅失败: %v", err)
 	}
 
-	err = consumer002.Subscribe(topicName)
+	err = consumer002.SubscribeTopics(topicName)
 	if err != nil {
 		log.Fatalf("❌ 消费者002订阅失败: %v", err)
 	}
 
-	err = consumer003.Subscribe(topicName)
+	err = consumer003.SubscribeTopics(topicName)
 	if err != nil {
 		log.Fatalf("❌ 消费者003订阅失败: %v", err)
 	}
@@ -358,23 +358,6 @@ func produceOrderMessages(ctx context.Context, producer *pkg.Producer, topicName
 // consumeMessages 消费者消费消息循环
 func consumeMessages(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
 	fmt.Printf("📥 [%s] %s 开始消费消息...\n", consumerName, serviceName)
-
-	// 等待消费者准备就绪
-	readyCheckCount := 0
-	for !consumer.IsReady() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(500 * time.Millisecond):
-			readyCheckCount++
-			if readyCheckCount%10 == 0 { // 每5秒打印一次
-				fmt.Printf("⏳ [%s] 等待消费者准备就绪... (已等待 %d 秒)\n", consumerName, readyCheckCount/2)
-			}
-		}
-	}
-
-	fmt.Printf("✅ [%s] 消费者已就绪，开始拉取消息\n", consumerName)
-
 	for {
 		select {
 		case <-ctx.Done():

@@ -1,4 +1,4 @@
-module dbmq
+module github.com/donutnomad/dbmq
 
 go 1.24
 

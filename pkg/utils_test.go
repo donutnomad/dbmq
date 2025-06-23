@@ -1,7 +1,7 @@
 package pkg
 
 import (
-	"dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"reflect"
 	"testing"
 )

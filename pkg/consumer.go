@@ -2,9 +2,6 @@ package pkg
 
 import (
 	"context"
-	"dbmq/internal/dal"
-	dberrors "dbmq/pkg/errors"
-	"dbmq/pkg/types"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +9,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/dal"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
+	"github.com/donutnomad/dbmq/pkg/types"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -130,10 +131,10 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	return consumer, nil
 }
 
-// Subscribe 注册消费者要监听的Topic列表
+// SubscribeTopics 注册消费者要监听的Topic列表
 // 必须在第一次调用Poll之前调用
 // 同时触发消费者加入消费组并开始心跳
-func (c *Consumer) Subscribe(topics ...string) error {
+func (c *Consumer) SubscribeTopics(topics ...string) error {
 	c.mu.Lock()
 	c.topics = topics
 	c.mu.Unlock()

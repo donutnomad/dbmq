@@ -3,8 +3,8 @@ package pkg
 import (
 	"context"
 	"database/sql"
-	"dbmq/pkg/errors"
-	"dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/pkg/errors"
+	"github.com/donutnomad/dbmq/pkg/types"
 	"testing"
 	"time"
 

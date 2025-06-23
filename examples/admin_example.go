@@ -4,11 +4,11 @@ package examples
 
 import (
 	"context"
-	"dbmq/internal/db"
-	"dbmq/pkg"
-	dberrors "dbmq/pkg/errors"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/pkg"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 	"log"
 	"time"
 )

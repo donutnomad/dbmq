@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"dbmq/internal/db"
-	"dbmq/pkg"
-	dberrors "dbmq/pkg/errors"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/pkg"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -154,7 +154,7 @@ func demonstrateStrategy(db *gorm.DB, redis *redis.Client, topicName, strategyNa
 	defer consumer.Close()
 
 	// 订阅主题
-	err = consumer.Subscribe(topicName)
+	err = consumer.SubscribeTopics(topicName)
 	if err != nil {
 		log.Printf("❌ 订阅主题失败: %v", err)
 		return
