@@ -3,10 +3,11 @@ package pkg
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"log/slog"
+	"log"
 	"testing"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/db"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,7 @@ func setupIntegrationTest(t *testing.T) (*gorm.DB, *redis.Client) {
 
 	// Teardown function to be called at the end of the test
 	t.Cleanup(func() {
-		log / slog.Printf("Tearing down test, dropping database: %s", dbName)
+		log.Printf("Tearing down test, dropping database: %s", dbName)
 		sqlDB, _ := dbClient.DB()
 		sqlDB.Close()
 		redisClient.Close()

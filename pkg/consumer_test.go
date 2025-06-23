@@ -416,6 +416,7 @@ func TestConsumerOffsetCommitAndRestore(t *testing.T) {
 		NotificationEnabled: true,
 		Topics:              []string{testTopic.TopicName},
 		HeartbeatInterval:   500 * time.Millisecond,
+		ConsumeStrategy:     ConsumeFromEarliest, // 从最早的消息开始消费
 	}
 	consumer1, err := NewConsumer(consumer1Conf)
 	require.NoError(t, err)
@@ -459,6 +460,7 @@ func TestConsumerOffsetCommitAndRestore(t *testing.T) {
 		NotificationEnabled: true,
 		Topics:              []string{testTopic.TopicName},
 		HeartbeatInterval:   500 * time.Millisecond,
+		ConsumeStrategy:     ConsumeFromCommitted, // 从已提交的偏移量开始消费
 	}
 	consumer2, err := NewConsumer(consumer2Conf)
 	require.NoError(t, err)
@@ -554,6 +556,7 @@ func TestConsumerOffsetReset(t *testing.T) {
 		NotificationEnabled: true,
 		Topics:              []string{testTopic.TopicName},
 		HeartbeatInterval:   500 * time.Millisecond,
+		ConsumeStrategy:     ConsumeFromEarliest, // 从最早的消息开始消费
 	}
 	consumer, err := NewConsumer(consumerConf)
 	require.NoError(t, err)

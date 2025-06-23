@@ -23,23 +23,23 @@ import (
 type ConsumeStrategy int
 
 const (
+	// ConsumeFromCommitted 从已提交的偏移量开始消费，如果没有则使用Latest策略（默认）
+	ConsumeFromCommitted ConsumeStrategy = iota
 	// ConsumeFromEarliest 从最早的消息开始消费（偏移量0）
-	ConsumeFromEarliest ConsumeStrategy = iota
+	ConsumeFromEarliest
 	// ConsumeFromLatest 从最新的消息开始消费（跳过历史消息）
 	ConsumeFromLatest
-	// ConsumeFromCommitted 从已提交的偏移量开始消费，如果没有则使用Latest策略（默认）
-	ConsumeFromCommitted
 )
 
 // String 返回消费策略的字符串表示
 func (s ConsumeStrategy) String() string {
 	switch s {
+	case ConsumeFromCommitted:
+		return "committed"
 	case ConsumeFromEarliest:
 		return "earliest"
 	case ConsumeFromLatest:
 		return "latest"
-	case ConsumeFromCommitted:
-		return "committed"
 	default:
 		return "unknown"
 	}
@@ -57,6 +57,10 @@ type ConsumerConfig struct {
 	PollFetchLimit      int             // 每次Poll操作从单个分区最多拉取的消息数
 	PollFetchTimeout    time.Duration   // Poll操作中数据库查询的超时时间
 	ConsumeStrategy     ConsumeStrategy // 消费策略，决定消费者首次注册时从哪里开始消费
+
+	// 自动提交相关配置
+	EnableAutoCommit   bool          // 是否启用自动提交偏移量
+	AutoCommitInterval time.Duration // 自动提交间隔，仅在EnableAutoCommit为true时有效
 }
 
 // ConsumerMessage 消费者接收到的消息（重复定义，为了保持兼容性）
@@ -96,6 +100,10 @@ type Consumer struct {
 	polledOffsets    map[types.PartitionInfo]int64 // 最后一次拉取的偏移量
 	heartbeatStarted atomic.Bool                   // 标记心跳循环是否已启动
 
+	// 自动提交相关
+	autoCommitStarted atomic.Bool  // 标记自动提交循环是否已启动
+	lastAutoCommit    atomic.Int64 // 最后一次自动提交的时间戳
+
 	stopCh chan struct{}  // 停止信号频道
 	wg     sync.WaitGroup // 等待组，用于优雅关闭
 }
@@ -103,6 +111,7 @@ type Consumer struct {
 // NewConsumer 创建新的消费者实例
 // 如果HeartbeatInterval为0，则默认使用3秒
 // 如果ConsumeStrategy未设置，则默认使用ConsumeFromCommitted策略
+// 如果启用自动提交但未设置间隔，则默认使用5秒
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 3 * time.Second
@@ -111,6 +120,10 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	// 这与Kafka的默认行为一致：从已提交的偏移量开始，如果没有则从最新开始
 	if config.ConsumeStrategy == 0 {
 		config.ConsumeStrategy = ConsumeFromCommitted
+	}
+	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
+	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
+		config.AutoCommitInterval = 5 * time.Second
 	}
 	consumer := &Consumer{
 		config:           config,
@@ -127,6 +140,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	// 初始化原子变量
 	consumer.pubsubHealthy.Store(false)
 	consumer.lastPubsubTime.Store(time.Now().Unix())
+	consumer.lastAutoCommit.Store(time.Now().Unix())
 
 	return consumer, nil
 }
@@ -145,6 +159,12 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 		go c.heartbeatLoop()
 	}
 
+	// 如果启用了自动提交，启动自动提交循环
+	if c.config.EnableAutoCommit && c.autoCommitStarted.CompareAndSwap(false, true) {
+		c.wg.Add(1)
+		go c.autoCommitLoop()
+	}
+
 	return nil
 }
 
@@ -152,7 +172,12 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 func (c *Consumer) Close() {
 	log.Printf("Closing consumer %s...", c.id)
 	// 停止所有后台循环（例如心跳循环）
-	close(c.stopCh)
+	select {
+	case <-c.stopCh:
+		// 已经关闭了，不需要再次关闭
+	default:
+		close(c.stopCh)
+	}
 	c.wg.Wait()
 
 	// 关闭pubsub连接
@@ -344,6 +369,77 @@ func (c *Consumer) heartbeatLoop() {
 	}
 }
 
+// autoCommitLoop 自动提交偏移量的后台进程
+// 定期提交已拉取的消息偏移量，无需手动调用CommitSync
+// autoCommitLoop 自动提交偏移量的后台进程
+// 定期提交已拉取的消息偏移量，无需手动调用CommitSync
+func (c *Consumer) autoCommitLoop() {
+	defer c.wg.Done()
+
+	log.Printf("Consumer %s: 启动自动提交循环，间隔: %v", c.id, c.config.AutoCommitInterval)
+
+	ticker := time.NewTicker(c.config.AutoCommitInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// 执行自动提交，只提交有新拉取偏移量的分区
+			if err := c.autoCommitPolledOffsets(); err != nil {
+				log.Printf("ERROR: Consumer %s 自动提交失败: %v", c.id, err)
+			} else {
+				c.lastAutoCommit.Store(time.Now().Unix())
+			}
+		case <-c.stopCh:
+			// 在停止前执行最后一次提交
+			log.Printf("Consumer %s: 自动提交循环收到停止信号，执行最后一次提交", c.id)
+			if err := c.autoCommitPolledOffsets(); err != nil {
+				log.Printf("ERROR: Consumer %s 最终自动提交失败: %v", c.id, err)
+			}
+			return
+		}
+	}
+}
+
+// autoCommitPolledOffsets 自动提交已拉取但未提交的偏移量
+// 这是一个内部方法，只在自动提交模式下使用
+// autoCommitPolledOffsets 自动提交已拉取但未提交的偏移量
+// 这是一个内部方法，只在自动提交模式下使用
+func (c *Consumer) autoCommitPolledOffsets() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 检查是否有需要提交的已拉取偏移量
+	if len(c.polledOffsets) == 0 {
+		return nil // 没有新的偏移量需要提交
+	}
+
+	// 创建需要提交的偏移量副本
+	offsetsToCommit := make(map[types.PartitionInfo]int64)
+	for partition, offset := range c.polledOffsets {
+		offsetsToCommit[partition] = offset
+	}
+
+	// 执行数据库提交
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
+	if err != nil {
+		return fmt.Errorf("failed to auto-commit polled offsets: %w", err)
+	}
+
+	// 提交成功后，更新内存状态
+	for partition, offset := range offsetsToCommit {
+		// committedOffsets 存储下一个要消费的偏移量（已提交偏移量 + 1）
+		c.committedOffsets[partition] = offset + 1
+		delete(c.polledOffsets, partition)
+	}
+
+	log.Printf("Consumer %s: 自动提交成功，提交了 %d 个分区的偏移量", c.id, len(offsetsToCommit))
+	return nil
+}
+
 // reconcileState 执行单次发送心跳、获取消费者当前状态和处理重新均衡（如有必要）的循环
 func (c *Consumer) reconcileState(ctx context.Context) {
 	// 首先注册/更新心跳
@@ -465,57 +561,150 @@ func (c *Consumer) IsReady() bool {
 	return len(assignedPartitions) > 0
 }
 
+// IsAutoCommitEnabled 返回是否启用了自动提交
+func (c *Consumer) IsAutoCommitEnabled() bool {
+	return c.config.EnableAutoCommit
+}
+
+// GetLastAutoCommitTime 返回最后一次自动提交的时间
+func (c *Consumer) GetLastAutoCommitTime() time.Time {
+	return time.Unix(c.lastAutoCommit.Load(), 0)
+}
+
 // CommitSync 同步提交所有当前分配分区的偏移量
 // 这是一个阻塞操作
+// CommitSync 同步提交所有当前分配分区的偏移量
+// 这是一个阻塞操作，提交所有已拉取但尚未提交的消息偏移量
+// CommitSync 同步提交所有当前分配分区的偏移量
+// 这是一个阻塞操作，提交所有已拉取但尚未提交的消息偏移量
 func (c *Consumer) CommitSync() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 在提交前将已拉取的偏移量合并到已提交的偏移量中
-	for p, offset := range c.polledOffsets {
-		c.committedOffsets[p] = offset
-	}
-	// 合并后清除已拉取的偏移量
-	c.polledOffsets = make(map[types.PartitionInfo]int64)
-
-	// 获取当前分配和代际ID
+	// 获取当前分配的分区
 	partitions := c.getAssignedPartitionsLocked()
-	generationID := c.generationID
+	if len(partitions) == 0 {
+		return nil // 没有分配的分区，无需提交
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err := c.commitOffsetsWithoutLock(ctx, partitions, generationID)
-
-	return err
-}
-
-// commitOffsetsWithoutLock 处理批量提交偏移量的数据库逻辑
-// 这个版本不获取任何锁，供内部使用
-func (c *Consumer) commitOffsetsWithoutLock(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
+	// 构建需要提交的偏移量映射
+	// 对于每个分区，提交已拉取的最大偏移量（如果存在）
 	offsetsToCommit := make(map[types.PartitionInfo]int64)
 	for _, p := range partitions {
-		// 提交已提交的偏移量（包含合并的已拉取偏移量）
-		if offset, ok := c.committedOffsets[p]; ok {
-			offsetsToCommit[p] = offset
+		// 只提交有新拉取偏移量的分区
+		if polledOffset, exists := c.polledOffsets[p]; exists {
+			offsetsToCommit[p] = polledOffset
 		}
 	}
 
 	if len(offsetsToCommit) == 0 {
+		return nil // 没有需要提交的偏移量
+	}
+
+	// 执行数据库提交
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
+	if err != nil {
+		return fmt.Errorf("failed to commit offsets: %w", err)
+	}
+
+	// 提交成功后，更新内存状态
+	// 将成功提交的偏移量从polledOffsets移动到committedOffsets
+	for partition, offset := range offsetsToCommit {
+		// committedOffsets 存储下一个要消费的偏移量（已提交偏移量 + 1）
+		c.committedOffsets[partition] = offset + 1
+		// 删除已提交的polledOffsets条目
+		delete(c.polledOffsets, partition)
+	}
+
+	return nil
+}
+
+// CommitOffsets 提交指定的偏移量到指定的分区
+// 这允许精确控制提交到哪个消息ID
+// CommitOffsets 提交指定的偏移量到指定的分区
+// 这允许精确控制提交到哪个消息ID，用于手动提交模式
+// CommitOffsets 提交指定的偏移量到指定的分区
+// 这允许精确控制提交到哪个消息ID，用于手动提交模式
+func (c *Consumer) CommitOffsets(offsets map[types.PartitionInfo]int64) error {
+	if len(offsets) == 0 {
 		return nil
 	}
-	return dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
+
+	c.mu.Lock()
+	generationID := c.generationID
+	c.mu.Unlock()
+
+	// 执行数据库提交
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsets)
+	if err != nil {
+		return fmt.Errorf("failed to commit specified offsets: %w", err)
+	}
+
+	// 只有在数据库提交成功后才更新内存状态
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 更新已提交的偏移量
+	for partition, offset := range offsets {
+		// committedOffsets 存储下一个要消费的偏移量（已提交偏移量 + 1）
+		c.committedOffsets[partition] = offset + 1
+		// 如果指定的偏移量已经在已拉取偏移量中，且小于等于指定偏移量，则从中移除
+		if polledOffset, exists := c.polledOffsets[partition]; exists && polledOffset <= offset {
+			delete(c.polledOffsets, partition)
+		}
+	}
+
+	return nil
+}
+
+// CommitMessage 提交单个消息的偏移量
+// 这是CommitOffsets的便利方法，用于精确的手动提交
+func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
+	partition := types.PartitionInfo{
+		Topic:     msg.Topic,
+		Partition: msg.Partition,
+	}
+	offsets := map[types.PartitionInfo]int64{
+		partition: msg.Offset,
+	}
+	return c.CommitOffsets(offsets)
+}
+
+// commitOffsetsWithoutLock 处理批量提交偏移量的数据库逻辑
+// 这个版本不获取任何锁，供内部使用
+// commitOffsetsWithoutLock 已废弃，使用CommitSync替代
+// 保留此方法仅为兼容性，实际调用CommitSync
+func (c *Consumer) commitOffsetsWithoutLock(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
+	// 直接调用CommitSync，它已经包含了所有必要的逻辑
+	return c.CommitSync()
 }
 
 // commitOffsets handles the database logic for committing a batch of offsets.
 // This is the legacy method that acquires locks internally.
+// commitOffsets 处理重新均衡时撤销分区的偏移量提交
+// 这是一个内部方法，用于重新均衡过程中的偏移量提交
+// commitOffsets 处理重新均衡时撤销分区的偏移量提交
+// 这是一个内部方法，用于重新均衡过程中的偏移量提交
 func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
-	offsetsToCommit := make(map[types.PartitionInfo]int64)
+	if len(partitions) == 0 {
+		return nil
+	}
+
 	c.mu.RLock()
+	offsetsToCommit := make(map[types.PartitionInfo]int64)
 	for _, p := range partitions {
-		// Commit the committed offset (which includes merged polled offsets)
-		if offset, ok := c.committedOffsets[p]; ok {
-			offsetsToCommit[p] = offset
+		// 优先提交已拉取的偏移量，如果没有则提交已提交的偏移量-1（转换为最后消费的偏移量）
+		if polledOffset, exists := c.polledOffsets[p]; exists {
+			offsetsToCommit[p] = polledOffset
+		} else if committedOffset, exists := c.committedOffsets[p]; exists && committedOffset > 0 {
+			// committedOffsets存储的是下一个要消费的偏移量，所以减1得到最后消费的偏移量
+			offsetsToCommit[p] = committedOffset - 1
 		}
 	}
 	c.mu.RUnlock()
@@ -523,7 +712,22 @@ func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.Partiti
 	if len(offsetsToCommit) == 0 {
 		return nil
 	}
-	return dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
+
+	err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, generationID, offsetsToCommit)
+	if err != nil {
+		return fmt.Errorf("failed to commit offsets for revoked partitions: %w", err)
+	}
+
+	// 成功提交后更新内存状态
+	c.mu.Lock()
+	for partition, offset := range offsetsToCommit {
+		// committedOffsets 存储下一个要消费的偏移量（已提交偏移量 + 1）
+		c.committedOffsets[partition] = offset + 1
+		delete(c.polledOffsets, partition)
+	}
+	c.mu.Unlock()
+
+	return nil
 }
 
 // getAssignedPartitionsLocked returns assigned partitions without acquiring locks.
@@ -727,17 +931,40 @@ func (c *Consumer) parsePartitions(data []byte) (map[string][]uint, error) {
 	return m, nil
 }
 
+// getOffset 获取分区的下一个消费偏移量
+// 返回下一个应该消费的消息偏移量（已提交偏移量 + 1）
+// getOffset 获取分区的下一个消费偏移量
+// 返回下一个应该消费的消息偏移量
 func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// Always fetch from the last known committed offset.
-	return c.committedOffsets[p]
+
+	// committedOffsets 存储的是下一个要消费的偏移量
+	// 直接返回，不需要 +1
+	if committedOffset, exists := c.committedOffsets[p]; exists {
+		return committedOffset
+	}
+
+	// 如果没有已提交的偏移量，从0开始
+	return 0
 }
 
+// setPolledOffset 设置分区的已拉取偏移量
+// 这个方法确保偏移量是单调递增的，避免回退
 func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.polledOffsets[p] = offset
+
+	// 确保偏移量是单调递增的
+	if currentOffset, exists := c.polledOffsets[p]; exists {
+		if offset > currentOffset {
+			c.polledOffsets[p] = offset
+		}
+		// 如果新偏移量小于等于当前偏移量，则忽略（避免回退）
+	} else {
+		// 第一次设置此分区的偏移量
+		c.polledOffsets[p] = offset
+	}
 }
 
 func toConsumerMessages(msgs []types.Message) []ConsumerMessage {

@@ -5,10 +5,11 @@ package pkg
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/pkg/types"
 	"log"
 	"testing"
 	"time"
+
+	"github.com/donutnomad/dbmq/pkg/types"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,33 +43,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	// Wait for the coordinator to become leader
 	require.Eventually(t, coordinator.IsLeader, 10*time.Second, 100*time.Millisecond, "Coordinator did not become leader")
 
-	// 3. Start Consumer
-	consumerGroup := "test-group-1"
-	consumerConf := ConsumerConfig{
-		DB:                  dbClient,
-		Redis:               redisClient,
-		GroupID:             consumerGroup,
-		NotificationEnabled: false, // 禁用通知以避免超时
-		Topics:              []string{topicReq.Name},
-		HeartbeatInterval:   1 * time.Second,
-	}
-	consumer, err := NewConsumer(consumerConf)
-	require.NoError(t, err)
-	err = consumer.SubscribeTopics(topicReq.Name)
-	require.NoError(t, err)
-	defer consumer.Close()
-
-	// Wait for the rebalance to happen and partitions to be assigned
-	// We need to ensure the consumer has been assigned partitions and is not in rebalancing state
-	log.Printf("Waiting for consumer to be ready...")
-	require.Eventually(t, func() bool {
-		ready := consumer.IsReady()
-		log.Printf("Consumer ready: %v", ready)
-		return ready
-	}, 10*time.Second, 500*time.Millisecond, "Consumer should be ready (assigned partitions and not rebalancing)")
-	log.Printf("Consumer is ready! Proceeding to create producer...")
-
-	// 4. Start Producer and Send a Message
+	// 3. Start Producer and Send a Message First
 	producerConf := ProducerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
@@ -90,6 +65,33 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint(0), sendResult.Partition)
 	log.Printf("Message sent successfully: partition=%d, offset=%d", sendResult.Partition, sendResult.Offset)
+
+	// 4. Start Consumer After Message is Sent
+	consumerGroup := "test-group-1"
+	consumerConf := ConsumerConfig{
+		DB:                  dbClient,
+		Redis:               redisClient,
+		GroupID:             consumerGroup,
+		NotificationEnabled: false, // 禁用通知以避免超时
+		Topics:              []string{topicReq.Name},
+		HeartbeatInterval:   1 * time.Second,
+		ConsumeStrategy:     ConsumeFromEarliest, // 从最早的消息开始消费
+	}
+	consumer, err := NewConsumer(consumerConf)
+	require.NoError(t, err)
+	err = consumer.SubscribeTopics(topicReq.Name)
+	require.NoError(t, err)
+	defer consumer.Close()
+
+	// Wait for the rebalance to happen and partitions to be assigned
+	// We need to ensure the consumer has been assigned partitions and is not in rebalancing state
+	log.Printf("Waiting for consumer to be ready...")
+	require.Eventually(t, func() bool {
+		ready := consumer.IsReady()
+		log.Printf("Consumer ready: %v", ready)
+		return ready
+	}, 10*time.Second, 500*time.Millisecond, "Consumer should be ready (assigned partitions and not rebalancing)")
+	log.Printf("Consumer is ready! Proceeding to poll messages...")
 
 	// 5. Consumer Polls and Receives the Message
 	log.Printf("Starting to poll for messages...")

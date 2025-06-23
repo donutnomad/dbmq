@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/pkg"
+	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 
 	"gorm.io/gorm"
 )
@@ -30,8 +31,11 @@ type OrderMessage struct {
 // 展示完整的DBMQ使用场景：创建主题、多消费组订阅、生产消息、消费消息
 func SuperDemo() {
 	fmt.Println("🚀 开始DBMQ超级演示...")
-	fmt.Println("📋 场景：创建订单主题，两个消费组同时订阅处理订单消息")
-	fmt.Println("💡 消费策略：消费者将从最新消息开始消费（演示模式）")
+	fmt.Println("📋 场景：创建订单主题，三个消费组同时订阅处理订单消息")
+	fmt.Println("💡 演示特色：同时展示手动提交和自动提交两种偏移量提交模式")
+	fmt.Println("   - 消费组001: 手动提交模式（消息处理后立即提交偏移量）")
+	fmt.Println("   - 消费组002: 自动提交模式（每3秒自动提交一次偏移量）")
+	fmt.Println("   - 消费组003: 自动提交模式（每4秒自动提交一次偏移量）")
 	fmt.Println("⏰ 演示时长：20秒")
 	fmt.Println()
 
@@ -142,7 +146,7 @@ func SuperDemo() {
 	// 5. 创建两个消费组的消费者
 	fmt.Println("📥 创建消费者...")
 
-	// 消费组001 - 订单处理服务
+	// 消费组001 - 订单处理服务（手动提交模式）
 	consumer001, err := pkg.NewConsumer(pkg.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
@@ -152,13 +156,14 @@ func SuperDemo() {
 		Topics:              []string{topicName},
 		PollFetchLimit:      10,
 		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+		EnableAutoCommit:    false,           // 禁用自动提交，使用手动提交
 	})
 	if err != nil {
 		log.Fatalf("❌ 创建消费者001失败: %v", err)
 	}
 	defer consumer001.Close()
 
-	// 消费组002 - 数据分析服务
+	// 消费组002 - 数据分析服务（自动提交模式）
 	consumer002, err := pkg.NewConsumer(pkg.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
@@ -168,13 +173,15 @@ func SuperDemo() {
 		Topics:              []string{topicName},
 		PollFetchLimit:      10,
 		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+		EnableAutoCommit:    true,            // 启用自动提交
+		AutoCommitInterval:  3 * time.Second, // 每3秒自动提交一次
 	})
 	if err != nil {
 		log.Fatalf("❌ 创建消费者002失败: %v", err)
 	}
 	defer consumer002.Close()
 
-	// 消费组003 - 数据分析服务
+	// 消费组003 - 从最新消息开始消费（自动提交模式）
 	consumer003, err := pkg.NewConsumer(pkg.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
@@ -185,15 +192,18 @@ func SuperDemo() {
 		PollFetchLimit:      10,
 		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
 		ConsumeStrategy:     pkg.ConsumeFromLatest,
+		EnableAutoCommit:    true,            // 启用自动提交
+		AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
 	})
 	if err != nil {
-		log.Fatalf("❌ 创建消费者002失败: %v", err)
+		log.Fatalf("❌ 创建消费者003失败: %v", err)
 	}
 	defer consumer003.Close()
 
 	fmt.Println("✅ 消费者创建成功")
-	fmt.Println("   - 消费组001: 订单处理服务")
-	fmt.Println("   - 消费组002: 数据分析服务")
+	fmt.Println("   - 消费组001: 订单处理服务（手动提交模式）")
+	fmt.Println("   - 消费组002: 数据分析服务（自动提交模式，间隔: 3秒）")
+	fmt.Println("   - 消费组003: 从最新消息开始消费（自动提交模式，间隔: 4秒）")
 	fmt.Println()
 
 	// 6. 启动消费者订阅
@@ -234,28 +244,28 @@ func SuperDemo() {
 
 	var wg sync.WaitGroup
 
-	// 8. 启动消费者001的消费循环
+	// 8. 启动消费者001的消费循环（手动提交模式）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		consumeMessages(ctx, consumer001, "消费者001", "订单处理服务")
+		consumeMessagesWithManualCommit(ctx, consumer001, "消费者001", "订单处理服务")
 	}()
 
-	// 9. 启动消费者002的消费循环
+	// 9. 启动消费者002的消费循环（自动提交模式）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		consumeMessages(ctx, consumer002, "消费者002", "数据分析服务")
+		consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
 	}()
 
-	// 9. 启动消费者002的消费循环
+	// 10. 启动消费者003的消费循环（自动提交模式）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		consumeMessages(ctx, consumer003, "消费者003", "从最新的地方开始消费")
+		consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
 	}()
 
-	// 10. 启动生产者发送消息
+	// 11. 启动生产者发送消息
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -266,7 +276,7 @@ func SuperDemo() {
 	fmt.Println("📊 实时监控消息流转...")
 	fmt.Println()
 
-	// 11. 等待所有goroutine完成或超时
+	// 12. 等待所有goroutine完成或超时
 	wg.Wait()
 
 	fmt.Println()
@@ -355,9 +365,61 @@ func produceOrderMessages(ctx context.Context, producer *pkg.Producer, topicName
 	}
 }
 
-// consumeMessages 消费者消费消息循环
-func consumeMessages(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
-	fmt.Printf("📥 [%s] %s 开始消费消息...\n", consumerName, serviceName)
+// consumeMessagesWithManualCommit 手动提交模式的消费者消费消息循环
+func consumeMessagesWithManualCommit(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
+	fmt.Printf("📥 [%s] %s 开始消费消息...(手动提交模式)\n", consumerName, serviceName)
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("📥 [%s] 收到停止信号，正在关闭...\n", consumerName)
+			return
+		default:
+			// 拉取消息
+			messages, err := consumer.Poll(ctx, 1*time.Second)
+			if err != nil {
+				// 检查是否是重新均衡错误
+				var rebalanceErr *dberrors.ErrRebalanceInProgress
+				if errors.As(err, &rebalanceErr) {
+					fmt.Printf("⚖️  [%s] 正在进行重新均衡，等待完成...\n", consumerName)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+
+				// 检查是否是上下文取消
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+
+				log.Printf("❌ [%s] 拉取消息失败: %v\n", consumerName, err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			// 逐个处理消息，并精确提交每个消息的偏移量
+			for i, msg := range messages {
+				// 处理消息
+				success := processOrderMessageWithResult(msg, consumerName, serviceName)
+
+				if success {
+					// 处理成功，提交这个具体消息的偏移量
+					if err := consumer.CommitMessage(msg); err != nil {
+						log.Printf("❌ [%s] 提交消息偏移量失败 (消息ID: %d): %v\n", consumerName, msg.Offset, err)
+					} else {
+						fmt.Printf("✅ [%s] 精确提交消息偏移量: %d (第%d/%d条)\n",
+							consumerName, msg.Offset, i+1, len(messages))
+					}
+				} else {
+					// 处理失败，不提交偏移量，这条消息会在下次重新消费
+					fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.Offset)
+				}
+			}
+		}
+	}
+}
+
+// consumeMessagesWithAutoCommit 自动提交模式的消费者消费消息循环
+func consumeMessagesWithAutoCommit(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
+	fmt.Printf("📥 [%s] %s 开始消费消息...(自动提交模式)\n", consumerName, serviceName)
 	for {
 		select {
 		case <-ctx.Done():
@@ -390,48 +452,71 @@ func consumeMessages(ctx context.Context, consumer *pkg.Consumer, consumerName, 
 				processOrderMessage(msg, consumerName, serviceName)
 			}
 
-			// 如果有消息被处理，提交偏移量
+			// 自动提交模式下不需要手动提交偏移量
+			// 偏移量会由自动提交循环定期提交
 			if len(messages) > 0 {
-				if err := consumer.CommitSync(); err != nil {
-					log.Printf("❌ [%s] 提交偏移量失败: %v\n", consumerName, err)
-				}
+				fmt.Printf("📦 [%s] 处理了 %d 条消息，等待自动提交偏移量\n", consumerName, len(messages))
 			}
 		}
 	}
 }
 
-// processOrderMessage 处理订单消息
+// processOrderMessage 处理订单消息（无返回值版本，用于自动提交模式）
 func processOrderMessage(msg pkg.ConsumerMessage, consumerName, serviceName string) {
+	processOrderMessageWithResult(msg, consumerName, serviceName)
+}
+
+// processOrderMessageWithResult 处理订单消息并返回处理结果（用于手动提交模式）
+func processOrderMessageWithResult(msg pkg.ConsumerMessage, consumerName, serviceName string) bool {
 	// 解析订单消息
 	var order OrderMessage
 	err := json.Unmarshal(msg.Value, &order)
 	if err != nil {
 		log.Printf("❌ [%s] 解析订单消息失败: %v\n", consumerName, err)
-		return
+		return false // 解析失败，返回false
 	}
 
 	// 模拟不同服务的处理逻辑
+	success := true // 默认处理成功
+
 	switch serviceName {
 	case "订单处理服务":
-		fmt.Printf("🔄 [%s] 处理订单: %s | 客户: %s | 金额: %.2f | 状态: %s\n",
+		fmt.Printf("🔄 [%s] 处理订单: %s | 客户: %s | 金额: %.2f | 状态: %s (手动提交)\n",
 			consumerName, order.OrderID, order.CustomerID, order.Amount, order.Status)
 
 		// 模拟订单处理时间
 		time.Sleep(100 * time.Millisecond)
 
-		fmt.Printf("✅ [%s] 订单处理完成: %s\n", consumerName, order.OrderID)
+		// 模拟处理失败的情况（比如金额异常）
+		if order.Amount < 0 {
+			fmt.Printf("❌ [%s] 订单处理失败: %s (金额异常: %.2f)\n", consumerName, order.OrderID, order.Amount)
+			success = false
+		} else {
+			fmt.Printf("✅ [%s] 订单处理完成: %s\n", consumerName, order.OrderID)
+		}
 
 	case "数据分析服务":
-		fmt.Printf("📊 [%s] 分析订单数据: %s | 金额: %.2f | 时间: %s\n",
+		fmt.Printf("📊 [%s] 分析订单数据: %s | 金额: %.2f | 时间: %s (自动提交)\n",
 			consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
 
 		// 模拟数据分析时间
 		time.Sleep(50 * time.Millisecond)
 
 		fmt.Printf("📈 [%s] 数据分析完成: %s (客户群体分析已更新)\n", consumerName, order.OrderID)
+
+	case "从最新的地方开始消费":
+		fmt.Printf("🆕 [%s] 处理最新订单: %s | 金额: %.2f | 时间: %s (自动提交)\n",
+			consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
+
+		// 模拟处理时间
+		time.Sleep(30 * time.Millisecond)
+
+		fmt.Printf("✨ [%s] 最新订单处理完成: %s\n", consumerName, order.OrderID)
 	}
 
 	// 显示消息元数据
 	fmt.Printf("   📋 [%s] 消息元数据 - OrderID: %s, 主题: %s | 分区: %d | 偏移量: %d | 时间戳: %s\n",
 		consumerName, order.OrderID, msg.Topic, msg.Partition, msg.Offset, msg.Timestamp.Format("15:04:05"))
+
+	return success
 }
