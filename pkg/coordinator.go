@@ -17,7 +17,6 @@ import (
 const (
 	leaderLockName      = "mq_coordinator_leader_lock" // 全局领导者锁名称
 	lockRefreshInterval = 10 * time.Second             // 锁刷新间隔，10秒
-	lockTimeout         = 30                           // 锁超时时间，30秒
 	cleanupBatchSize    = 1000                         // 每批删除的消息数量
 	cleanupBatchSleep   = 100 * time.Millisecond       // 批处理间的睡眠时间
 )
@@ -71,10 +70,12 @@ type Coordinator struct {
 	db               *gorm.DB                       // 数据库连接
 	isLeader         atomic.Bool                    // 原子布尔值，标记是否为领导者
 	rebalancingLocks *groupLocks                    // 分消费组的重新均衡锁
-	stopCh           chan struct{}                  // 停止信号频道
+	ctx              context.Context                // 根上下文，控制整个协调器生命周期
+	cancel           context.CancelFunc             // 取消函数，用于停止所有goroutine
 	wg               sync.WaitGroup                 // 等待组，用于优雅关闭
 	mu               sync.Mutex                     // 保护members map的互斥锁
 	members          map[string]map[string]struct{} // groupID -> set of consumer IDs，缓存消费组成员信息
+	stopped          atomic.Bool                    // 原子布尔值，标记是否已停止
 }
 
 // NewCoordinator 创建一个新的协调器
@@ -95,10 +96,12 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		// 默认每小时检查一次
 		config.RetentionCheckInterval = 1 * time.Hour
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Coordinator{
 		config:           config,
 		db:               config.DB,
-		stopCh:           make(chan struct{}),
+		ctx:              ctx,
+		cancel:           cancel,
 		members:          make(map[string]map[string]struct{}),
 		rebalancingLocks: newGroupLocks(),
 	}
@@ -106,19 +109,43 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 
 // Start 开始协调器的工作，包括领导者选举
 func (c *Coordinator) Start() {
+	// 检查是否已经停止，防止重复启动
+	if c.stopped.Load() {
+		log.Printf("Coordinator has already been stopped, cannot start again")
+		return
+	}
+
 	c.wg.Add(1)
 	go c.leaderElectionLoop()
 }
 
-// Stop 优雅关闭协调器
+// Stop 优雅关闭协调器，支持多次安全调用
 func (c *Coordinator) Stop() {
-	close(c.stopCh)
+	// 使用原子操作确保只执行一次停止逻辑
+	if !c.stopped.CompareAndSwap(false, true) {
+		// 已经停止过了，直接返回
+		return
+	}
+
+	log.Printf("Coordinator stopping...")
+
+	// 取消所有goroutine的context
+	c.cancel()
+
+	// 等待所有goroutine完成
 	c.wg.Wait()
+
+	log.Printf("Coordinator stopped successfully")
 }
 
 // IsLeader 返回此协调器实例是否为当前领导者
 func (c *Coordinator) IsLeader() bool {
 	return c.isLeader.Load()
+}
+
+// IsStopped 返回此协调器是否已经停止
+func (c *Coordinator) IsStopped() bool {
+	return c.stopped.Load()
 }
 
 // setLeader 设置领导者状态，并在成为领导者时启动主工作循环
@@ -147,7 +174,7 @@ func (c *Coordinator) leaderElectionLoop() {
 
 	for {
 		select {
-		case <-c.stopCh:
+		case <-c.ctx.Done():
 			if c.IsLeader() {
 				c.releaseLock()
 			}
@@ -161,35 +188,56 @@ func (c *Coordinator) leaderElectionLoop() {
 // attemptToBecomeLeader 尝试成为领导者
 // 使用MySQL的GET_LOCK函数进行原子性的锁获取
 func (c *Coordinator) attemptToBecomeLeader() {
-	var result int
-	// GET_LOCK是会话特定的。结果为1表示我们获得了锁
-	// 0表示另一个会话持有锁。NULL表示发生了错误
-	// 使用30秒超时，如果当前持有者死亡，允许接管
-	err := c.db.Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockTimeout).Scan(&result).Error
-	if err != nil {
-		log.Printf("Error in leader election: %v", err)
+	// 如果协调器已停止，不再尝试获取领导权
+	if c.IsStopped() {
+		return
+	}
+
+	var ch = make(chan int)
+
+	go func() {
+		var result int
+		// GET_LOCK是会话特定的。结果为1表示我们获得了锁
+		// 0表示另一个会话持有锁。NULL表示发生了错误
+		// 使用30秒超时，如果当前持有者死亡，允许接管
+		err := c.db.Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockRefreshInterval/time.Second/2).Scan(&result).Error
+		if err != nil {
+			log.Printf("Error in leader election: %v", err)
+			ch <- -1
+		} else {
+			ch <- result
+		}
+	}()
+
+	select {
+	case <-c.ctx.Done():
 		if c.IsLeader() {
 			c.setLeader(false)
 		}
 		return
-	}
-	switch result {
-	case 0:
-		// 无法获得锁，可能有其他协调器持有锁，或者锁获取超时
-		if c.IsLeader() {
-			log.Printf("Coordinator lost leadership (unable to acquire lock).")
-			c.setLeader(false)
+	case result := <-ch:
+		switch result {
+		case -1:
+			if c.IsLeader() {
+				c.setLeader(false)
+			}
+		case 0:
+			// 无法获得锁，可能有其他协调器持有锁，或者锁获取超时
+			if c.IsLeader() {
+				log.Printf("Coordinator lost leadership (unable to acquire lock).")
+				c.setLeader(false)
+			}
+			// 如果我们不是领导者，这是正常情况
+		case 1:
+			// 我们获得了锁，成为或保持领导者
+			if !c.IsLeader() {
+				log.Printf("Coordinator acquired leadership.")
+				c.setLeader(true)
+			}
+			// 如果我们已经是领导者，这只是刷新锁
 		}
-		// 如果我们不是领导者，这是正常情况
-	case 1:
-		// 我们获得了锁，成为或保持领导者
-		if !c.IsLeader() {
-			log.Printf("Coordinator acquired leadership.")
-			c.setLeader(true)
-		}
-		// 如果我们已经是领导者，这只是刷新锁
+		// 如果result == 0且!c.IsLeader()，我们是追随者，无需操作
 	}
-	// 如果result == 0且!c.IsLeader()，我们是追随者，无需操作
 }
 
 // releaseLock 释放全局领导者锁
@@ -217,14 +265,18 @@ func (c *Coordinator) leaderLoop() {
 	c.runRetentionCleanup()
 
 	for {
-		// 如果我们不再是领导者，循环应该停止
-		if !c.IsLeader() {
-			log.Printf("No longer leader, stopping leader loop.")
+		// 如果协调器已停止或我们不再是领导者，循环应该停止
+		if c.IsStopped() || !c.IsLeader() {
+			if c.IsStopped() {
+				log.Printf("Coordinator stopped, stopping leader loop.")
+			} else {
+				log.Printf("No longer leader, stopping leader loop.")
+			}
 			return
 		}
 
 		select {
-		case <-c.stopCh:
+		case <-c.ctx.Done():
 			log.Printf("Coordinator stopping leader loop.")
 			return
 		case <-rebalanceTicker.C:
@@ -240,8 +292,15 @@ func (c *Coordinator) leaderLoop() {
 // runRetentionCleanup 运行消息保留清理
 // 根据Topic配置删除过期的消息
 func (c *Coordinator) runRetentionCleanup() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // 清理的慷慨超时时间
+	// 使用协调器的context作为父context，确保在协调器停止时能够快速退出
+	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Minute) // 清理的慷慨超时时间
 	defer cancel()
+
+	// 如果协调器已停止，不执行清理操作
+	if c.IsStopped() {
+		log.Println("Coordinator stopped, skipping message retention cleanup.")
+		return
+	}
 
 	log.Println("Starting message retention cleanup cycle.")
 	startTime := time.Now()
@@ -310,8 +369,14 @@ func (c *Coordinator) runRetentionCleanup() {
 					break
 				}
 
-				// Sleep briefly to avoid overwhelming the DB
-				time.Sleep(cleanupBatchSleep)
+				// Sleep briefly to avoid overwhelming the DB, but check for context cancellation
+				select {
+				case <-ctx.Done():
+					log.Printf("Cleanup cancelled during batch processing for partition %v", p)
+					return
+				case <-time.After(cleanupBatchSleep):
+					// Continue to next batch
+				}
 			}
 
 			if partitionTotalDeleted > 0 {
@@ -327,7 +392,8 @@ func (c *Coordinator) runRetentionCleanup() {
 // scanAndRebalanceAllGroups is the new top-level function for the global leader.
 // It finds all active groups and triggers a rebalance check for each one.
 func (c *Coordinator) scanAndRebalanceAllGroups() {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	// 使用协调器的context作为父context，确保在协调器停止时能够快速退出
+	ctx, cancel := context.WithTimeout(c.ctx, 1*time.Minute)
 	defer cancel()
 
 	// 找到活跃的消费组IDs
@@ -374,8 +440,12 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 
 	// 设置重新均衡操作的超时时间，防止操作无限期阻塞
 	// 默认15秒，可通过配置调整。超时机制确保系统的响应性。
-	timeout := max(15*time.Second, c.config.RebalanceTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// 使用协调器的context作为父context，确保在协调器停止时能够快速退出
+	timeout := 15 * time.Second
+	if c.config.RebalanceTimeout > 0 {
+		timeout = c.config.RebalanceTimeout
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
 	defer cancel()
 
 	// ========== 第二步：发现活跃消费者 ==========
