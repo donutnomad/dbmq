@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/pkg/types"
-	"log/slog"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,7 +111,7 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 func (c *Coordinator) Start() {
 	// 检查是否已经停止，防止重复启动
 	if c.stopped.Load() {
-		slog.Info("Coordinator has already been stopped, cannot start again")
+		log.Printf("Coordinator has already been stopped, cannot start again")
 		return
 	}
 
@@ -127,7 +127,7 @@ func (c *Coordinator) Stop() {
 		return
 	}
 
-	slog.Info("Coordinator stopping...")
+	log.Printf("Coordinator stopping...")
 
 	// 取消所有goroutine的context
 	c.cancel()
@@ -135,7 +135,7 @@ func (c *Coordinator) Stop() {
 	// 等待所有goroutine完成
 	c.wg.Wait()
 
-	slog.Info("Coordinator stopped successfully")
+	log.Printf("Coordinator stopped successfully")
 }
 
 // IsLeader 返回此协调器实例是否为当前领导者
@@ -152,13 +152,13 @@ func (c *Coordinator) IsStopped() bool {
 func (c *Coordinator) setLeader(isLeader bool) {
 	wasLeader := c.isLeader.Swap(isLeader)
 	if isLeader && !wasLeader {
-		slog.Info("Coordinator became the global leader.")
+		log.Printf("Coordinator became the global leader.")
 		// 当我们成为领导者时，启动主工作循环
 		c.wg.Add(1)
 		go c.leaderLoop()
 	}
 	if !isLeader && wasLeader {
-		slog.Info("Coordinator lost global leadership.")
+		log.Printf("Coordinator lost global leadership.")
 	}
 }
 
@@ -202,7 +202,7 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		// 使用30秒超时，如果当前持有者死亡，允许接管
 		err := c.db.Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockRefreshInterval/time.Second/2).Scan(&result).Error
 		if err != nil {
-			slog.Info("Error in leader election: %v", err)
+			log.Printf("Error in leader election: %v", err)
 			ch <- -1
 		} else {
 			ch <- result
@@ -224,14 +224,14 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		case 0:
 			// 无法获得锁，可能有其他协调器持有锁，或者锁获取超时
 			if c.IsLeader() {
-				slog.Info("Coordinator lost leadership (unable to acquire lock).")
+				log.Printf("Coordinator lost leadership (unable to acquire lock).")
 				c.setLeader(false)
 			}
 			// 如果我们不是领导者，这是正常情况
 		case 1:
 			// 我们获得了锁，成为或保持领导者
 			if !c.IsLeader() {
-				slog.Info("Coordinator acquired leadership.")
+				log.Printf("Coordinator acquired leadership.")
 				c.setLeader(true)
 			}
 			// 如果我们已经是领导者，这只是刷新锁
@@ -244,9 +244,9 @@ func (c *Coordinator) attemptToBecomeLeader() {
 // 在优雅关闭时调用这个函数是好的实践
 func (c *Coordinator) releaseLock() {
 	if err := c.db.Exec("SELECT RELEASE_LOCK(?)", leaderLockName).Error; err != nil {
-		slog.Info("Error releasing global leader lock: %v", err)
+		log.Printf("Error releasing global leader lock: %v", err)
 	} else {
-		slog.Info("Coordinator released global leader lock.")
+		log.Printf("Coordinator released global leader lock.")
 	}
 }
 
@@ -254,7 +254,7 @@ func (c *Coordinator) releaseLock() {
 // 负责全局重新均衡扫描和消息保留清理
 func (c *Coordinator) leaderLoop() {
 	defer c.wg.Done()
-	slog.Info("Coordinator leader loop started.")
+	log.Printf("Coordinator leader loop started.")
 	rebalanceTicker := time.NewTicker(c.config.RebalanceInterval)
 	defer rebalanceTicker.Stop()
 	cleanupTicker := time.NewTicker(c.config.RetentionCheckInterval)
@@ -268,22 +268,22 @@ func (c *Coordinator) leaderLoop() {
 		// 如果协调器已停止或我们不再是领导者，循环应该停止
 		if c.IsStopped() || !c.IsLeader() {
 			if c.IsStopped() {
-				slog.Info("Coordinator stopped, stopping leader loop.")
+				log.Printf("Coordinator stopped, stopping leader loop.")
 			} else {
-				slog.Info("No longer leader, stopping leader loop.")
+				log.Printf("No longer leader, stopping leader loop.")
 			}
 			return
 		}
 
 		select {
 		case <-c.ctx.Done():
-			slog.Info("Coordinator stopping leader loop.")
+			log.Printf("Coordinator stopping leader loop.")
 			return
 		case <-rebalanceTicker.C:
-			slog.Info("Leader coordinator starting global rebalance scan...")
+			log.Printf("Leader coordinator starting global rebalance scan...")
 			c.scanAndRebalanceAllGroups()
 		case <-cleanupTicker.C:
-			slog.Info("Leader coordinator starting message retention cleanup...")
+			log.Printf("Leader coordinator starting message retention cleanup...")
 			c.runRetentionCleanup()
 		}
 	}
@@ -298,17 +298,17 @@ func (c *Coordinator) runRetentionCleanup() {
 
 	// 如果协调器已停止，不执行清理操作
 	if c.IsStopped() {
-		log/slog.Println("Coordinator stopped, skipping message retention cleanup.")
+		log.Println("Coordinator stopped, skipping message retention cleanup.")
 		return
 	}
 
-	log/slog.Println("Starting message retention cleanup cycle.")
+	log.Println("Starting message retention cleanup cycle.")
 	startTime := time.Now()
 
 	// 1. 获取所有Topic以了解它们的保留策略
 	allTopics, err := dal.GetAllTopics(ctx, c.db)
 	if err != nil {
-		slog.Error( Cleanup failed to get topics: %v", err)
+		log.Printf("Cleanup failed to get topics: %v", err)
 		return
 	}
 	topicConfigMap := make(map[string]time.Duration)
@@ -322,14 +322,14 @@ func (c *Coordinator) runRetentionCleanup() {
 	// 2. Calculate global low watermark for all consumed partitions
 	watermarks, err := dal.GetConsumerGroupLowWatermarks(ctx, c.db)
 	if err != nil {
-		slog.Error( Cleanup failed to get low watermarks: %v", err)
+		log.Printf("Cleanup failed to get low watermarks: %v", err)
 		return
 	}
-	slog.Info("Found %d consumed partitions with a low watermark.", len(watermarks))
+	log.Printf("Found %d consumed partitions with a low watermark.", len(watermarks))
 
 	var totalDeletedCount int64
 
-	// 3. Iterate through all partitions of all topics and apply deletion log/slogic
+	// 3. Iterate through all partitions of all topics and apply deletion logic
 	for _, topic := range allTopics {
 		retentionAge := c.config.DefaultRetentionAge
 		if configuredAge, ok := topicConfigMap[topic.TopicName]; ok {
@@ -356,7 +356,7 @@ func (c *Coordinator) runRetentionCleanup() {
 				}
 
 				if err != nil {
-					slog.Error( Failed to clean partition %v: %v", p, err)
+					log.Printf("Failed to clean partition %v: %v", p, err)
 					break // Break from batch loop on error
 				}
 
@@ -372,7 +372,7 @@ func (c *Coordinator) runRetentionCleanup() {
 				// Sleep briefly to avoid overwhelming the DB, but check for context cancellation
 				select {
 				case <-ctx.Done():
-					slog.Info("Cleanup cancelled during batch processing for partition %v", p)
+					log.Printf("Cleanup cancelled during batch processing for partition %v", p)
 					return
 				case <-time.After(cleanupBatchSleep):
 					// Continue to next batch
@@ -381,12 +381,12 @@ func (c *Coordinator) runRetentionCleanup() {
 
 			if partitionTotalDeleted > 0 {
 				totalDeletedCount += partitionTotalDeleted
-				slog.Info("Cleaned up %d messages from partition %v", partitionTotalDeleted, p)
+				log.Printf("Cleaned up %d messages from partition %v", partitionTotalDeleted, p)
 			}
 		}
 	}
 
-	slog.Info("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount)
+	log.Printf("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount)
 }
 
 // scanAndRebalanceAllGroups is the new top-level function for the global leader.
@@ -399,17 +399,17 @@ func (c *Coordinator) scanAndRebalanceAllGroups() {
 	// 找到活跃的消费组IDs
 	activeGroupIds, err := dal.FindAllActiveGroups(ctx, c.db, c.config.HeartbeatTimeout)
 	if err != nil {
-		slog.Error( Failed to scan for active groups: %v", err)
+		log.Printf("Failed to scan for active groups: %v", err)
 		return
 	}
 	if len(activeGroupIds) == 0 {
 		return
 	}
 
-	slog.Info("[scanAndRebalanceAllGroups] 找到活动的消费组 Found active consumer groups: %v", activeGroupIds)
+	log.Printf("[scanAndRebalanceAllGroups] 找到活动的消费组 Found active consumer groups: %v", activeGroupIds)
 	for _, groupID := range activeGroupIds {
 		if err := c.rebalanceIfNeeded(groupID); err != nil {
-			slog.Error( Rebalance failed for group '%s': %v", groupID, err)
+			log.Printf("Rebalance failed for group '%s': %v", groupID, err)
 		}
 	}
 }
@@ -433,7 +433,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 这是一个关键的并发控制机制，避免同一消费组的多个重新均衡操作并发执行，
 	// 防止数据竞争和状态不一致。
 	if !c.rebalancingLocks.TryLock(groupID) {
-		slog.Info("Rebalance check for group '%s' skipped: another rebalance is already in progress.", groupID)
+		log.Printf("Rebalance check for group '%s' skipped: another rebalance is already in progress.", groupID)
 		return nil
 	}
 	defer c.rebalancingLocks.Unlock(groupID)
@@ -472,7 +472,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 		return nil // 没有变化，无需重新均衡
 	}
 
-	slog.Info("Rebalance needed for group '%s'. Old members: %v, New members: %v",
+	log.Printf("Rebalance needed for group '%s'. Old members: %v, New members: %v",
 		groupID, c.getMemberIDs(groupID), activeConsumerIDs)
 
 	// ========== 第四步：开始重新均衡协议 - 代际隔离 ==========
@@ -489,7 +489,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 这种情况通常发生在所有消费者都退出时，
 	// 递增代际确保后续加入的消费者使用新的代际ID
 	if len(activeConsumers) == 0 {
-		slog.Info("No active consumers for group '%s'. Rebalance to generation %d complete.",
+		log.Printf("No active consumers for group '%s'. Rebalance to generation %d complete.",
 			groupID, newGenerationID)
 		c.updateMembers(groupID, activeConsumerIDs)
 		return nil
@@ -532,7 +532,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 这个缓存用于下次重新均衡时的成员变化检测，
 	// 避免每次都需要查询数据库。
 	c.updateMembers(groupID, activeConsumerIDs)
-	slog.Info("Rebalance for group '%s' to generation %d completed successfully.",
+	log.Printf("Rebalance for group '%s' to generation %d completed successfully.",
 		groupID, newGenerationID)
 	return nil
 }
