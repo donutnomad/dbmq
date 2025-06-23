@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/pkg/types"
 	"strings"
 	"time"
+
+	"github.com/donutnomad/dbmq/pkg/types"
 
 	"gorm.io/gorm"
 )
@@ -42,62 +43,62 @@ func GetConsumerGroupGeneration(ctx context.Context, db *gorm.DB, groupID string
 // 如果消费组不存在，则创建一个新的
 // 这是重新均衡过程中最关键的操作，确保了代际的原子性更新
 func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID string) (uint, error) {
-	var gen types.ConsumerGroupGeneration
+	var generationID uint
 
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 使用FOR UPDATE锁定行，确保并发安全
-		err := tx.Raw("SELECT * FROM `mq_consumer_group_generations` WHERE `group_id` = ? FOR UPDATE", groupID).Scan(&gen).Error
-		if err != nil {
-			// 如果记录不存在，我们创建它
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				gen = types.ConsumerGroupGeneration{
-					GroupID:      groupID,
-					GenerationID: 1, // 从代际1开始
-					ProtocolType: "consumer",
-					UpdatedAt:    time.Now(),
-				}
-				insertSQL := "INSERT INTO `mq_consumer_group_generations` (`group_id`, `generation_id`, `protocol_type`, `updated_at`) VALUES (?, ?, ?, ?)"
-				if err := tx.Exec(insertSQL, gen.GroupID, gen.GenerationID, gen.ProtocolType, gen.UpdatedAt).Error; err != nil {
-					return err
-				}
-				return nil // 成功结束事务
-			}
-			return err // 其他数据库错误
+		// 使用 INSERT ... ON DUPLICATE KEY UPDATE 避免并发竞态条件
+		// 这个SQL语句会原子性地处理插入新记录或递增现有记录的generation_id
+		sql := `INSERT INTO mq_consumer_group_generations 
+				(group_id, generation_id, protocol_type, updated_at) 
+				VALUES (?, 1, 'consumer', ?) 
+				ON DUPLICATE KEY UPDATE 
+				generation_id = generation_id + 1, 
+				updated_at = VALUES(updated_at)`
+
+		// 执行原子性插入或更新操作
+		if err := tx.Exec(sql, groupID, time.Now()).Error; err != nil {
+			return fmt.Errorf("failed to increment generation ID for group %s: %w", groupID, err)
 		}
 
-		// 如果找到，递增代际ID
-		gen.GenerationID++
-		updateSQL := "UPDATE `mq_consumer_group_generations` SET `generation_id` = ? WHERE `group_id` = ?"
-		return tx.Exec(updateSQL, gen.GenerationID, gen.GroupID).Error
+		// 获取更新后的generation_id值
+		// 使用单独的SELECT确保我们获得最新的值
+		selectSQL := "SELECT generation_id FROM mq_consumer_group_generations WHERE group_id = ?"
+		if err := tx.Raw(selectSQL, groupID).Scan(&generationID).Error; err != nil {
+			return fmt.Errorf("failed to retrieve generation ID for group %s: %w", groupID, err)
+		}
+
+		return nil
 	})
 
 	if err != nil {
 		return 0, err
 	}
-	return gen.GenerationID, nil
+	return generationID, nil
 }
 
 // UpdateAssignmentsInTx 在单个事务中更新多个消费者的分区分配
 // assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
 func UpdateAssignments(ctx context.Context, db *gorm.DB, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
+	var assignmentsJSON = make(map[string]string)
+	for consumerID, partitions := range assignments {
+		partitionsJSON, err := json.Marshal(partitions)
+		if err != nil {
+			return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
+		}
+		assignmentsJSON[consumerID] = string(partitionsJSON)
+	}
+
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
-		for consumerID, partitions := range assignments {
-			// 将分区列表序列化为JSON格式存储
-			partitionsJSON, err := json.Marshal(partitions)
-			if err != nil {
-				return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
-			}
-			
+		for consumerID, partitionsJSON := range assignmentsJSON {
 			result := tx.Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID)
 			if result.Error != nil {
 				// 如果任何一个消费者的更新失败，整个事务会自动回滚
 				return fmt.Errorf("failed to update assignment for consumer %s: %w", consumerID, result.Error)
 			}
-			
 			// 检查是否有行被更新，如果没有则说明消费者不存在
 			if result.RowsAffected == 0 {
 				return fmt.Errorf("consumer %s not found in group %s", consumerID, groupID)
@@ -106,8 +107,6 @@ func UpdateAssignments(ctx context.Context, db *gorm.DB, groupID string, generat
 		return nil
 	})
 }
-
-
 
 // FindTopicsByNames 查找所有匹配给定名称的Topic
 // 主要用于验证Topic是否存在和获取分区数量
