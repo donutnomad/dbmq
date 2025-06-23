@@ -113,11 +113,12 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 
 	// 3. 选择目标分区
 	var partition uint
-	if len(msg.Key) > 0 {
-		// 如果消息有Key，使用哈希分区确保相同Key的消息总是路由到同一分区
+	if msg.Key != nil {
+		// 如果消息设置了Key（包括空key），使用哈希分区确保相同Key的消息总是路由到同一分区
+		// 这确保了即使是空key也会有一致的分区分配
 		partition = p.hashPartition(msg.Key, partitionCount)
 	} else {
-		// 如果消息没有Key，使用轮询分区实现负载均衡
+		// 如果消息没有设置Key（Key为nil），使用轮询分区实现负载均衡
 		partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
 	}
 
