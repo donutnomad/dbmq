@@ -24,7 +24,7 @@ func TestComprehensiveBugFixes(t *testing.T) {
 			"BUG #2: Consumer setPolledOffset单调性检查不完整 (🟡 中等) - 已修复", 
 			"BUG #3: Consumer Close方法竞争条件 (🟡 中等) - 已修复",
 			"BUG #4: Producer空key哈希分区不一致性 (🔴 高危) - 已修复",
-			"BUG #5: DAL UpdateAssignmentsInTx部分更新风险 (🔴 高危) - 需要修复",
+			"BUG #5: DAL UpdateAssignments事务管理优化 (🔴 高危) - 已修复",
 			"BUG #6: SQL保留字未正确处理 (🟡 中等) - 已修复",
 		}
 		

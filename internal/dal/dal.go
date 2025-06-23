@@ -80,21 +80,34 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 // UpdateAssignmentsInTx 在单个事务中更新多个消费者的分区分配
 // assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
-func UpdateAssignmentsInTx(ctx context.Context, tx *gorm.DB, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
-	updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
-	for consumerID, partitions := range assignments {
-		// 将分区列表序列化为JSON格式存储
-		partitionsJSON, err := json.Marshal(partitions)
-		if err != nil {
-			return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
+func UpdateAssignments(ctx context.Context, db *gorm.DB, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
+	// 在函数内部创建事务，确保所有分配更新的原子性
+	// 这防止了调用者忘记使用事务而导致的部分更新问题
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
+		for consumerID, partitions := range assignments {
+			// 将分区列表序列化为JSON格式存储
+			partitionsJSON, err := json.Marshal(partitions)
+			if err != nil {
+				return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
+			}
+			
+			result := tx.Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID)
+			if result.Error != nil {
+				// 如果任何一个消费者的更新失败，整个事务会自动回滚
+				return fmt.Errorf("failed to update assignment for consumer %s: %w", consumerID, result.Error)
+			}
+			
+			// 检查是否有行被更新，如果没有则说明消费者不存在
+			if result.RowsAffected == 0 {
+				return fmt.Errorf("consumer %s not found in group %s", consumerID, groupID)
+			}
 		}
-		err = tx.WithContext(ctx).Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID).Error
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
+
+
 
 // FindTopicsByNames 查找所有匹配给定名称的Topic
 // 主要用于验证Topic是否存在和获取分区数量

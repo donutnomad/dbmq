@@ -515,14 +515,10 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	newAssignments := c.calculateAssignments(activeConsumers, allPartitions)
 
 	// ========== 第七步：持久化新分配 ==========
-	// 将新的分区分配持久化到数据库中。这一步必须在事务中完成，
-	// 确保所有消费者的分配要么全部成功，要么全部失败，
-	// 维护分配状态的一致性。
-	// 在数据库事务中更新分配信息，确保原子性
-	// 事务包括：更新代际ID、更新每个消费者的分区分配
-	err = c.db.Transaction(func(tx *gorm.DB) error {
-		return dal.UpdateAssignmentsInTx(ctx, tx, groupID, newGenerationID, newAssignments)
-	})
+	// 将新的分区分配持久化到数据库中。
+	// UpdateAssignments函数内部会自动创建事务，确保所有消费者的分配
+	// 要么全部成功，要么全部失败，维护分配状态的一致性。
+	err = dal.UpdateAssignments(ctx, c.db, groupID, newGenerationID, newAssignments)
 	if err != nil {
 		return fmt.Errorf("failed to update assignments: %w", err)
 	}

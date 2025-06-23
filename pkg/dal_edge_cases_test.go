@@ -12,36 +12,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDALUpdateAssignmentsPartialFailure 测试UpdateAssignmentsInTx部分更新失败BUG
-// BUG描述：UpdateAssignmentsInTx方法在事务中逐个更新消费者分配，
-// 如果某个消费者的更新失败，会导致部分消费者使用新代际ID，部分消费者仍使用旧代际ID
+// TestDALUpdateAssignmentsPartialFailure 测试UpdateAssignments部分更新失败BUG
+// BUG描述：UpdateAssignments方法内部使用事务确保所有消费者分配的原子性更新，
+// 如果某个消费者的更新失败，整个事务应该回滚，防止部分更新
 func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 	db, _ := setupIntegrationTest(t)
 
 	groupID := "test-partial-failure-group"
-	
+
 	// 创建测试消费者
 	consumers := []types.ConsumerHeartbeat{
 		{
-			ConsumerID:        "consumer-1",
-			GroupID:          groupID,
-			GenerationID:     1,
-			SubscribedTopics: mustMarshalJSON([]string{"test-topic"}),
-			LastHeartbeat:    time.Now(),
+			ConsumerID:         "consumer-1",
+			GroupID:            groupID,
+			GenerationID:       1,
+			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
+			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			LastHeartbeat:      time.Now(),
 		},
 		{
-			ConsumerID:        "consumer-2",
-			GroupID:          groupID,
-			GenerationID:     1,
-			SubscribedTopics: mustMarshalJSON([]string{"test-topic"}),
-			LastHeartbeat:    time.Now(),
+			ConsumerID:         "consumer-2",
+			GroupID:            groupID,
+			GenerationID:       1,
+			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
+			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			LastHeartbeat:      time.Now(),
 		},
 		{
-			ConsumerID:        "consumer-nonexistent", // 这个消费者不存在于数据库中
-			GroupID:          groupID,
-			GenerationID:     1,
-			SubscribedTopics: mustMarshalJSON([]string{"test-topic"}),
-			LastHeartbeat:    time.Now(),
+			ConsumerID:         "consumer-nonexistent", // 这个消费者不存在于数据库中
+			GroupID:            groupID,
+			GenerationID:       1,
+			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
+			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			LastHeartbeat:      time.Now(),
 		},
 	}
 
@@ -64,8 +67,8 @@ func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 	}
 
 	// 尝试更新分配，应该由于不存在的消费者而失败
-	err := dal.UpdateAssignmentsInTx(context.Background(), db, groupID, 2, assignments)
-	
+	err := dal.UpdateAssignments(context.Background(), db, groupID, 2, assignments)
+
 	// 这个操作应该失败，因为consumer-nonexistent不存在
 	assert.Error(t, err, "更新不存在的消费者应该失败")
 
@@ -76,10 +79,10 @@ func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 
 	for _, consumer := range updatedConsumers {
 		if consumer.GenerationID != 1 {
-			t.Errorf("💥 BUG确认：消费者 %s 的代际ID被部分更新为 %d，应该仍为 1（事务应该完全回滚）", 
+			t.Errorf("💥 BUG确认：消费者 %s 的代际ID被部分更新为 %d，应该仍为 1（事务应该完全回滚）",
 				consumer.ConsumerID, consumer.GenerationID)
 		}
-		
+
 		// 检查分配是否被部分更新
 		if len(consumer.AssignedPartitions) > 0 {
 			var partitions []types.PartitionInfo
@@ -91,19 +94,20 @@ func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 }
 
 // TestDALUpdateAssignmentsConsistency 测试分配更新的一致性
-// BUG描述：检查UpdateAssignmentsInTx是否能正确处理并发更新
+// BUG描述：检查UpdateAssignments是否能正确处理并发更新
 func TestDALUpdateAssignmentsConsistency(t *testing.T) {
 	db, _ := setupIntegrationTest(t)
 
 	groupID := "test-consistency-group"
-	
+
 	// 创建测试消费者
 	consumer := types.ConsumerHeartbeat{
-		ConsumerID:        "consumer-1",
-		GroupID:          groupID,
-		GenerationID:     1,
-		SubscribedTopics: mustMarshalJSON([]string{"test-topic"}),
-		LastHeartbeat:    time.Now(),
+		ConsumerID:         "consumer-1",
+		GroupID:            groupID,
+		GenerationID:       1,
+		SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
+		AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+		LastHeartbeat:      time.Now(),
 	}
 	require.NoError(t, db.Create(&consumer).Error)
 
@@ -123,11 +127,11 @@ func TestDALUpdateAssignmentsConsistency(t *testing.T) {
 	}
 
 	// 第一次更新
-	err1 := dal.UpdateAssignmentsInTx(context.Background(), db, groupID, 2, assignments1)
+	err1 := dal.UpdateAssignments(context.Background(), db, groupID, 2, assignments1)
 	require.NoError(t, err1)
 
 	// 第二次更新（模拟快速重新均衡）
-	err2 := dal.UpdateAssignmentsInTx(context.Background(), db, groupID, 3, assignments2)
+	err2 := dal.UpdateAssignments(context.Background(), db, groupID, 3, assignments2)
 	require.NoError(t, err2)
 
 	// 验证最终状态
@@ -140,7 +144,7 @@ func TestDALUpdateAssignmentsConsistency(t *testing.T) {
 	// 检查分区分配是否正确
 	var finalPartitions []types.PartitionInfo
 	require.NoError(t, json.Unmarshal(finalConsumer.AssignedPartitions, &finalPartitions))
-	
+
 	expectedPartitions := assignments2["consumer-1"]
 	assert.Equal(t, expectedPartitions, finalPartitions, "最终分区分配应该是第二次更新的结果")
 }
@@ -175,10 +179,10 @@ func TestDALBatchCommitOffsetsAtomicity(t *testing.T) {
 	// 验证所有偏移量都被正确提交
 	for partition, expectedOffset := range offsets {
 		var committedOffset types.ConsumerGroupOffset
-		err := db.Where("group_id = ? AND topic = ? AND `partition` = ?", 
+		err := db.Where("group_id = ? AND topic = ? AND `partition` = ?",
 			groupID, partition.Topic, partition.Partition).First(&committedOffset).Error
 		require.NoError(t, err, "应该能找到提交的偏移量")
-		assert.Equal(t, expectedOffset, committedOffset.CommittedOffset, 
+		assert.Equal(t, expectedOffset, committedOffset.CommittedOffset,
 			"分区 %d 的偏移量应该正确", partition.Partition)
 	}
 
@@ -196,10 +200,10 @@ func TestDALBatchCommitOffsetsAtomicity(t *testing.T) {
 	// 验证所有偏移量都被正确更新
 	for partition, expectedOffset := range invalidOffsets {
 		var committedOffset types.ConsumerGroupOffset
-		err := db.Where("group_id = ? AND topic = ? AND `partition` = ?", 
+		err := db.Where("group_id = ? AND topic = ? AND `partition` = ?",
 			groupID, partition.Topic, partition.Partition).First(&committedOffset).Error
 		require.NoError(t, err, "应该能找到更新的偏移量")
-		assert.Equal(t, expectedOffset, committedOffset.CommittedOffset, 
+		assert.Equal(t, expectedOffset, committedOffset.CommittedOffset,
 			"分区 %d 的偏移量应该被正确更新", partition.Partition)
 	}
 }
@@ -260,7 +264,7 @@ func TestDALFetchMessagesBatchConsistency(t *testing.T) {
 			partition1Count++
 		}
 	}
-	
+
 	assert.Equal(t, 3, partition0Count, "分区0应该有3条消息")
 	assert.Equal(t, 2, partition1Count, "分区1应该有2条消息")
 }
