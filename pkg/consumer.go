@@ -171,13 +171,16 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
 func (c *Consumer) Close() {
 	log.Printf("Closing consumer %s...", c.id)
-	// 停止所有后台循环（例如心跳循环）
+	
+	// 停止所有后台循环
 	select {
 	case <-c.stopCh:
 		// 已经关闭了，不需要再次关闭
 	default:
 		close(c.stopCh)
 	}
+	
+	// 等待所有goroutine停止
 	c.wg.Wait()
 
 	// 关闭pubsub连接
@@ -187,13 +190,13 @@ func (c *Consumer) Close() {
 	}
 	c.muSub.Unlock()
 
-	// 最后一次提交待处理的偏移量
+	// 在所有后台进程停止后，进行最后一次提交
+	// 这样可以避免与自动提交循环的竞争条件
 	if err := c.CommitSync(); err != nil {
 		log.Printf("ERROR: final commit failed for consumer %s: %v", c.id, err)
 	}
 
 	// 通过删除心跳记录优雅离开消费组
-	// 这让协调器能够立即触发重新均衡，而不需要等待心跳超时
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := dal.DeleteHeartbeat(ctx, c.db, c.config.GroupID, c.id); err != nil {
@@ -202,6 +205,7 @@ func (c *Consumer) Close() {
 
 	log.Printf("Consumer %s shut down.", c.id)
 }
+
 
 // Poll 从订阅的Topic和分区中拉取消息
 // 这是消费者逻辑的核心，实现了复杂的拉取和通知机制
@@ -825,25 +829,79 @@ func (c *Consumer) getAssignedPartitions() []types.PartitionInfo {
 // clearAndFetchOffsetsForNewAssignment clears old state and fetches committed offsets for a new assignment.
 // It must be called after the new assignment has been set on the consumer.
 func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string][]uint) error {
-	// Build the list of partitions to fetch before acquiring any locks
+	// 构建新分配的分区列表
 	var partitionsToFetch []types.PartitionInfo
+	newPartitionSet := make(map[types.PartitionInfo]bool)
 	for topic, parts := range newAssignment {
 		for _, pNum := range parts {
-			partitionsToFetch = append(partitionsToFetch, types.PartitionInfo{Topic: topic, Partition: pNum})
+			partition := types.PartitionInfo{Topic: topic, Partition: pNum}
+			partitionsToFetch = append(partitionsToFetch, partition)
+			newPartitionSet[partition] = true
 		}
 	}
 
 	c.mu.Lock()
-	c.polledOffsets = make(map[types.PartitionInfo]int64)
-	c.committedOffsets = make(map[types.PartitionInfo]int64)
-	c.assignment = newAssignment
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
+	// 找出被撤销的分区（在当前分配中但不在新分配中）
+	var revokedPartitions []types.PartitionInfo
+	for topic, parts := range c.assignment {
+		for _, pNum := range parts {
+			partition := types.PartitionInfo{Topic: topic, Partition: pNum}
+			if !newPartitionSet[partition] {
+				revokedPartitions = append(revokedPartitions, partition)
+			}
+		}
+	}
+
+	// 如果有被撤销的分区，先提交它们的偏移量
+	if len(revokedPartitions) > 0 {
+		log.Printf("Consumer %s: committing offsets for revoked partitions: %v", c.id, revokedPartitions)
+		
+		// 为撤销的分区准备偏移量提交
+		offsetsToCommit := make(map[types.PartitionInfo]int64)
+		for _, p := range revokedPartitions {
+			// 优先提交polledOffset，如果没有则提交committedOffset-1
+			if polledOffset, exists := c.polledOffsets[p]; exists {
+				offsetsToCommit[p] = polledOffset
+			} else if committedOffset, exists := c.committedOffsets[p]; exists && committedOffset > 0 {
+				offsetsToCommit[p] = committedOffset - 1
+			}
+		}
+
+		// 执行提交（暂时释放锁）
+		if len(offsetsToCommit) > 0 {
+			c.mu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
+			cancel()
+			c.mu.Lock()
+			
+			if err != nil {
+				log.Printf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err)
+				// 继续执行，但记录错误
+			} else {
+				log.Printf("Consumer %s: successfully committed revoked partitions", c.id)
+			}
+		}
+	}
+
+	// 只清空被撤销的分区的偏移量，保留继续分配的分区
+	for _, p := range revokedPartitions {
+		delete(c.polledOffsets, p)
+		delete(c.committedOffsets, p)
+	}
+
+	// 更新分配
+	c.assignment = newAssignment
+
+	// 如果没有新分区需要获取，直接返回
 	if len(partitionsToFetch) == 0 {
 		return nil
 	}
 
-	// This now happens in the background, so use a background context.
+	// 获取新分区的已提交偏移量（暂时释放锁）
+	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -851,19 +909,17 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	fetchedOffsets, err := dal.GetCommittedOffsets(ctx, c.db, c.config.GroupID, partitionsToFetch)
 	if err != nil {
 		log.Printf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err)
+		c.mu.Lock()
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
 
-	// 只对没有已提交偏移量的分区应用消费策略
-	// 有已提交偏移量的分区会继续从上次的位置消费，不受策略影响
+	// 为没有已提交偏移量的分区应用消费策略
 	for _, p := range partitionsToFetch {
 		if _, exists := fetchedOffsets[p]; !exists {
-			// 该消费组第一次消费此分区，根据消费策略决定起始位置
 			startOffset, err := c.determineStartOffset(ctx, p)
 			if err != nil {
 				log.Printf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err)
-				// 发生错误时回退到从0开始
-				fetchedOffsets[p] = 0
+				fetchedOffsets[p] = 0 // 回退到0
 				log.Printf("Consumer %s: fallback to offset 0 for partition %v due to error", c.id, p)
 			} else {
 				fetchedOffsets[p] = startOffset
@@ -871,7 +927,6 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 					c.id, p, c.config.ConsumeStrategy.String(), startOffset)
 			}
 		} else {
-			// 有已提交偏移量，继续从上次的位置消费
 			log.Printf("Consumer %s: 🔄 continuing partition %v from committed offset %d",
 				c.id, p, fetchedOffsets[p])
 		}
@@ -879,12 +934,15 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 
 	log.Printf("Consumer %s: fetched offsets: %v", c.id, fetchedOffsets)
 
+	// 更新偏移量（重新获取锁）
 	c.mu.Lock()
-	c.committedOffsets = fetchedOffsets
-	c.mu.Unlock()
+	for partition, offset := range fetchedOffsets {
+		c.committedOffsets[partition] = offset
+	}
 
 	return nil
 }
+
 
 // findRevokedPartitions calculates which partitions are present in the old assignment
 // but not in the new one.
@@ -955,6 +1013,17 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 检查新偏移量是否小于已提交的偏移量
+	if committedOffset, exists := c.committedOffsets[p]; exists {
+		// committedOffsets存储的是下一个要消费的偏移量
+		// 所以polledOffset不应该小于committedOffset-1
+		if offset < committedOffset-1 {
+			log.Printf("WARNING: Consumer %s: attempted to set polledOffset %d which is less than committed offset %d for partition %v",
+				c.id, offset, committedOffset-1, p)
+			return // 拒绝设置无效的偏移量
+		}
+	}
+
 	// 确保偏移量是单调递增的
 	if currentOffset, exists := c.polledOffsets[p]; exists {
 		if offset > currentOffset {
@@ -966,6 +1035,7 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 		c.polledOffsets[p] = offset
 	}
 }
+
 
 func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 	res := make([]ConsumerMessage, len(msgs))
