@@ -629,10 +629,6 @@ func (c *Consumer) CommitSync() error {
 }
 
 // CommitOffsets 提交指定的偏移量到指定的分区
-// 这允许精确控制提交到哪个消息ID
-// CommitOffsets 提交指定的偏移量到指定的分区
-// 这允许精确控制提交到哪个消息ID，用于手动提交模式
-// CommitOffsets 提交指定的偏移量到指定的分区
 // 这允许精确控制提交到哪个消息ID，用于手动提交模式
 func (c *Consumer) CommitOffsets(offsets map[types.PartitionInfo]int64) error {
 	if len(offsets) == 0 {

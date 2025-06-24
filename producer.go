@@ -219,10 +219,7 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*typ
 // nextRoundRobinPartition 使用轮询策略选择下一个分区
 // 使用原子操作确保线程安全，每个Topic独立维护计数器
 func (p *Producer) nextRoundRobinPartition(topic string, partitionCount uint) uint {
-	if partitionCount == 0 {
-		return 0
-	}
-	if partitionCount == 1 {
+	if partitionCount <= 1 {
 		return 0
 	}
 	// 获取或创建该Topic的计数器
