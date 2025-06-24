@@ -33,7 +33,7 @@ SET per_partition_offset = (
     WHERE m2.topic = m1.topic 
       AND m2.partition = m1.partition 
       AND m2.id <= m1.id
-) - 1
+)
 `
 	if err := db.Exec(updateSQL).Error; err != nil {
 		return fmt.Errorf("更新现有数据的per_partition_offset失败: %w", err)
@@ -53,9 +53,15 @@ SET per_partition_offset = (
 
 	// 6. 更新消费索引
 	fmt.Println("   更新消费索引...")
-	if err := db.Exec("DROP INDEX idx_consume_pull ON mq_messages").Error; err != nil {
-		// 忽略错误，索引可能不存在
-		fmt.Printf("   警告：删除旧索引失败（可能不存在）: %v\n", err)
+
+	// 检查索引是否存在
+	var indexExists int
+	if err := db.Raw("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'mq_messages' AND index_name = 'idx_consume_pull'").Scan(&indexExists).Error; err != nil {
+		fmt.Printf("   警告：检查索引是否存在失败: %v\n", err)
+	} else if indexExists > 0 {
+		if err := db.Exec("DROP INDEX idx_consume_pull ON mq_messages").Error; err != nil {
+			fmt.Printf("   警告：删除旧索引失败: %v\n", err)
+		}
 	}
 
 	if err := db.Exec("CREATE INDEX idx_consume_pull ON mq_messages (topic, partition, per_partition_offset)").Error; err != nil {

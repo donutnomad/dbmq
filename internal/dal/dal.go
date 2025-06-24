@@ -266,11 +266,12 @@ func CommitOffset(ctx context.Context, db *gorm.DB, groupID string, generationID
 
 // CreateMessage 向数据库插入新消息
 // 自动计算分区内的偏移量，确保每个分区的偏移量从0开始独立计数
+// 使用数据库级别的并发控制确保offset的唯一性
 func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 获取该分区当前的最大偏移量
+		// 使用 SELECT ... FOR UPDATE 锁定分区的最大offset查询，确保并发安全
 		var maxOffset int64
-		err := tx.Raw("SELECT COALESCE(MAX(per_partition_offset), -1) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ?",
+		err := tx.Raw("SELECT COALESCE(MAX(per_partition_offset), -1) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? FOR UPDATE",
 			msg.Topic, msg.Partition).Scan(&maxOffset).Error
 		if err != nil {
 			return err
@@ -280,6 +281,7 @@ func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
 		msg.PerPartitionOffset = maxOffset + 1
 
 		// 插入消息
+		// 数据库的唯一约束 uk_topic_partition_offset 会确保offset的唯一性
 		return tx.Create(msg).Error
 	})
 }
