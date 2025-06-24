@@ -171,7 +171,7 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
 func (c *Consumer) Close() {
 	log.Printf("Closing consumer %s...", c.id)
-	
+
 	// 停止所有后台循环
 	select {
 	case <-c.stopCh:
@@ -179,7 +179,7 @@ func (c *Consumer) Close() {
 	default:
 		close(c.stopCh)
 	}
-	
+
 	// 等待所有goroutine停止
 	c.wg.Wait()
 
@@ -205,7 +205,6 @@ func (c *Consumer) Close() {
 
 	log.Printf("Consumer %s shut down.", c.id)
 }
-
 
 // Poll 从订阅的Topic和分区中拉取消息
 // 这是消费者逻辑的核心，实现了复杂的拉取和通知机制
@@ -680,15 +679,6 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 	return c.CommitOffsets(offsets)
 }
 
-// commitOffsetsWithoutLock 处理批量提交偏移量的数据库逻辑
-// 这个版本不获取任何锁，供内部使用
-// commitOffsetsWithoutLock 已废弃，使用CommitSync替代
-// 保留此方法仅为兼容性，实际调用CommitSync
-func (c *Consumer) commitOffsetsWithoutLock(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
-	// 直接调用CommitSync，它已经包含了所有必要的逻辑
-	return c.CommitSync()
-}
-
 // commitOffsets handles the database logic for committing a batch of offsets.
 // This is the legacy method that acquires locks internally.
 // commitOffsets 处理重新均衡时撤销分区的偏移量提交
@@ -857,7 +847,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	// 如果有被撤销的分区，先提交它们的偏移量
 	if len(revokedPartitions) > 0 {
 		log.Printf("Consumer %s: committing offsets for revoked partitions: %v", c.id, revokedPartitions)
-		
+
 		// 为撤销的分区准备偏移量提交
 		offsetsToCommit := make(map[types.PartitionInfo]int64)
 		for _, p := range revokedPartitions {
@@ -876,7 +866,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 			err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
 			cancel()
 			c.mu.Lock()
-			
+
 			if err != nil {
 				log.Printf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err)
 				// 继续执行，但记录错误
@@ -942,7 +932,6 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 
 	return nil
 }
-
 
 // findRevokedPartitions calculates which partitions are present in the old assignment
 // but not in the new one.
@@ -1035,7 +1024,6 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 		c.polledOffsets[p] = offset
 	}
 }
-
 
 func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 	res := make([]ConsumerMessage, len(msgs))
