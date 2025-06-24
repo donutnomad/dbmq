@@ -50,13 +50,14 @@ func (t *Topic) TableName() string {
 // Message 对应 mq_messages 表，存储消息的核心数据
 // 这是系统中最重要的表，存储了所有的消息内容
 type Message struct {
-	ID         int64          `gorm:"primaryKey;autoIncrement"`                   // 全局唯一ID，自增，作为分区内的Offset使用
-	Topic      string         `gorm:"not null;index:idx_consume_pull,priority:1"` // 消息所属的Topic
-	Partition  uint           `gorm:"not null;index:idx_consume_pull,priority:2"` // 消息所属的分区号
-	MessageKey sql.NullString // 消息的业务Key，用于分区路由策略，可为空
-	Headers    []byte         `gorm:"type:json"`                                                                                                      // 消息头，JSON格式存储键值对
-	Body       []byte         `gorm:"not null"`                                                                                                       // 消息体，实际的消息内容
-	CreatedAt  time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_consume_pull,priority:3;index:idx_created_at"` // 消息创建时间
+	ID                 int64          `gorm:"primaryKey;autoIncrement"`                   // 全局唯一ID，用于数据库行标识
+	Topic              string         `gorm:"not null;index:idx_consume_pull,priority:1"` // 消息所属的Topic
+	Partition          uint           `gorm:"not null;index:idx_consume_pull,priority:2"` // 消息所属的分区号
+	PerPartitionOffset int64          `gorm:"not null;index:idx_consume_pull,priority:3"` // 分区内的偏移量，从0开始，每个分区独立计数
+	MessageKey         sql.NullString // 消息的业务Key，用于分区路由策略，可为空
+	Headers            []byte         `gorm:"type:json"`                                                                    // 消息头，JSON格式存储键值对
+	Body               []byte         `gorm:"not null"`                                                                     // 消息体，实际的消息内容
+	CreatedAt          time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_created_at"` // 消息创建时间
 }
 
 func (m *Message) TableName() string {
@@ -132,7 +133,7 @@ type ProducerMessage struct {
 type SendResult struct {
 	Topic     string // 消息所在的Topic
 	Partition uint   // 消息所在的分区
-	Offset    int64  // 消息在分区中的偏移量（即Message表的ID）
+	Offset    int64  // 消息在分区中的偏移量（即Message表的PerPartitionOffset）
 }
 
 // ConsumerMessage 消费者从轮询请求中接收到的消息

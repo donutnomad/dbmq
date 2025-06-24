@@ -23,16 +23,19 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_topics`" + ` (
 	// mq_messages 表定义
 	// 系统中最重要的表，存储所有消息数据
 	// 使用复合索引优化消费查询性能
+	// 修复：添加per_partition_offset字段解决不同topic的offset混淆问题
 	mqMessagesSchema = `
 CREATE TABLE IF NOT EXISTS ` + "`mq_messages`" + ` (
-  ` + "`id`" + ` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局唯一ID, 作为分区的Offset使用',
+  ` + "`id`" + ` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局唯一ID，用于数据库行标识',
   ` + "`topic`" + ` VARCHAR(255) NOT NULL,
   ` + "`partition`" + ` INT UNSIGNED NOT NULL,
+  ` + "`per_partition_offset`" + ` BIGINT NOT NULL COMMENT '分区内的偏移量，从0开始，每个分区独立计数',
   ` + "`message_key`" + ` VARCHAR(255) NULL COMMENT '消息的业务Key, 用于分区策略',
   ` + "`headers`" + ` JSON NULL,
   ` + "`body`" + ` LONGBLOB NOT NULL,
   ` + "`created_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  INDEX ` + "`idx_consume_pull`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`id`" + `),
+  UNIQUE KEY ` + "`uk_topic_partition_offset`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`per_partition_offset`" + `),
+  INDEX ` + "`idx_consume_pull`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`per_partition_offset`" + `),
   INDEX ` + "`idx_created_at`" + ` (` + "`created_at`" + `)
 ) ENGINE=InnoDB COMMENT='消息持久化日志表';`
 

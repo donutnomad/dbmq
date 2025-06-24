@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/types"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/donutnomad/dbmq/types"
 
 	"github.com/donutnomad/dbmq/internal/dal"
 
@@ -158,7 +159,7 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	return &SendResult{
 		Topic:     msg.Topic,
 		Partition: partition,
-		Offset:    dbMsg.ID, // 数据库自增ID作为偏移量
+		Offset:    dbMsg.PerPartitionOffset, // 分区内的偏移量
 	}, nil
 }
 

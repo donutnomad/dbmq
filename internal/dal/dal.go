@@ -156,7 +156,7 @@ func GetConsumerAssignment(ctx context.Context, db *gorm.DB, groupID, consumerID
 // 这是消费者Poll操作的核心数据库查询
 func FetchMessages(ctx context.Context, db *gorm.DB, topic string, partition uint, offset int64, limit int) ([]types.Message, error) {
 	var messages []types.Message
-	sql := "SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
+	sql := "SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `per_partition_offset` > ? ORDER BY `per_partition_offset` ASC LIMIT ?"
 	err := db.WithContext(ctx).
 		Raw(sql, topic, partition, offset, limit).
 		Scan(&messages).Error
@@ -183,12 +183,12 @@ func FetchMessagesBatch(ctx context.Context, db *gorm.DB, requests []PartitionRe
 	var args []any
 
 	for _, req := range requests {
-		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
+		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `per_partition_offset` > ? ORDER BY `per_partition_offset` ASC LIMIT ?)")
 		args = append(args, req.Topic, req.Partition, req.Offset, req.Limit)
 	}
 
-	// 组合所有UNION查询，最后按ID排序以保证消息的全局顺序
-	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `id` ASC"
+	// 组合所有UNION查询，最后按创建时间排序以保证消息的时间顺序
+	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `created_at` ASC, `per_partition_offset` ASC"
 
 	var messages []types.Message
 	err := db.WithContext(ctx).
@@ -265,9 +265,23 @@ func CommitOffset(ctx context.Context, db *gorm.DB, groupID string, generationID
 }
 
 // CreateMessage 向数据库插入新消息
-// 使用GORM的Create方法确保消息的ID在插入后被填充
+// 自动计算分区内的偏移量，确保每个分区的偏移量从0开始独立计数
 func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
-	return db.WithContext(ctx).Create(msg).Error
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 获取该分区当前的最大偏移量
+		var maxOffset int64
+		err := tx.Raw("SELECT COALESCE(MAX(per_partition_offset), -1) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ?",
+			msg.Topic, msg.Partition).Scan(&maxOffset).Error
+		if err != nil {
+			return err
+		}
+
+		// 设置新消息的分区偏移量
+		msg.PerPartitionOffset = maxOffset + 1
+
+		// 插入消息
+		return tx.Create(msg).Error
+	})
 }
 
 // RegisterConsumer 创建或更新消费者的注册，包括其Topic订阅
@@ -344,19 +358,19 @@ func GetAllTopics(ctx context.Context, db *gorm.DB) ([]types.Topic, error) {
 	return topics, err
 }
 
-// GetLatestOffset 获取指定分区的最新偏移量（最大消息ID）
-// 如果分区没有消息，返回0
+// GetLatestOffset 获取指定分区的最新偏移量（最大per_partition_offset）
+// 如果分区没有消息，返回-1（表示下一条消息从0开始）
 func GetLatestOffset(ctx context.Context, db *gorm.DB, topic string, partition uint) (int64, error) {
-	var maxID int64
-	sql := "SELECT COALESCE(MAX(id), 0) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ?"
-	err := db.WithContext(ctx).Raw(sql, topic, partition).Scan(&maxID).Error
-	return maxID, err
+	var maxOffset int64
+	sql := "SELECT COALESCE(MAX(per_partition_offset), -1) FROM `mq_messages` WHERE `topic` = ? AND `partition` = ?"
+	err := db.WithContext(ctx).Raw(sql, topic, partition).Scan(&maxOffset).Error
+	return maxOffset, err
 }
 
 // DeleteMessagesByPartition deletes messages from a partition that are older than a certain offset AND a certain time.
 func DeleteMessagesByPartition(ctx context.Context, db *gorm.DB, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
 	// We must use a raw query because GORM does not support DELETE with table alias and JOIN.
-	sql := "DELETE FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` < ? AND `created_at` < ? LIMIT ?"
+	sql := "DELETE FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `per_partition_offset` < ? AND `created_at` < ? LIMIT ?"
 	res := db.WithContext(ctx).Exec(sql, topic, partition, maxOffset, retentionDate, limit)
 	return res.RowsAffected, res.Error
 }

@@ -991,8 +991,8 @@ func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
 		return committedOffset
 	}
 
-	// 如果没有已提交的偏移量，从0开始
-	return 0
+	// 如果没有已提交的偏移量，从-1开始（表示从第一条消息开始消费）
+	return -1
 }
 
 // setPolledOffset 设置分区的已拉取偏移量
@@ -1040,7 +1040,7 @@ func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 		res[i] = ConsumerMessage{
 			Topic:     m.Topic,
 			Partition: m.Partition,
-			Offset:    m.ID,
+			Offset:    m.PerPartitionOffset,
 			Key:       key,
 			Value:     m.Body,
 			Headers:   headers,
@@ -1121,9 +1121,9 @@ func min(a, b time.Duration) time.Duration {
 func (c *Consumer) determineStartOffset(ctx context.Context, partition types.PartitionInfo) (int64, error) {
 	switch c.config.ConsumeStrategy {
 	case ConsumeFromEarliest:
-		// 从分区的第一条消息开始消费（偏移量0）
+		// 从分区的第一条消息开始消费（偏移量-1，FetchMessages会获取offset > -1的消息）
 		log.Printf("Consumer %s: applying EARLIEST strategy for partition %v", c.id, partition)
-		return 0, nil
+		return -1, nil
 
 	case ConsumeFromLatest:
 		// 从最新的消息之后开始消费（跳过所有历史消息）
