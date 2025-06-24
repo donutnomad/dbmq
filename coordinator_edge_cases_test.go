@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,13 +44,13 @@ func TestCoordinatorRebalanceDeadlock(t *testing.T) {
 	// 创建测试消费者
 	groupID := "test-deadlock-group"
 	consumer1 := types.ConsumerHeartbeat{
-		ConsumerID:        "consumer-1",
+		ConsumerID:       "consumer-1",
 		GroupID:          groupID,
 		SubscribedTopics: mustMarshalJSON([]string{"test-deadlock-topic"}),
 		LastHeartbeat:    time.Now(),
 	}
 	consumer2 := types.ConsumerHeartbeat{
-		ConsumerID:        "consumer-2",
+		ConsumerID:       "consumer-2",
 		GroupID:          groupID,
 		SubscribedTopics: mustMarshalJSON([]string{"test-deadlock-topic"}),
 		LastHeartbeat:    time.Now(),
@@ -75,7 +75,7 @@ func TestCoordinatorRebalanceDeadlock(t *testing.T) {
 				mu.Unlock()
 			}
 		}(i)
-		
+
 		go func(i int) {
 			defer wg.Done()
 			if err := coordinator2.rebalanceIfNeeded(groupID); err != nil {
@@ -127,10 +127,10 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 	})
 
 	groupID := "test-generation-group"
-	
+
 	// 创建初始消费者
 	consumer := types.ConsumerHeartbeat{
-		ConsumerID:        "consumer-1",
+		ConsumerID:       "consumer-1",
 		GroupID:          groupID,
 		SubscribedTopics: mustMarshalJSON([]string{"test-generation-topic"}),
 		LastHeartbeat:    time.Now(),
@@ -153,10 +153,10 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			
+
 			// 添加新消费者
 			newConsumer := types.ConsumerHeartbeat{
-				ConsumerID:        fmt.Sprintf("consumer-%d", i+2),
+				ConsumerID:       fmt.Sprintf("consumer-%d", i+2),
 				GroupID:          groupID,
 				SubscribedTopics: mustMarshalJSON([]string{"test-generation-topic"}),
 				LastHeartbeat:    time.Now(),
@@ -181,7 +181,7 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 	// 检查是否存在代际ID不一致
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if len(generationIDs) == 0 {
 		t.Fatal("未能获取到任何代际ID")
 	}
@@ -193,9 +193,9 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 			t.Errorf("💥 BUG确认：发现重复的代际ID %d，存在竞争条件", genID)
 		}
 		seen[genID] = true
-		
+
 		if genID <= initialGeneration.GenerationID {
-			t.Errorf("💥 BUG确认：代际ID %d 小于等于初始代际ID %d，存在竞争条件", 
+			t.Errorf("💥 BUG确认：代际ID %d 小于等于初始代际ID %d，存在竞争条件",
 				genID, initialGeneration.GenerationID)
 		}
 	}
@@ -237,7 +237,7 @@ func TestCoordinatorAssignmentInconsistency(t *testing.T) {
 		{ConsumerID: "consumer-3", GroupID: "test-group"},
 	}
 	assignments3 := coordinator.calculateAssignments(consumers3, partitions)
-	
+
 	// 检查分配结果
 	totalAssigned := 0
 	emptyConsumers := 0
@@ -247,10 +247,10 @@ func TestCoordinatorAssignmentInconsistency(t *testing.T) {
 			emptyConsumers++
 		}
 		// 每个消费者最多应该分配到1个分区
-		assert.LessOrEqual(t, len(assignedPartitions), 1, 
+		assert.LessOrEqual(t, len(assignedPartitions), 1,
 			"消费者 %s 分配的分区数量不应超过1", consumerID)
 	}
-	
+
 	// 总分配的分区数应该等于实际分区数
 	assert.Equal(t, 1, totalAssigned, "总分配分区数应该等于实际分区数")
 	// 应该有2个消费者没有分配到分区
@@ -276,7 +276,7 @@ func TestCoordinatorAssignmentInconsistency(t *testing.T) {
 		assignment := coordinator.calculateAssignments(consumers4, partitions4)
 		for consumerID, partitions := range assignment {
 			expectedPartitions := firstAssignment[consumerID]
-			assert.Equal(t, expectedPartitions, partitions, 
+			assert.Equal(t, expectedPartitions, partitions,
 				"第 %d 次分配中消费者 %s 的分区分配不一致", i+1, consumerID)
 		}
 	}
@@ -299,16 +299,16 @@ func TestCoordinatorMembersCacheInconsistency(t *testing.T) {
 		"consumer-1": {},
 		"consumer-2": {},
 	}
-	
+
 	// 首次检查应该需要重新均衡（从空组到有成员）
-	assert.True(t, coordinator.isRebalanceNeeded(groupID, activeConsumerIDs), 
+	assert.True(t, coordinator.isRebalanceNeeded(groupID, activeConsumerIDs),
 		"首次出现活跃成员应该需要重新均衡")
 
 	// 更新成员缓存
 	coordinator.updateMembers(groupID, activeConsumerIDs)
 
 	// 相同成员集合应该不需要重新均衡
-	assert.False(t, coordinator.isRebalanceNeeded(groupID, activeConsumerIDs), 
+	assert.False(t, coordinator.isRebalanceNeeded(groupID, activeConsumerIDs),
 		"相同成员集合不应该需要重新均衡")
 
 	// 测试用例2：成员变化检测
@@ -316,8 +316,8 @@ func TestCoordinatorMembersCacheInconsistency(t *testing.T) {
 		"consumer-1": {},
 		"consumer-3": {}, // consumer-2 离开，consumer-3 加入
 	}
-	
-	assert.True(t, coordinator.isRebalanceNeeded(groupID, newActiveConsumerIDs), 
+
+	assert.True(t, coordinator.isRebalanceNeeded(groupID, newActiveConsumerIDs),
 		"成员变化应该需要重新均衡")
 
 	// 测试用例3：并发访问缓存
@@ -329,17 +329,17 @@ func TestCoordinatorMembersCacheInconsistency(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			
+
 			testConsumerIDs := map[string]struct{}{
 				fmt.Sprintf("consumer-%d", i): {},
 			}
-			
+
 			result := coordinator.isRebalanceNeeded(groupID, testConsumerIDs)
-			
+
 			mu.Lock()
 			results = append(results, result)
 			mu.Unlock()
-			
+
 			// 更新成员缓存
 			coordinator.updateMembers(groupID, testConsumerIDs)
 		}(i)
@@ -372,16 +372,16 @@ func TestCoordinatorResourceLeak(t *testing.T) {
 
 		// 启动协调器
 		coordinator.Start()
-		
+
 		// 等待一段时间让协调器工作
 		time.Sleep(100 * time.Millisecond)
-		
+
 		// 停止协调器
 		coordinator.Stop()
-		
+
 		// 验证协调器已停止
 		assert.True(t, coordinator.IsStopped(), "协调器应该已停止")
-		
+
 		// 等待goroutine清理
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -393,7 +393,7 @@ func TestCoordinatorResourceLeak(t *testing.T) {
 	// 检查goroutine是否有泄漏
 	finalGoroutines := countGoroutines()
 	goroutineDiff := finalGoroutines - initialGoroutines
-	
+
 	// 允许一些合理的goroutine增长（比如测试框架的goroutine）
 	if goroutineDiff > 10 {
 		t.Errorf("💥 BUG确认：可能存在goroutine泄漏，增加了 %d 个goroutine", goroutineDiff)

@@ -7,10 +7,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
-
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -58,7 +56,7 @@ func StrategyDemo() {
 
 	// 3. 创建管理客户端
 	fmt.Println("⚙️  创建管理客户端...")
-	admin, err := pkg.NewAdminClient(pkg.AdminConfig{DB: dbClient})
+	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{DB: dbClient})
 	if err != nil {
 		log.Fatalf("❌ 创建管理客户端失败: %v", err)
 	}
@@ -67,12 +65,12 @@ func StrategyDemo() {
 	// 4. 创建主题
 	topicName := "策略演示主题"
 	fmt.Printf("📋 创建主题: %s\n", topicName)
-	err = admin.CreateTopic(context.Background(), pkg.NewTopicRequest{
+	err = admin.CreateTopic(context.Background(), dbmq.NewTopicRequest{
 		Name:          topicName,
 		NumPartitions: 1,
 	})
 	if err != nil {
-		var topicExistsErr *dberrors.ErrTopicAlreadyExists
+		var topicExistsErr *dbmq.ErrTopicAlreadyExists
 		if !errors.As(err, &topicExistsErr) {
 			log.Fatalf("❌ 创建主题失败: %v", err)
 		}
@@ -83,7 +81,7 @@ func StrategyDemo() {
 
 	// 5. 创建生产者并发送一些历史消息
 	fmt.Println("📤 创建生产者并发送历史消息...")
-	producer, err := pkg.NewProducer(pkg.ProducerConfig{
+	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
 		DB:    dbClient,
 		Redis: redisClient,
 	})
@@ -94,7 +92,7 @@ func StrategyDemo() {
 
 	// 发送10条历史消息
 	for i := 1; i <= 10; i++ {
-		message := &pkg.ProducerMessage{
+		message := &dbmq.ProducerMessage{
 			Topic: topicName,
 			Key:   []byte(fmt.Sprintf("key-%d", i)),
 			Value: []byte(fmt.Sprintf("历史消息 #%d - 时间: %s", i, time.Now().Format("15:04:05"))),
@@ -111,9 +109,9 @@ func StrategyDemo() {
 	fmt.Println()
 
 	// 6. 演示不同的消费策略
-	demonstrateStrategy(dbClient, redisClient, topicName, "Earliest策略", pkg.ConsumeFromEarliest)
-	demonstrateStrategy(dbClient, redisClient, topicName, "Latest策略", pkg.ConsumeFromLatest)
-	demonstrateStrategy(dbClient, redisClient, topicName, "Committed策略", pkg.ConsumeFromCommitted)
+	demonstrateStrategy(dbClient, redisClient, topicName, "Earliest策略", dbmq.ConsumeFromEarliest)
+	demonstrateStrategy(dbClient, redisClient, topicName, "Latest策略", dbmq.ConsumeFromLatest)
+	demonstrateStrategy(dbClient, redisClient, topicName, "Committed策略", dbmq.ConsumeFromCommitted)
 
 	fmt.Println()
 	fmt.Println("🎯 消费策略演示完成！")
@@ -125,7 +123,7 @@ func StrategyDemo() {
 }
 
 // demonstrateStrategy 演示特定的消费策略
-func demonstrateStrategy(db *gorm.DB, redis *redis.Client, topicName, strategyName string, strategy pkg.ConsumeStrategy) {
+func demonstrateStrategy(db *gorm.DB, redis *redis.Client, topicName, strategyName string, strategy dbmq.ConsumeStrategy) {
 	fmt.Printf("🔍 演示 %s\n", strategyName)
 	fmt.Println("----------------------------------------")
 
@@ -136,7 +134,7 @@ func demonstrateStrategy(db *gorm.DB, redis *redis.Client, topicName, strategyNa
 	clearConsumerGroupOffsets(db, groupID)
 
 	// 创建消费者
-	consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  db,
 		Redis:               redis,
 		GroupID:             groupID,

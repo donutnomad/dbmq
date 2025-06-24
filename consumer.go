@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 import (
 	"context"
@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -212,7 +211,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	// 如果正在进行重新均衡，立即返回并提示用户
 	// 心跳循环负责处理重新均衡过程
 	if c.rebalancing.Load() {
-		return nil, &dberrors.ErrRebalanceInProgress{GroupID: c.config.GroupID}
+		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 
 	// 获取当前分配的分区

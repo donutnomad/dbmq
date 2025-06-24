@@ -1,11 +1,11 @@
-package pkg
+package dbmq
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +13,7 @@ import (
 // TestConsumerRebalanceDataLossFixed 验证重新均衡数据丢失BUG的修复
 func TestConsumerRebalanceDataLossFixed(t *testing.T) {
 	testDB, testRedis := setupIntegrationTest(t)
-	
+
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
 		DB:                     testDB,
@@ -25,17 +25,17 @@ func TestConsumerRebalanceDataLossFixed(t *testing.T) {
 	})
 	coordinator.Start()
 	defer coordinator.Stop()
-	
+
 	// 等待协调器成为领导者
 	for !coordinator.IsLeader() {
 		time.Sleep(100 * time.Millisecond)
 	}
-	
+
 	// 创建测试主题
 	admin, err := NewAdminClient(AdminConfig{DB: testDB})
 	require.NoError(t, err)
 	defer admin.Close()
-	
+
 	topicName := "rebalance-fix-test-topic"
 	err = admin.CreateTopic(context.Background(), NewTopicRequest{
 		Name:          topicName,
@@ -86,7 +86,7 @@ func TestConsumerRebalanceDataLossFixed(t *testing.T) {
 	partition1 := types.PartitionInfo{Topic: topicName, Partition: 0}
 	partition2 := types.PartitionInfo{Topic: topicName, Partition: 1}
 	partition3 := types.PartitionInfo{Topic: topicName, Partition: 2}
-	
+
 	consumer.setPolledOffset(partition1, 2)
 	consumer.setPolledOffset(partition2, 3)
 	consumer.setPolledOffset(partition3, 1)

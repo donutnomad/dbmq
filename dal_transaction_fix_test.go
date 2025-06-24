@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,25 +18,25 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 	db, _ := setupIntegrationTest(t)
 
 	groupID := "test-transaction-fix-group"
-	
+
 	t.Run("正常情况下的事务行为", func(t *testing.T) {
 		// 创建测试消费者
 		consumers := []types.ConsumerHeartbeat{
 			{
 				ConsumerID:         "consumer-1",
-				GroupID:           groupID,
-				GenerationID:      1,
-				SubscribedTopics:  mustMarshalJSON([]string{"test-topic"}),
+				GroupID:            groupID,
+				GenerationID:       1,
+				SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
 				AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
-				LastHeartbeat:     time.Now(),
+				LastHeartbeat:      time.Now(),
 			},
 			{
-				ConsumerID:         "consumer-2", 
-				GroupID:           groupID,
-				GenerationID:      1,
-				SubscribedTopics:  mustMarshalJSON([]string{"test-topic"}),
+				ConsumerID:         "consumer-2",
+				GroupID:            groupID,
+				GenerationID:       1,
+				SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
 				AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
-				LastHeartbeat:     time.Now(),
+				LastHeartbeat:      time.Now(),
 			},
 		}
 
@@ -64,15 +64,15 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 		require.NoError(t, db.Where("group_id = ?", groupID).Find(&updatedConsumers).Error)
 
 		for _, consumer := range updatedConsumers {
-			assert.Equal(t, uint(2), consumer.GenerationID, 
+			assert.Equal(t, uint(2), consumer.GenerationID,
 				"消费者 %s 的代际ID应该被更新为2", consumer.ConsumerID)
-			
+
 			// 验证分区分配
 			var partitions []types.PartitionInfo
 			require.NoError(t, json.Unmarshal(consumer.AssignedPartitions, &partitions))
-			
+
 			expectedPartitions := assignments[consumer.ConsumerID]
-			assert.Equal(t, expectedPartitions, partitions, 
+			assert.Equal(t, expectedPartitions, partitions,
 				"消费者 %s 的分区分配应该正确", consumer.ConsumerID)
 		}
 
@@ -82,15 +82,15 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 	t.Run("失败情况下的事务回滚", func(t *testing.T) {
 		// 使用不同的group ID避免冲突
 		failGroupID := "test-transaction-fail-group"
-		
+
 		// 只创建一个消费者
 		consumer := types.ConsumerHeartbeat{
 			ConsumerID:         "existing-consumer",
-			GroupID:           failGroupID,
-			GenerationID:      1,
-			SubscribedTopics:  mustMarshalJSON([]string{"test-topic"}),
+			GroupID:            failGroupID,
+			GenerationID:       1,
+			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
 			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
-			LastHeartbeat:     time.Now(),
+			LastHeartbeat:      time.Now(),
 		}
 		require.NoError(t, db.Create(&consumer).Error)
 
@@ -110,12 +110,12 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 
 		// 验证事务回滚：existing-consumer的状态不应该被更新
 		var unchangedConsumer types.ConsumerHeartbeat
-		require.NoError(t, db.Where("group_id = ? AND consumer_id = ?", 
+		require.NoError(t, db.Where("group_id = ? AND consumer_id = ?",
 			failGroupID, "existing-consumer").First(&unchangedConsumer).Error)
 
-		assert.Equal(t, uint(1), unchangedConsumer.GenerationID, 
+		assert.Equal(t, uint(1), unchangedConsumer.GenerationID,
 			"事务回滚后，existing-consumer的代际ID应该仍为1")
-		
+
 		// 验证分区分配也没有被更新（应该为空或原值）
 		if len(unchangedConsumer.AssignedPartitions) > 0 {
 			var partitions []types.PartitionInfo
@@ -135,14 +135,14 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 	t.Run("调用者无需管理事务", func(t *testing.T) {
 		// 这个测试验证调用者不需要显式创建事务
 		simpleGroupID := "test-simple-call-group"
-		
+
 		consumer := types.ConsumerHeartbeat{
 			ConsumerID:         "simple-consumer",
-			GroupID:           simpleGroupID,
-			GenerationID:      1,
-			SubscribedTopics:  mustMarshalJSON([]string{"test-topic"}),
+			GroupID:            simpleGroupID,
+			GenerationID:       1,
+			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
 			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
-			LastHeartbeat:     time.Now(),
+			LastHeartbeat:      time.Now(),
 		}
 		require.NoError(t, db.Create(&consumer).Error)
 
@@ -158,7 +158,7 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 
 		// 验证更新成功
 		var updatedConsumer types.ConsumerHeartbeat
-		require.NoError(t, db.Where("group_id = ? AND consumer_id = ?", 
+		require.NoError(t, db.Where("group_id = ? AND consumer_id = ?",
 			simpleGroupID, "simple-consumer").First(&updatedConsumer).Error)
 
 		assert.Equal(t, uint(3), updatedConsumer.GenerationID, "代际ID应该被更新")

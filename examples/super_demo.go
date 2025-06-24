@@ -7,15 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/db"
+	"gorm.io/gorm"
 	"log"
 	"sync"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
-
-	"gorm.io/gorm"
 )
 
 // OrderMessage 订单消息结构
@@ -84,7 +81,7 @@ func SuperDemo() {
 
 	// 2. 启动协调器（必须在消费者之前启动）
 	fmt.Println("⚖️  启动协调器...")
-	coordinator := pkg.NewCoordinator(pkg.CoordinatorConfig{
+	coordinator := dbmq.NewCoordinator(dbmq.CoordinatorConfig{
 		DB:                     dbClient,
 		HeartbeatTimeout:       30 * time.Second,   // 心跳超时时间，增加到30秒
 		RebalanceInterval:      3 * time.Second,    // 重新均衡检查间隔，设置为3秒确保快速重新均衡
@@ -105,7 +102,7 @@ func SuperDemo() {
 
 	// 3. 创建AdminClient并创建主题
 	fmt.Println("📝 创建管理客户端...")
-	admin, err := pkg.NewAdminClient(pkg.AdminConfig{
+	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{
 		DB: dbClient,
 	})
 	if err != nil {
@@ -116,7 +113,7 @@ func SuperDemo() {
 	// 创建"创建订单"主题
 	fmt.Println("🎯 创建主题: 创建订单")
 	topicName := "创建订单"
-	topicReq := pkg.NewTopicRequest{
+	topicReq := dbmq.NewTopicRequest{
 		Name:          topicName,
 		NumPartitions: 1, // 1个分区
 	}
@@ -131,7 +128,7 @@ func SuperDemo() {
 
 	// 4. 创建生产者
 	fmt.Println("📤 创建生产者...")
-	producer, err := pkg.NewProducer(pkg.ProducerConfig{
+	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
 		DB:                   dbClient,
 		Redis:                redisClient,
 		NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
@@ -147,7 +144,7 @@ func SuperDemo() {
 	fmt.Println("📥 创建消费者...")
 
 	// 消费组001 - 订单处理服务（手动提交模式）
-	consumer001, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer001, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
 		GroupID:             "消费组001",
@@ -164,7 +161,7 @@ func SuperDemo() {
 	defer consumer001.Close()
 
 	// 消费组002 - 数据分析服务（自动提交模式）
-	consumer002, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
 		GroupID:             "消费组002",
@@ -182,7 +179,7 @@ func SuperDemo() {
 	defer consumer002.Close()
 
 	// 消费组003 - 从最新消息开始消费（自动提交模式）
-	consumer003, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
 		GroupID:             "消费组003",
@@ -191,7 +188,7 @@ func SuperDemo() {
 		Topics:              []string{topicName},
 		PollFetchLimit:      10,
 		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
-		ConsumeStrategy:     pkg.ConsumeFromLatest,
+		ConsumeStrategy:     dbmq.ConsumeFromLatest,
 		EnableAutoCommit:    true,            // 启用自动提交
 		AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
 	})
@@ -286,10 +283,10 @@ func SuperDemo() {
 }
 
 // createTopicIfNotExists 创建主题，如果已存在则忽略
-func createTopicIfNotExists(admin *pkg.AdminClient, req pkg.NewTopicRequest) error {
+func createTopicIfNotExists(admin *dbmq.AdminClient, req dbmq.NewTopicRequest) error {
 	err := admin.CreateTopic(context.Background(), req)
 	if err != nil {
-		var topicExistsErr *dberrors.ErrTopicAlreadyExists
+		var topicExistsErr *dbmq.ErrTopicAlreadyExists
 		if errors.As(err, &topicExistsErr) {
 			fmt.Printf("ℹ️  主题 %s 已存在，跳过创建\n", req.Name)
 			return nil
@@ -310,7 +307,7 @@ func clearConsumerGroupOffsets(db *gorm.DB, groupID string) {
 }
 
 // produceOrderMessages 生产者发送订单消息
-func produceOrderMessages(ctx context.Context, producer *pkg.Producer, topicName string) {
+func produceOrderMessages(ctx context.Context, producer *dbmq.Producer, topicName string) {
 	fmt.Println("📤 生产者开始发送订单消息...")
 
 	orderCounter := time.Now().Unix()
@@ -340,7 +337,7 @@ func produceOrderMessages(ctx context.Context, producer *pkg.Producer, topicName
 			}
 
 			// 发送消息
-			message := &pkg.ProducerMessage{
+			message := &dbmq.ProducerMessage{
 				Topic: topicName,
 				Key:   []byte(order.OrderID), // 使用订单ID作为消息键
 				Value: orderJSON,
@@ -366,7 +363,7 @@ func produceOrderMessages(ctx context.Context, producer *pkg.Producer, topicName
 }
 
 // consumeMessagesWithManualCommit 手动提交模式的消费者消费消息循环
-func consumeMessagesWithManualCommit(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
+func consumeMessagesWithManualCommit(ctx context.Context, consumer *dbmq.Consumer, consumerName, serviceName string) {
 	fmt.Printf("📥 [%s] %s 开始消费消息...(手动提交模式)\n", consumerName, serviceName)
 	for {
 		select {
@@ -378,7 +375,7 @@ func consumeMessagesWithManualCommit(ctx context.Context, consumer *pkg.Consumer
 			messages, err := consumer.Poll(ctx, 1*time.Second)
 			if err != nil {
 				// 检查是否是重新均衡错误
-				var rebalanceErr *dberrors.ErrRebalanceInProgress
+				var rebalanceErr *dbmq.ErrRebalanceInProgress
 				if errors.As(err, &rebalanceErr) {
 					fmt.Printf("⚖️  [%s] 正在进行重新均衡，等待完成...\n", consumerName)
 					time.Sleep(500 * time.Millisecond)
@@ -418,7 +415,7 @@ func consumeMessagesWithManualCommit(ctx context.Context, consumer *pkg.Consumer
 }
 
 // consumeMessagesWithAutoCommit 自动提交模式的消费者消费消息循环
-func consumeMessagesWithAutoCommit(ctx context.Context, consumer *pkg.Consumer, consumerName, serviceName string) {
+func consumeMessagesWithAutoCommit(ctx context.Context, consumer *dbmq.Consumer, consumerName, serviceName string) {
 	fmt.Printf("📥 [%s] %s 开始消费消息...(自动提交模式)\n", consumerName, serviceName)
 	for {
 		select {
@@ -430,7 +427,7 @@ func consumeMessagesWithAutoCommit(ctx context.Context, consumer *pkg.Consumer, 
 			messages, err := consumer.Poll(ctx, 1*time.Second)
 			if err != nil {
 				// 检查是否是重新均衡错误
-				var rebalanceErr *dberrors.ErrRebalanceInProgress
+				var rebalanceErr *dbmq.ErrRebalanceInProgress
 				if errors.As(err, &rebalanceErr) {
 					fmt.Printf("⚖️  [%s] 正在进行重新均衡，等待完成...\n", consumerName)
 					time.Sleep(500 * time.Millisecond)
@@ -462,12 +459,12 @@ func consumeMessagesWithAutoCommit(ctx context.Context, consumer *pkg.Consumer, 
 }
 
 // processOrderMessage 处理订单消息（无返回值版本，用于自动提交模式）
-func processOrderMessage(msg pkg.ConsumerMessage, consumerName, serviceName string) {
+func processOrderMessage(msg dbmq.ConsumerMessage, consumerName, serviceName string) {
 	processOrderMessageWithResult(msg, consumerName, serviceName)
 }
 
 // processOrderMessageWithResult 处理订单消息并返回处理结果（用于手动提交模式）
-func processOrderMessageWithResult(msg pkg.ConsumerMessage, consumerName, serviceName string) bool {
+func processOrderMessageWithResult(msg dbmq.ConsumerMessage, consumerName, serviceName string) bool {
 	// 解析订单消息
 	var order OrderMessage
 	err := json.Unmarshal(msg.Value, &order)

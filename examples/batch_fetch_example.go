@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"

@@ -6,9 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
 	"log"
 	"time"
 )
@@ -43,7 +42,7 @@ func AdminExample() {
 	}
 
 	// 2. 创建AdminClient
-	admin, err := pkg.NewAdminClient(pkg.AdminConfig{
+	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{
 		DB: dbClient,
 	})
 	if err != nil {
@@ -55,7 +54,7 @@ func AdminExample() {
 
 	// 3. 创建Topic - 基本用法
 	fmt.Println("=== 创建基本Topic ===")
-	basicTopicReq := pkg.NewTopicRequest{
+	basicTopicReq := dbmq.NewTopicRequest{
 		Name:          "orders",
 		NumPartitions: 3,
 	}
@@ -73,10 +72,10 @@ func AdminExample() {
 	retentionHours := 48
 	retentionMs := int64(7 * 24 * 60 * 60 * 1000) // 7天
 
-	configTopicReq := pkg.NewTopicRequest{
+	configTopicReq := dbmq.NewTopicRequest{
 		Name:          "user-events",
 		NumPartitions: 5,
-		Config: &pkg.TopicConfig{
+		Config: &dbmq.TopicConfig{
 			RetentionHours: &retentionHours,
 			RetentionMs:    &retentionMs,
 			CleanupPolicy:  "delete",
@@ -92,7 +91,7 @@ func AdminExample() {
 
 	// 5. 批量创建Topic
 	fmt.Println("\n=== 批量创建Topic ===")
-	batchRequests := []pkg.NewTopicRequest{
+	batchRequests := []dbmq.NewTopicRequest{
 		{
 			Name:          "notifications",
 			NumPartitions: 2,
@@ -155,13 +154,13 @@ func AdminExample() {
 
 	// 8. 验证Topic创建（仅验证，不实际创建）
 	fmt.Println("\n=== 验证Topic创建 ===")
-	validateReq := pkg.NewTopicRequest{
+	validateReq := dbmq.NewTopicRequest{
 		Name:          "temp-topic",
 		NumPartitions: 1,
 		ValidateOnly:  true,
 	}
 
-	validateResult := admin.CreateTopics(ctx, []pkg.NewTopicRequest{validateReq})
+	validateResult := admin.CreateTopics(ctx, []dbmq.NewTopicRequest{validateReq})
 	if validateResult.Results[0].Error != nil {
 		log.Printf("Validation failed: %v", validateResult.Results[0].Error)
 	} else {
@@ -192,10 +191,10 @@ func AdminExample() {
 
 // CreateTopicIfNotExists 创建Topic，如果已存在则忽略
 // 这模仿了Kafka命令行工具的 --if-not-exists 行为
-func CreateTopicIfNotExists(admin *pkg.AdminClient, req pkg.NewTopicRequest) error {
+func CreateTopicIfNotExists(admin *dbmq.AdminClient, req dbmq.NewTopicRequest) error {
 	err := admin.CreateTopic(context.Background(), req)
 	if err != nil {
-		var topicExistsErr *dberrors.ErrTopicAlreadyExists
+		var topicExistsErr *dbmq.ErrTopicAlreadyExists
 		if errors.As(err, &topicExistsErr) {
 			fmt.Printf("Topic %s 已存在，跳过创建\n", req.Name)
 			return nil // 忽略已存在的错误
@@ -225,7 +224,7 @@ func ErrorHandlingExample() {
 	// 第二次创建 - 会得到ErrTopicAlreadyExists
 	// err = admin.CreateTopic(context.Background(), req)
 	// if err != nil {
-	//     var topicExistsErr *dberrors.ErrTopicAlreadyExists
+	//     var topicExistsErr *ErrTopicAlreadyExists
 	//     if errors.As(err, &topicExistsErr) {
 	//         fmt.Printf("Topic %s 已存在，可以安全忽略\n", topicExistsErr.TopicName)
 	//     }
@@ -242,7 +241,7 @@ func ErrorHandlingExample() {
 	// for _, topicResult := range result.Results {
 	//     if topicResult.Error != nil {
 	//         switch err := topicResult.Error.(type) {
-	//         case *dberrors.ErrTopicAlreadyExists:
+	//         case *ErrTopicAlreadyExists:
 	//             fmt.Printf("Topic %s 已存在，跳过\n", err.TopicName)
 	//         default:
 	//             fmt.Printf("创建Topic %s 失败: %v\n", topicResult.Name, err)

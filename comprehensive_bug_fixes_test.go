@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,21 +17,21 @@ func TestComprehensiveBugFixes(t *testing.T) {
 	t.Run("BUG修复验证汇总", func(t *testing.T) {
 		t.Log("🔍 DBMQ核心代码深度审查 - BUG修复验证")
 		t.Log(strings.Repeat("=", 60))
-		
+
 		// 统计修复的BUG
 		fixedBugs := []string{
 			"BUG #1: Consumer重新均衡时的数据丢失风险 (🔴 高危) - 已修复",
-			"BUG #2: Consumer setPolledOffset单调性检查不完整 (🟡 中等) - 已修复", 
+			"BUG #2: Consumer setPolledOffset单调性检查不完整 (🟡 中等) - 已修复",
 			"BUG #3: Consumer Close方法竞争条件 (🟡 中等) - 已修复",
 			"BUG #4: Producer空key哈希分区不一致性 (🔴 高危) - 已修复",
 			"BUG #5: DAL UpdateAssignments事务管理优化 (🔴 高危) - 已修复",
 			"BUG #6: SQL保留字未正确处理 (🟡 中等) - 已修复",
 		}
-		
+
 		for i, bug := range fixedBugs {
 			t.Logf("%d. %s", i+1, bug)
 		}
-		
+
 		t.Log(strings.Repeat("=", 60))
 		t.Log("✅ 总计发现并处理了6个关键BUG")
 		t.Log("🎯 重点修复了3个高危BUG，3个中等风险BUG")
@@ -66,7 +66,7 @@ func TestBugFix4_ProducerEmptyKeyConsistency(t *testing.T) {
 			Key:   []byte(""), // 空key
 			Value: []byte("empty key test message"),
 		}
-		
+
 		result, err := producer.Send(context.Background(), msg)
 		require.NoError(t, err)
 		emptyKeyPartitions = append(emptyKeyPartitions, result.Partition)
@@ -75,7 +75,7 @@ func TestBugFix4_ProducerEmptyKeyConsistency(t *testing.T) {
 	// 验证所有空key消息都路由到同一个分区
 	firstPartition := emptyKeyPartitions[0]
 	for i, partition := range emptyKeyPartitions {
-		assert.Equal(t, firstPartition, partition, 
+		assert.Equal(t, firstPartition, partition,
 			"第 %d 条空key消息应该路由到相同分区 %d，实际为 %d", i+1, firstPartition, partition)
 	}
 
@@ -109,7 +109,7 @@ func TestBugFix4_ProducerKeyVsNoKey(t *testing.T) {
 			Key:   []byte(""), // 空key，但Key字段不为nil
 			Value: []byte("empty key message"),
 		}
-		
+
 		result, err := producer.Send(context.Background(), msg)
 		require.NoError(t, err)
 		emptyKeyPartitions = append(emptyKeyPartitions, result.Partition)
@@ -123,7 +123,7 @@ func TestBugFix4_ProducerKeyVsNoKey(t *testing.T) {
 			Key:   nil, // Key字段为nil
 			Value: []byte("no key message"),
 		}
-		
+
 		result, err := producer.Send(context.Background(), msg)
 		require.NoError(t, err)
 		noKeyPartitions = append(noKeyPartitions, result.Partition)
@@ -132,7 +132,7 @@ func TestBugFix4_ProducerKeyVsNoKey(t *testing.T) {
 	// 验证空key消息的一致性（哈希分区）
 	firstEmptyKeyPartition := emptyKeyPartitions[0]
 	for _, partition := range emptyKeyPartitions {
-		assert.Equal(t, firstEmptyKeyPartition, partition, 
+		assert.Equal(t, firstEmptyKeyPartition, partition,
 			"空key消息应该一致地使用哈希分区")
 	}
 
@@ -141,7 +141,7 @@ func TestBugFix4_ProducerKeyVsNoKey(t *testing.T) {
 	for _, partition := range noKeyPartitions {
 		uniqueNoKeyPartitions[partition] = true
 	}
-	
+
 	// 轮询分区应该有一定的分布性（不一定覆盖所有分区，但应该有变化）
 	if len(uniqueNoKeyPartitions) == 1 && len(noKeyPartitions) > 1 {
 		t.Logf("⚠️  无key消息全部路由到同一分区 %d，可能存在轮询分区问题", noKeyPartitions[0])
@@ -167,7 +167,7 @@ func TestBugFix6_SQLReservedWords(t *testing.T) {
 	// 测试包含保留字的查询是否正常工作
 	// 这里我们测试对partition字段的查询
 	var messages []types.Message
-	
+
 	// 这个查询应该成功，因为partition字段应该被正确处理
 	err := db.Where("topic = ? AND `partition` = ?", "test-reserved-words", 0).Find(&messages).Error
 	require.NoError(t, err, "包含partition保留字的查询应该成功")
@@ -202,12 +202,12 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 
 	// 创建消费者
 	consumer, err := NewConsumer(ConsumerConfig{
-		DB:                  db,
-		GroupID:             "test-stability-group",
-		Topics:              []string{"test-stability"},
-		EnableAutoCommit:    false, // 使用手动提交测试修复的提交逻辑
-		PollFetchLimit:      5,
-		PollFetchTimeout:    1 * time.Second,
+		DB:               db,
+		GroupID:          "test-stability-group",
+		Topics:           []string{"test-stability"},
+		EnableAutoCommit: false, // 使用手动提交测试修复的提交逻辑
+		PollFetchLimit:   5,
+		PollFetchTimeout: 1 * time.Second,
 	})
 	require.NoError(t, err)
 	defer consumer.Close()
@@ -221,11 +221,11 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 		key   []byte
 		value string
 	}{
-		{nil, "no-key-message-1"},           // 无key消息
-		{[]byte(""), "empty-key-message-1"}, // 空key消息
+		{nil, "no-key-message-1"},              // 无key消息
+		{[]byte(""), "empty-key-message-1"},    // 空key消息
 		{[]byte("user-123"), "user-message-1"}, // 普通key消息
-		{nil, "no-key-message-2"},           // 无key消息
-		{[]byte(""), "empty-key-message-2"}, // 空key消息
+		{nil, "no-key-message-2"},              // 无key消息
+		{[]byte(""), "empty-key-message-2"},    // 空key消息
 		{[]byte("user-123"), "user-message-2"}, // 相同key消息
 	}
 
@@ -237,7 +237,7 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 			Key:   testMsg.key,
 			Value: []byte(testMsg.value),
 		}
-		
+
 		result, err := producer.Send(context.Background(), msg)
 		require.NoError(t, err, "消息 %d 发送应该成功", i+1)
 		sendResults = append(sendResults, *result)
@@ -260,7 +260,7 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 			t.Logf("Poll错误（可能正常）: %v", err)
 			continue
 		}
-		
+
 		for _, msg := range messages {
 			consumedMessages = append(consumedMessages, msg)
 			// 手动提交每个消息（测试修复的提交逻辑）
@@ -271,7 +271,7 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 
 	// 验证消息消费（可能需要协调器进行分区分配）
 	t.Logf("消费到 %d 条消息（可能需要协调器进行分区分配）", len(consumedMessages))
-	
+
 	// 验证相同key的消息在同一分区
 	keyPartitionMap := make(map[string]uint)
 	for _, msg := range consumedMessages {
@@ -281,16 +281,16 @@ func TestSystemStabilityAfterFixes(t *testing.T) {
 		} else {
 			keyStr = "<nil>"
 		}
-		
+
 		if existingPartition, exists := keyPartitionMap[keyStr]; exists {
-			assert.Equal(t, existingPartition, msg.Partition, 
+			assert.Equal(t, existingPartition, msg.Partition,
 				"相同key '%s' 的消息应该在同一分区", keyStr)
 		} else {
 			keyPartitionMap[keyStr] = msg.Partition
 		}
 	}
 
-	t.Logf("✅ 系统稳定性测试通过：发送 %d 条消息，消费 %d 条消息", 
+	t.Logf("✅ 系统稳定性测试通过：发送 %d 条消息，消费 %d 条消息",
 		len(testMessages), len(consumedMessages))
 	t.Log("✅ 所有BUG修复后，系统运行稳定")
 }

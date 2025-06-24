@@ -1,12 +1,11 @@
-package pkg
+package dbmq
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	dberrors "github.com/donutnomad/dbmq/pkg/errors"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -203,7 +202,7 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*typ
 		return nil, fmt.Errorf("failed to find topic '%s': %w", topicName, err)
 	}
 	if len(topics) == 0 {
-		return nil, &dberrors.ErrUnknownTopicOrPartition{Topic: topicName}
+		return nil, &ErrUnknownTopicOrPartition{Topic: topicName}
 	}
 
 	// 缓存查询结果

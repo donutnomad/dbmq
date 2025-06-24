@@ -1,12 +1,11 @@
-package pkg
+package dbmq
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/donutnomad/dbmq/pkg/errors"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"time"
 
 	"gorm.io/gorm"
@@ -151,7 +150,7 @@ func (ac *AdminClient) DescribeTopics(ctx context.Context, topicNames []string) 
 	// 检查是否有Topic不存在
 	for _, name := range topicNames {
 		if _, exists := result[name]; !exists {
-			return nil, &errors.ErrUnknownTopicOrPartition{
+			return nil, &ErrUnknownTopicOrPartition{
 				Topic: name,
 			}
 		}
@@ -187,7 +186,7 @@ func (ac *AdminClient) DeleteTopics(ctx context.Context, topicNames []string) er
 				return fmt.Errorf("failed to delete topic %s: %w", topicName, result.Error)
 			}
 			if result.RowsAffected == 0 {
-				return &errors.ErrUnknownTopicOrPartition{Topic: topicName}
+				return &ErrUnknownTopicOrPartition{Topic: topicName}
 			}
 		}
 		return nil
@@ -230,7 +229,7 @@ func (ac *AdminClient) validateTopicRequest(req NewTopicRequest) error {
 		return fmt.Errorf("failed to check topic existence: %w", err)
 	}
 	if count > 0 {
-		return &errors.ErrTopicAlreadyExists{TopicName: req.Name}
+		return &ErrTopicAlreadyExists{TopicName: req.Name}
 	}
 
 	return nil

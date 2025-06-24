@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -46,12 +46,12 @@ func TestGetLatestOffset_NumericBoundaries(t *testing.T) {
 				WillReturnRows(rows)
 
 			maxOffset, err := GetLatestOffset(ctx, db, topic, partition)
-			
+
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, maxOffset)
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -85,7 +85,7 @@ func TestCommitOffset_GenerationBoundaries(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -120,18 +120,18 @@ func TestFindActiveConsumers_UnicodeAndSpecialChars(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 验证字符串是否为有效UTF-8
 			isValidUTF8 := utf8.ValidString(tc.groupID)
-			
+
 			rows := sqlmock.NewRows([]string{"group_id", "consumer_id", "generation_id", "subscribed_topics", "assigned_partitions", "last_heartbeat"})
 			if isValidUTF8 && tc.groupID != "" {
 				rows.AddRow(tc.groupID, "consumer-1", 1, `["topic-a"]`, `[]`, time.Now())
 			}
-			
+
 			mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
 				WithArgs(tc.groupID, sqlmock.AnyArg()).
 				WillReturnRows(rows)
 
 			consumers, err := FindActiveConsumers(ctx, db, tc.groupID, timeout)
-			
+
 			assert.NoError(t, err)
 			if isValidUTF8 && tc.groupID != "" {
 				assert.Len(t, consumers, 1)
@@ -141,7 +141,7 @@ func TestFindActiveConsumers_UnicodeAndSpecialChars(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -176,13 +176,13 @@ func TestFindActiveConsumers_TimeZoneAndPrecision(t *testing.T) {
 			if tc.shouldFind {
 				rows.AddRow(groupID, "consumer-1", 1, `["topic-a"]`, `[]`, tc.heartbeatAt)
 			}
-			
+
 			mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
 				WithArgs(groupID, sqlmock.AnyArg()).
 				WillReturnRows(rows)
 
 			consumers, err := FindActiveConsumers(ctx, db, groupID, tc.timeout)
-			
+
 			assert.NoError(t, err)
 			if tc.shouldFind {
 				assert.Len(t, consumers, 1)
@@ -191,7 +191,7 @@ func TestFindActiveConsumers_TimeZoneAndPrecision(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -215,7 +215,7 @@ func TestUpsertHeartbeat_JSONEdgeCases(t *testing.T) {
 		{"VeryLargeJSON", []byte(`[` + strings.Repeat(`"topic-`, 10000) + strings.Repeat(`a`, 100) + strings.Repeat(`",`, 10000)[:len(strings.Repeat(`",`, 10000))-1] + `]`), true},
 		{"NestedJSON", []byte(`{"topics":[{"name":"test","partitions":[1,2,3]}]}`), true},
 		{"UnicodeInJSON", []byte(`["topic-🚀","topic-测试","topic-グループ"]`), true},
-		{"InvalidJSON", []byte(`{invalid json`), true}, // 函数不验证JSON有效性
+		{"InvalidJSON", []byte(`{invalid json`), true},       // 函数不验证JSON有效性
 		{"BinaryData", []byte{0x00, 0x01, 0x02, 0xFF}, true}, // 二进制数据
 		{"ControlCharsInJSON", []byte(`["topic\r\n\t"]`), true},
 		{"SQLInJSON", []byte(`["'; DROP TABLE mq_topics; --"]`), true},
@@ -236,7 +236,7 @@ func TestUpsertHeartbeat_JSONEdgeCases(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(1, 1))
 
 			err := UpsertHeartbeat(ctx, db, groupID, consumerID, tc.subscribedJSON)
-			
+
 			if tc.shouldSucceed {
 				assert.NoError(t, err)
 			} else {
@@ -244,7 +244,7 @@ func TestUpsertHeartbeat_JSONEdgeCases(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -288,14 +288,14 @@ func TestFindTopicsByNames_ArrayEdgeCases(t *testing.T) {
 						rows.AddRow(topic, 3, time.Now())
 					}
 				}
-				
+
 				mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
 					WithArgs(tc.topicNames).
 					WillReturnRows(rows)
 			}
 
 			topics, err := FindTopicsByNames(ctx, db, tc.topicNames)
-			
+
 			assert.NoError(t, err)
 			if !tc.expectCall {
 				assert.Nil(t, topics)
@@ -304,7 +304,7 @@ func TestFindTopicsByNames_ArrayEdgeCases(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -355,22 +355,22 @@ func TestGetCommittedOffsets_PartitionEdgeCases(t *testing.T) {
 				for _, p := range tc.partitions {
 					rows.AddRow(groupID, p.Topic, p.Partition, int64(100), 1, time.Now())
 				}
-				
+
 				mock.ExpectQuery("SELECT.*FROM.*mq_consumer_group_offsets.*WHERE.*").
 					WillReturnRows(rows)
 			}
 
 			offsets, err := GetCommittedOffsets(ctx, db, groupID, tc.partitions)
-			
+
 			assert.NoError(t, err)
 			assert.NotNil(t, offsets)
-			
+
 			if !tc.expectCall {
 				assert.Len(t, offsets, 0)
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -389,12 +389,12 @@ func TestFetchMessages_OffsetEdgeCases(t *testing.T) {
 		limit  int
 		valid  bool
 	}{
-		{"NegativeOffset", -1, 10, true},       // MySQL会处理负数
+		{"NegativeOffset", -1, 10, true}, // MySQL会处理负数
 		{"ZeroOffset", 0, 10, true},
 		{"MaxInt64Offset", math.MaxInt64, 10, true},
 		{"MinInt64Offset", math.MinInt64, 10, true},
-		{"ZeroLimit", 100, 0, true},            // 空结果集
-		{"NegativeLimit", 100, -1, true},       // MySQL会处理负数限制
+		{"ZeroLimit", 100, 0, true},      // 空结果集
+		{"NegativeLimit", 100, -1, true}, // MySQL会处理负数限制
 		{"MaxIntLimit", 100, math.MaxInt32, true},
 		{"LargeOffset", 999999999999, 10, true},
 		{"VeryLargeLimit", 100, 1000000, true},
@@ -411,22 +411,22 @@ func TestFetchMessages_OffsetEdgeCases(t *testing.T) {
 					rows.AddRow(tc.offset+int64(i)+1, topic, partition, nil, []byte("{}"), []byte("test"), time.Now())
 				}
 			}
-			
+
 			mock.ExpectQuery(regexp.QuoteMeta(expectedSQL)).
 				WithArgs(topic, partition, tc.offset, tc.limit).
 				WillReturnRows(rows)
 
 			messages, err := FetchMessages(ctx, db, topic, partition, tc.offset, tc.limit)
-			
+
 			assert.NoError(t, err)
 			assert.NotNil(t, messages)
-			
+
 			if tc.limit <= 0 || !tc.valid {
 				assert.Len(t, messages, 0)
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -454,7 +454,7 @@ func TestBatchCommitOffsets_ExtremeBatches(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			offsets := make(map[types.PartitionInfo]int64)
-			
+
 			// 创建测试数据
 			for i := 0; i < tc.offsetCount; i++ {
 				p := types.PartitionInfo{
@@ -466,23 +466,23 @@ func TestBatchCommitOffsets_ExtremeBatches(t *testing.T) {
 
 			if tc.offsetCount > 0 {
 				mock.ExpectBegin()
-				
+
 				commitSQL := "INSERT INTO `mq_consumer_group_offsets` (`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `committed_offset` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`committed_offset`), `committed_offset`), `generation_id` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`generation_id`), `generation_id`), `updated_at` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`updated_at`), `updated_at`)"
-				
+
 				for range offsets {
 					mock.ExpectExec(regexp.QuoteMeta(commitSQL)).
 						WillReturnResult(sqlmock.NewResult(1, 1))
 				}
-				
+
 				mock.ExpectCommit()
 			}
 
 			err := BatchCommitOffsets(ctx, db, groupID, generationID, offsets)
-			
+
 			assert.NoError(t, err)
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -498,10 +498,10 @@ func TestDeleteMessagesByPartition_ExtremeDeletion(t *testing.T) {
 	retentionDate := time.Now().Add(-24 * time.Hour)
 
 	testCases := []struct {
-		name           string
-		limit          int
-		expectedRows   int64
-		shouldError    bool
+		name         string
+		limit        int
+		expectedRows int64
+		shouldError  bool
 	}{
 		{"ZeroLimit", 0, 0, false},
 		{"SmallLimit", 10, 10, false},
@@ -526,7 +526,7 @@ func TestDeleteMessagesByPartition_ExtremeDeletion(t *testing.T) {
 			}
 
 			rowsAffected, err := DeleteMessagesByPartition(ctx, db, topic, partition, maxOffset, retentionDate, tc.limit)
-			
+
 			if tc.shouldError {
 				assert.Error(t, err)
 				assert.Equal(t, int64(0), rowsAffected)
@@ -536,7 +536,7 @@ func TestDeleteMessagesByPartition_ExtremeDeletion(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -549,10 +549,10 @@ func TestUpdateHeartbeat_ConcurrentUpdates(t *testing.T) {
 	groupID := "test-group"
 
 	testCases := []struct {
-		name           string
-		consumerID     string
-		shouldSucceed  bool
-		rowsAffected   int64
+		name          string
+		consumerID    string
+		shouldSucceed bool
+		rowsAffected  int64
 	}{
 		{"NormalConsumer", "consumer-1", true, 1},
 		{"NonExistentConsumer", "consumer-999", true, 0}, // 不报错，但没有更新行
@@ -571,7 +571,7 @@ func TestUpdateHeartbeat_ConcurrentUpdates(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(0, tc.rowsAffected))
 
 			err := UpdateHeartbeat(ctx, db, groupID, tc.consumerID)
-			
+
 			if tc.shouldSucceed {
 				assert.NoError(t, err)
 			} else {
@@ -579,7 +579,7 @@ func TestUpdateHeartbeat_ConcurrentUpdates(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -596,8 +596,8 @@ func TestCreateMessage_LargeMessages(t *testing.T) {
 		shouldError bool
 	}{
 		{"TinyMessage", 1, false},
-		{"SmallMessage", 1024, false},     // 1KB
-		{"MediumMessage", 1024 * 1024, false}, // 1MB
+		{"SmallMessage", 1024, false},             // 1KB
+		{"MediumMessage", 1024 * 1024, false},     // 1MB
 		{"LargeMessage", 10 * 1024 * 1024, false}, // 10MB
 		// 注意：真实场景中可能有大小限制
 		{"HugeMessage", 100 * 1024 * 1024, false}, // 100MB
@@ -612,7 +612,7 @@ func TestCreateMessage_LargeMessages(t *testing.T) {
 				Headers:   []byte("{}"),
 				CreatedAt: time.Now(),
 			}
-			
+
 			// 填充消息体
 			for i := range msg.Body {
 				msg.Body[i] = byte(i % 256)
@@ -627,7 +627,7 @@ func TestCreateMessage_LargeMessages(t *testing.T) {
 			}
 
 			err := CreateMessage(ctx, db, msg)
-			
+
 			if tc.shouldError {
 				assert.Error(t, err)
 			} else {
@@ -635,7 +635,7 @@ func TestCreateMessage_LargeMessages(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -702,7 +702,7 @@ func TestGetAllTopics_DataConsistency(t *testing.T) {
 			tc.mockSetup()
 
 			topics, err := GetAllTopics(ctx, db)
-			
+
 			if tc.expectErr {
 				assert.Error(t, err)
 				assert.Nil(t, topics)
@@ -712,6 +712,6 @@ func TestGetAllTopics_DataConsistency(t *testing.T) {
 			}
 		})
 	}
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -3,12 +3,11 @@ package examples
 
 import (
 	"fmt"
+	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/types"
 	"testing"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	"github.com/donutnomad/dbmq/pkg/types"
 )
 
 // TestPreciseCommit 测试精确提交功能
@@ -29,7 +28,7 @@ func TestPreciseCommit(t *testing.T) {
 
 	// 测试单个消息提交
 	t.Run("单个消息提交", func(t *testing.T) {
-		consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:               dbClient,
 			GroupID:          "test_precise_commit",
 			EnableAutoCommit: false,
@@ -40,7 +39,7 @@ func TestPreciseCommit(t *testing.T) {
 		defer consumer.Close()
 
 		// 创建模拟消息
-		msg := pkg.ConsumerMessage{
+		msg := dbmq.ConsumerMessage{
 			Topic:     "test-topic",
 			Partition: 0,
 			Offset:    123,
@@ -58,7 +57,7 @@ func TestPreciseCommit(t *testing.T) {
 
 	// 测试批量偏移量提交
 	t.Run("批量偏移量提交", func(t *testing.T) {
-		consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:               dbClient,
 			GroupID:          "test_batch_commit",
 			EnableAutoCommit: false,
@@ -86,7 +85,7 @@ func TestPreciseCommit(t *testing.T) {
 	// 测试API方法
 	t.Run("API方法测试", func(t *testing.T) {
 		// 手动提交模式消费者
-		manualConsumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		manualConsumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:               dbClient,
 			GroupID:          "test_manual_api",
 			EnableAutoCommit: false,
@@ -101,7 +100,7 @@ func TestPreciseCommit(t *testing.T) {
 		}
 
 		// 自动提交模式消费者
-		autoConsumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		autoConsumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:                 dbClient,
 			GroupID:            "test_auto_api",
 			EnableAutoCommit:   true,
@@ -140,7 +139,7 @@ func BenchmarkCommitMethods(b *testing.B) {
 		b.Skipf("跳过基准测试，无法连接数据库: %v", err)
 	}
 
-	consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:               dbClient,
 		GroupID:          "benchmark_commit",
 		EnableAutoCommit: false,
@@ -152,7 +151,7 @@ func BenchmarkCommitMethods(b *testing.B) {
 
 	// 基准测试单个消息提交
 	b.Run("CommitMessage", func(b *testing.B) {
-		msg := pkg.ConsumerMessage{
+		msg := dbmq.ConsumerMessage{
 			Topic:     "benchmark-topic",
 			Partition: 0,
 			Offset:    0,

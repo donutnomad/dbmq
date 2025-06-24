@@ -3,15 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/db"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
 )
 
 func main() {
@@ -31,7 +30,7 @@ func main() {
 	}
 
 	// 创建监控指标客户端
-	metricsClient, err := pkg.NewMetricsClient(pkg.MetricsConfig{
+	metricsClient, err := dbmq.NewMetricsClient(dbmq.MetricsConfig{
 		DB: dbClient,
 	})
 	if err != nil {
@@ -39,7 +38,7 @@ func main() {
 	}
 
 	// 创建REST API服务器
-	restServer, err := pkg.NewRestAPIServer(pkg.RestAPIConfig{
+	restServer, err := dbmq.NewRestAPIServer(dbmq.RestAPIConfig{
 		DB:     dbClient,
 		Port:   8080,
 		Host:   "0.0.0.0", // 监听所有接口
@@ -92,7 +91,7 @@ func main() {
 }
 
 // demonstrateMetrics 演示监控指标功能
-func demonstrateMetrics(metricsClient *pkg.MetricsClient) {
+func demonstrateMetrics(metricsClient *dbmq.MetricsClient) {
 	ctx := context.Background()
 
 	// 等待一段时间让服务器启动
@@ -116,7 +115,7 @@ func demonstrateMetrics(metricsClient *pkg.MetricsClient) {
 }
 
 // printMetrics 打印监控指标
-func printMetrics(ctx context.Context, metricsClient *pkg.MetricsClient) {
+func printMetrics(ctx context.Context, metricsClient *dbmq.MetricsClient) {
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Printf("📊 DBMQ监控指标报告 - %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Println(strings.Repeat("=", 60))

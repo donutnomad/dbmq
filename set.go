@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 type Set[K comparable] struct {
 	inner map[K]struct{}

@@ -1,10 +1,9 @@
-package pkg
+package dbmq
 
 import (
 	"context"
 	"database/sql"
-	"github.com/donutnomad/dbmq/pkg/errors"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"testing"
 	"time"
 
@@ -142,7 +141,7 @@ func TestAdminClient_CreateTopic_ValidationErrors(t *testing.T) {
 	// 测试重复创建
 	err = admin.CreateTopic(context.Background(), req)
 	assert.Error(t, err)
-	var topicExistsErr *errors.ErrTopicAlreadyExists
+	var topicExistsErr *ErrTopicAlreadyExists
 	assert.ErrorAs(t, err, &topicExistsErr)
 	assert.Equal(t, req.Name, topicExistsErr.TopicName)
 }
@@ -345,7 +344,7 @@ func TestAdminClient_ErrorTypes(t *testing.T) {
 	require.Error(t, err)
 
 	// 验证错误类型
-	var topicExistsErr *errors.ErrTopicAlreadyExists
+	var topicExistsErr *ErrTopicAlreadyExists
 	assert.ErrorAs(t, err, &topicExistsErr)
 	assert.Equal(t, req.Name, topicExistsErr.TopicName)
 

@@ -6,12 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/types"
 	"log"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
-	"github.com/donutnomad/dbmq/pkg/types"
 )
 
 // AdvancedCommitDemo 高级手动提交演示
@@ -38,7 +37,7 @@ func AdvancedCommitDemo() {
 	}
 
 	// 创建消费者（手动提交模式）
-	consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+	consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:               dbClient,
 		GroupID:          "高级手动提交演示组",
 		EnableAutoCommit: false,
@@ -74,7 +73,7 @@ func AdvancedCommitDemo() {
 }
 
 // demonstrateSingleMessageCommit 演示单个消息提交
-func demonstrateSingleMessageCommit(consumer *pkg.Consumer) {
+func demonstrateSingleMessageCommit(consumer *dbmq.Consumer) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -108,7 +107,7 @@ func demonstrateSingleMessageCommit(consumer *pkg.Consumer) {
 }
 
 // demonstrateBatchCommit 演示批量指定偏移量提交
-func demonstrateBatchCommit(consumer *pkg.Consumer) {
+func demonstrateBatchCommit(consumer *dbmq.Consumer) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -158,7 +157,7 @@ func demonstrateBatchCommit(consumer *pkg.Consumer) {
 }
 
 // demonstrateConditionalCommit 演示条件性提交
-func demonstrateConditionalCommit(consumer *pkg.Consumer) {
+func demonstrateConditionalCommit(consumer *dbmq.Consumer) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

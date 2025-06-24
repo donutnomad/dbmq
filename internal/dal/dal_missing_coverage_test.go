@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -22,11 +22,11 @@ func TestGetConsumerGroupGeneration_AllScenarios(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		name          string
-		groupID       string
-		mockSetup     func()
-		expectResult  bool
-		expectError   bool
+		name         string
+		groupID      string
+		mockSetup    func()
+		expectResult bool
+		expectError  bool
 	}{
 		{
 			name:    "ExistingGroup",
@@ -234,7 +234,7 @@ func TestGetConsumerAssignment_AliasFunction(t *testing.T) {
 	// GetConsumerAssignment是GetHeartbeat的别名，应该行为一致
 	rows := sqlmock.NewRows([]string{"group_id", "consumer_id", "generation_id", "subscribed_topics", "assigned_partitions", "last_heartbeat"}).
 		AddRow(groupID, consumerID, 1, `["topic-a"]`, `[{"Topic":"topic-a","Partition":0}]`, time.Now())
-	
+
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?")).
 		WithArgs(groupID, consumerID).
 		WillReturnRows(rows)
@@ -548,13 +548,13 @@ func TestDeleteMessagesByPartitionUnconsumed_AllScenarios(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		name           string
-		topic          string
-		partition      uint
-		retentionDate  time.Time
-		limit          int
-		rowsAffected   int64
-		expectErr      bool
+		name          string
+		topic         string
+		partition     uint
+		retentionDate time.Time
+		limit         int
+		rowsAffected  int64
+		expectErr     bool
 	}{
 		{
 			name:          "NormalDeletion",
@@ -681,9 +681,9 @@ func TestFetchMessagesBatch_ExtremeEdgeCases(t *testing.T) {
 			requests: []PartitionRequest{
 				{
 					Topic:     strings.Repeat("topic-", 100), // 很长的topic名
-					Partition: 4294967295,                     // MaxUint32
-					Offset:    9223372036854775807,            // MaxInt64
-					Limit:     2147483647,                     // MaxInt32
+					Partition: 4294967295,                    // MaxUint32
+					Offset:    9223372036854775807,           // MaxInt64
+					Limit:     2147483647,                    // MaxInt32
 				},
 			},
 			expectErr: false,

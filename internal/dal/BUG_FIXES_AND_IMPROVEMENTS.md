@@ -257,7 +257,7 @@ func validateConsumerID(consumerID string) error {
 ### 10. 错误处理改进
 统一错误处理和日志记录：
 ```go
-import "github.com/donutnomad/dbmq/pkg/errors"
+import "github.com/donutnomad/dbmq"
 
 func wrapDBError(err error, operation string) error {
     if err == nil {

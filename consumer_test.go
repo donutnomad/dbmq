@@ -1,10 +1,10 @@
-package pkg
+package dbmq
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"reflect"
 	"sync"
 	"testing"

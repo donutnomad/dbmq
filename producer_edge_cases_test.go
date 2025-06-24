@@ -1,4 +1,4 @@
-package pkg
+package dbmq
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +38,7 @@ func TestProducerRoundRobinRaceCondition(t *testing.T) {
 	const numMessages = 1000
 	const numWorkers = 10
 	partitionCounts := make([]int64, 4)
-	
+
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -50,36 +50,36 @@ func TestProducerRoundRobinRaceCondition(t *testing.T) {
 					Value: []byte(fmt.Sprintf("message-%d-%d", workerID, j)),
 					// 不设置Key，使用轮询分区
 				}
-				
+
 				result, err := producer.Send(context.Background(), msg)
 				if err != nil {
 					t.Errorf("发送消息失败: %v", err)
 					return
 				}
-				
+
 				// 统计分区分配
 				atomic.AddInt64(&partitionCounts[result.Partition], 1)
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
 
 	// 检查分区分配的均匀性
 	expectedPerPartition := int64(numMessages / 4)
 	tolerance := int64(numMessages / 10) // 10%的容忍度
-	
+
 	for i, count := range partitionCounts {
 		diff := count - expectedPerPartition
 		if diff < 0 {
 			diff = -diff
 		}
-		
+
 		if diff > tolerance {
-			t.Errorf("💥 BUG确认：分区 %d 的消息数量 %d 与期望值 %d 差异过大（差异: %d, 容忍度: %d）", 
+			t.Errorf("💥 BUG确认：分区 %d 的消息数量 %d 与期望值 %d 差异过大（差异: %d, 容忍度: %d）",
 				i, count, expectedPerPartition, diff, tolerance)
 		}
-		
+
 		t.Logf("分区 %d: %d 条消息", i, count)
 	}
 }
@@ -109,7 +109,7 @@ func TestProducerTopicMetadataCacheInconsistency(t *testing.T) {
 		Topic: "test-cache-topic",
 		Value: []byte("initial message"),
 	}
-	
+
 	result1, err := producer.Send(context.Background(), msg1)
 	require.NoError(t, err)
 	assert.True(t, result1.Partition < 2, "分区应该小于2")
@@ -123,10 +123,10 @@ func TestProducerTopicMetadataCacheInconsistency(t *testing.T) {
 		Key:   []byte("key-for-partition-3"), // 这个key可能会被分配到分区3
 		Value: []byte("updated message"),
 	}
-	
+
 	result2, err := producer.Send(context.Background(), msg2)
 	require.NoError(t, err)
-	
+
 	// 如果缓存没有更新，分区仍然会小于2
 	// 但实际上应该可以使用0-3的分区
 	if result2.Partition >= 2 {
@@ -150,10 +150,10 @@ func TestProducerTopicMetadataCacheInconsistency(t *testing.T) {
 		Key:   []byte("key-for-partition-3"),
 		Value: []byte("new producer message"),
 	}
-	
+
 	result3, err := producer2.Send(context.Background(), msg3)
 	require.NoError(t, err)
-	
+
 	// 新的生产者应该能够使用所有4个分区
 	assert.True(t, result3.Partition < 4, "新生产者应该使用更新后的分区范围")
 }
@@ -174,7 +174,7 @@ func TestProducerNotificationFailureHandling(t *testing.T) {
 	// 创建生产者，启用通知但不提供Redis连接（模拟Redis故障）
 	producer, err := NewProducer(ProducerConfig{
 		DB:                   db,
-		Redis:                nil, // 故意设置为nil
+		Redis:                nil,  // 故意设置为nil
 		NotificationEnabled:  true, // 但启用通知
 		NotificationStateTTL: 10 * time.Second,
 	})
@@ -186,7 +186,7 @@ func TestProducerNotificationFailureHandling(t *testing.T) {
 		Topic: "test-notification-topic",
 		Value: []byte("test message with notification failure"),
 	}
-	
+
 	result, err := producer.Send(context.Background(), msg)
 	require.NoError(t, err, "即使通知失败，消息发送也应该成功")
 	assert.Equal(t, "test-notification-topic", result.Topic)
@@ -195,7 +195,7 @@ func TestProducerNotificationFailureHandling(t *testing.T) {
 
 	// 验证消息确实被持久化到数据库
 	var dbMessage types.Message
-	err = db.Where("topic = ? AND partition = ? AND id = ?", 
+	err = db.Where("topic = ? AND partition = ? AND id = ?",
 		result.Topic, result.Partition, result.Offset).First(&dbMessage).Error
 	require.NoError(t, err, "消息应该被持久化到数据库")
 	assert.Equal(t, "test message with notification failure", string(dbMessage.Body))
@@ -226,15 +226,15 @@ func TestProducerHashPartitionConsistency(t *testing.T) {
 		"user-123",
 		"order-456",
 		"product-789",
-		"",          // 空字符串
-		"🚀emoji",   // 包含emoji的key
+		"",       // 空字符串
+		"🚀emoji", // 包含emoji的key
 		"very-long-key-that-contains-many-characters-to-test-hash-function-stability",
 	}
 
 	for _, key := range testKeys {
 		keyBytes := []byte(key)
 		partitions := make(map[uint]int)
-		
+
 		// 多次发送相同key的消息
 		for i := 0; i < 10; i++ {
 			msg := &ProducerMessage{
@@ -242,13 +242,13 @@ func TestProducerHashPartitionConsistency(t *testing.T) {
 				Key:   keyBytes,
 				Value: []byte(fmt.Sprintf("message-%d", i)),
 			}
-			
+
 			result, err := producer.Send(context.Background(), msg)
 			require.NoError(t, err)
-			
+
 			partitions[result.Partition]++
 		}
-		
+
 		// 相同key的所有消息应该路由到同一个分区
 		if len(partitions) != 1 {
 			t.Errorf("💥 BUG确认：key '%s' 被路由到多个分区: %v", key, partitions)
@@ -284,7 +284,7 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 	// 高并发发送测试
 	const numWorkers = 20
 	const messagesPerWorker = 50
-	
+
 	var wg sync.WaitGroup
 	var successCount int64
 	var errorCount int64
@@ -292,12 +292,12 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 	var resultsMu sync.Mutex
 
 	startTime := time.Now()
-	
+
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			
+
 			for j := 0; j < messagesPerWorker; j++ {
 				msg := &ProducerMessage{
 					Topic: "test-concurrent-topic",
@@ -308,7 +308,7 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 						"msg-id":    fmt.Sprintf("%d", j),
 					},
 				}
-				
+
 				result, err := producer.Send(context.Background(), msg)
 				if err != nil {
 					atomic.AddInt64(&errorCount, 1)
@@ -322,18 +322,18 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
 	duration := time.Since(startTime)
 
 	// 验证结果
 	expectedTotal := int64(numWorkers * messagesPerWorker)
 	actualTotal := successCount + errorCount
-	
+
 	assert.Equal(t, expectedTotal, actualTotal, "总消息数应该匹配")
 	assert.Equal(t, expectedTotal, successCount, "所有消息都应该成功发送")
 	assert.Equal(t, int64(0), errorCount, "不应该有发送失败的消息")
-	
+
 	resultsMu.Lock()
 	assert.Equal(t, int(expectedTotal), len(results), "结果数量应该匹配")
 	resultsMu.Unlock()
@@ -341,7 +341,7 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 	// 性能检查
 	messagesPerSecond := float64(successCount) / duration.Seconds()
 	t.Logf("并发发送性能: %.2f 消息/秒", messagesPerSecond)
-	
+
 	if messagesPerSecond < 100 { // 假设最低性能要求
 		t.Logf("⚠️  性能可能有问题：%.2f 消息/秒 低于预期", messagesPerSecond)
 	}
@@ -398,7 +398,7 @@ func TestProducerResourceCleanup(t *testing.T) {
 
 		// 关闭生产者
 		producer.Close()
-		
+
 		// 等待一段时间确保资源被清理
 		time.Sleep(100 * time.Millisecond)
 	}

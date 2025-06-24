@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"gorm.io/gorm"
 )

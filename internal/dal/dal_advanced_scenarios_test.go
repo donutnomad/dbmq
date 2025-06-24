@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/pkg/types"
+	"github.com/donutnomad/dbmq/types"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -27,7 +27,7 @@ func TestConcurrentOperations_RaceConditions(t *testing.T) {
 	db, mock := newMockDB(t)
 	ctx := context.Background()
 	groupID := "concurrent-group"
-	
+
 	// 设置mock期望 - 需要足够多的期望来处理并发请求
 	for i := 0; i < 100; i++ {
 		rows := sqlmock.NewRows([]string{"group_id", "generation_id", "protocol_type", "updated_at"}).
@@ -129,13 +129,13 @@ func TestMemoryPressure_LargeDataSets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 创建大量消息用于批量获取测试
 			rows := sqlmock.NewRows([]string{"id", "topic", "partition", "message_key", "headers", "body", "created_at"})
-			
+
 			for i := 0; i < tc.messageCount; i++ {
 				body := make([]byte, tc.messageSize*1024) // KB to bytes
 				for j := range body {
 					body[j] = byte(j % 256)
 				}
-				
+
 				rows.AddRow(
 					int64(i+1),
 					"memory-test-topic",
@@ -152,10 +152,10 @@ func TestMemoryPressure_LargeDataSets(t *testing.T) {
 
 			// 执行批量获取
 			messages, err := FetchMessages(ctx, db, "memory-test-topic", 0, 0, tc.messageCount)
-			
+
 			assert.NoError(t, err)
 			assert.Len(t, messages, tc.messageCount)
-			
+
 			// 验证消息内容
 			for i, msg := range messages {
 				assert.Equal(t, int64(i+1), msg.ID)
@@ -229,7 +229,7 @@ func TestDataIntegrity_ConsistencyChecks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup()
 			err := tc.operation()
-			
+
 			if tc.expectError {
 				assert.Error(t, err)
 			} else {
@@ -314,13 +314,13 @@ func TestPerformanceDegradation_QueryOptimization(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup()
-			
+
 			start := time.Now()
 			err := tc.operation()
 			duration := time.Since(start)
-			
+
 			assert.NoError(t, err)
-			
+
 			// 性能断言 - 操作应该在合理时间内完成
 			assert.Less(t, duration, 100*time.Millisecond, "Operation should complete quickly: %s", tc.expectedQueryType)
 		})
@@ -484,7 +484,7 @@ func TestBoundaryConditions_ExtremeValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup()
 			err := tc.operation()
-			
+
 			if tc.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -521,7 +521,7 @@ func TestResourceLeakDetection(t *testing.T) {
 		consumers, err := FindActiveConsumers(ctx, db, "leak-test-group", 30*time.Second)
 		assert.NoError(t, err)
 		assert.NotNil(t, consumers)
-		
+
 		// 强制垃圾回收以检测内存泄漏
 		if i%100 == 0 {
 			// 在实际测试中，这里可以添加内存使用量检查
@@ -648,9 +648,9 @@ func TestInternationalization_CharacterEncoding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 测试心跳插入
 			expectedSQL := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`)"
-			
+
 			topicsJSON := fmt.Sprintf(`["%s"]`, strings.Join(tc.topics, `","`))
-			
+
 			mock.ExpectExec(regexp.QuoteMeta(expectedSQL)).
 				WithArgs(tc.groupID, "consumer-1", []byte(topicsJSON), []byte("{}"), sqlmock.AnyArg()).
 				WillReturnResult(sqlmock.NewResult(1, 1))
@@ -661,7 +661,7 @@ func TestInternationalization_CharacterEncoding(t *testing.T) {
 			// 测试查找活跃消费者
 			rows := sqlmock.NewRows([]string{"group_id", "consumer_id", "generation_id", "subscribed_topics", "assigned_partitions", "last_heartbeat"}).
 				AddRow(tc.groupID, "consumer-1", 1, topicsJSON, "{}", time.Now())
-			
+
 			mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `last_heartbeat` > ?")).
 				WithArgs(tc.groupID, sqlmock.AnyArg()).
 				WillReturnRows(rows)

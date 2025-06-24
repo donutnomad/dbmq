@@ -3,11 +3,11 @@ package examples
 
 import (
 	"fmt"
+	"github.com/donutnomad/dbmq"
 	"testing"
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/pkg"
 )
 
 // TestCommitModes 测试不同的提交模式
@@ -28,7 +28,7 @@ func TestCommitModes(t *testing.T) {
 
 	// 测试手动提交模式的消费者
 	t.Run("手动提交模式", func(t *testing.T) {
-		consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:               dbClient,
 			GroupID:          "test_manual_commit",
 			EnableAutoCommit: false, // 禁用自动提交
@@ -47,7 +47,7 @@ func TestCommitModes(t *testing.T) {
 
 	// 测试自动提交模式的消费者
 	t.Run("自动提交模式", func(t *testing.T) {
-		consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:                 dbClient,
 			GroupID:            "test_auto_commit",
 			EnableAutoCommit:   true,
@@ -68,7 +68,7 @@ func TestCommitModes(t *testing.T) {
 
 	// 测试默认配置
 	t.Run("默认配置", func(t *testing.T) {
-		consumer, err := pkg.NewConsumer(pkg.ConsumerConfig{
+		consumer, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 			DB:      dbClient,
 			GroupID: "test_default",
 			// 不设置自动提交配置，使用默认值
