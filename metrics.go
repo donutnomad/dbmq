@@ -283,10 +283,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 
 	// 获取消费者成员信息
 	for _, hb := range heartbeats {
-		var assignment []types.PartitionInfo
-		if len(hb.AssignedPartitions) > 0 {
-			json.Unmarshal(hb.AssignedPartitions, &assignment)
-		}
+		var assignment = hb.AssignedPartitions
 
 		member := ConsumerMemberInfo{
 			ConsumerID:    hb.ConsumerID,

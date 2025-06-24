@@ -1,10 +1,27 @@
 package dbmq
 
 import (
+	"encoding/json"
+	"fmt"
 	"github.com/donutnomad/dbmq/types"
+	"gorm.io/datatypes"
 	"reflect"
 	"testing"
 )
+
+func Test000(t *testing.T) {
+	dd := datatypes.NewJSONSlice([]types.PartitionInfo{
+		//{
+		//	Topic:     "aaa",
+		//	Partition: 1,
+		//},
+	})
+	marshal, err := json.Marshal(&dd)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(marshal))
+}
 
 func TestSortConsumersByID(t *testing.T) {
 	consumers := []types.ConsumerHeartbeat{

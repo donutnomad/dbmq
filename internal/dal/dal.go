@@ -2,9 +2,9 @@ package dal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"gorm.io/datatypes"
 	"strings"
 	"time"
 
@@ -76,25 +76,16 @@ func IncrementAndGetGenerationID(ctx context.Context, db *gorm.DB, groupID strin
 	return generationID, nil
 }
 
-// UpdateAssignmentsInTx 在单个事务中更新多个消费者的分区分配
+// UpdateAssignments 在单个事务中更新多个消费者的分区分配
 // assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
 func UpdateAssignments(ctx context.Context, db *gorm.DB, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
-	var assignmentsJSON = make(map[string]string)
-	for consumerID, partitions := range assignments {
-		partitionsJSON, err := json.Marshal(partitions)
-		if err != nil {
-			return fmt.Errorf("failed to marshal assignment for consumer %s: %w", consumerID, err)
-		}
-		assignmentsJSON[consumerID] = string(partitionsJSON)
-	}
-
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
-		for consumerID, partitionsJSON := range assignmentsJSON {
-			result := tx.Exec(updateSQL, generationID, partitionsJSON, groupID, consumerID)
+		for consumerID, partitions := range assignments {
+			result := tx.Exec(updateSQL, generationID, datatypes.NewJSONSlice(partitions), groupID, consumerID)
 			if result.Error != nil {
 				// 如果任何一个消费者的更新失败，整个事务会自动回滚
 				return fmt.Errorf("failed to update assignment for consumer %s: %w", consumerID, result.Error)
@@ -127,6 +118,9 @@ func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) 
 	sql := "SELECT * FROM `mq_consumer_heartbeats` WHERE `group_id` = ? AND `consumer_id` = ?"
 	err := db.WithContext(ctx).Raw(sql, groupID, consumerID).Scan(&hb).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &hb, nil
@@ -135,13 +129,13 @@ func GetHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string) 
 // UpsertHeartbeat 原子性地创建或更新消费者的心跳
 // 更新最后心跳时间并确保消费者的订阅Topic是最新的
 // 这是消费者心跳循环使用的主要函数
-func UpsertHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string, subscribedTopics []byte) error {
+func UpsertHeartbeat(ctx context.Context, db *gorm.DB, groupID, consumerID string, subscribedTopics []string) error {
 	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `last_heartbeat`) VALUES (?, ?, 0, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`)"
 	return db.WithContext(ctx).Exec(sql,
 		groupID,
 		consumerID,
-		subscribedTopics,
-		[]byte("{}"), // 默认为空JSON对象
+		datatypes.NewJSONSlice(subscribedTopics),
+		datatypes.NewJSONSlice([]types.PartitionInfo{}), // 默认为空JSON对象
 		time.Now(),
 	).Error
 }

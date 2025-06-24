@@ -46,13 +46,13 @@ func TestCoordinatorRebalanceDeadlock(t *testing.T) {
 	consumer1 := types.ConsumerHeartbeat{
 		ConsumerID:       "consumer-1",
 		GroupID:          groupID,
-		SubscribedTopics: mustMarshalJSON([]string{"test-deadlock-topic"}),
+		SubscribedTopics: []string{"test-deadlock-topic"},
 		LastHeartbeat:    time.Now(),
 	}
 	consumer2 := types.ConsumerHeartbeat{
 		ConsumerID:       "consumer-2",
 		GroupID:          groupID,
-		SubscribedTopics: mustMarshalJSON([]string{"test-deadlock-topic"}),
+		SubscribedTopics: []string{"test-deadlock-topic"},
 		LastHeartbeat:    time.Now(),
 	}
 
@@ -132,7 +132,7 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 	consumer := types.ConsumerHeartbeat{
 		ConsumerID:       "consumer-1",
 		GroupID:          groupID,
-		SubscribedTopics: mustMarshalJSON([]string{"test-generation-topic"}),
+		SubscribedTopics: ([]string{"test-generation-topic"}),
 		LastHeartbeat:    time.Now(),
 	}
 	require.NoError(t, db.Create(&consumer).Error)
@@ -158,7 +158,7 @@ func TestCoordinatorGenerationRaceCondition(t *testing.T) {
 			newConsumer := types.ConsumerHeartbeat{
 				ConsumerID:       fmt.Sprintf("consumer-%d", i+2),
 				GroupID:          groupID,
-				SubscribedTopics: mustMarshalJSON([]string{"test-generation-topic"}),
+				SubscribedTopics: ([]string{"test-generation-topic"}),
 				LastHeartbeat:    time.Now(),
 			}
 			db.Create(&newConsumer)

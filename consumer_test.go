@@ -2,7 +2,6 @@ package dbmq
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/donutnomad/dbmq/types"
 	"reflect"
@@ -246,9 +245,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer1Conf.GroupID, consumer1.id).First(&heartbeat1).Error
 	require.NoError(t, err)
 
-	var assignedPartitions1List []types.PartitionInfo
-	err = json.Unmarshal(heartbeat1.AssignedPartitions, &assignedPartitions1List)
-	require.NoError(t, err)
+	var assignedPartitions1List []types.PartitionInfo = heartbeat1.AssignedPartitions
 
 	assignedPartitions1 := make(map[string][]uint)
 	for _, p := range assignedPartitions1List {
@@ -289,9 +286,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer2Conf.GroupID, consumer2.id).First(&heartbeat2After).Error
 	require.NoError(t, err)
 
-	var assignedPartitions1AfterList []types.PartitionInfo
-	err = json.Unmarshal(heartbeat1After.AssignedPartitions, &assignedPartitions1AfterList)
-	require.NoError(t, err)
+	var assignedPartitions1AfterList []types.PartitionInfo = heartbeat1After.AssignedPartitions
 
 	assignedPartitions1After := make(map[string][]uint)
 	for _, p := range assignedPartitions1AfterList {
@@ -301,9 +296,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		assignedPartitions1After[p.Topic] = append(assignedPartitions1After[p.Topic], p.Partition)
 	}
 
-	var assignedPartitions2AfterList []types.PartitionInfo
-	err = json.Unmarshal(heartbeat2After.AssignedPartitions, &assignedPartitions2AfterList)
-	require.NoError(t, err)
+	var assignedPartitions2AfterList []types.PartitionInfo = heartbeat2After.AssignedPartitions
 
 	assignedPartitions2After := make(map[string][]uint)
 	for _, p := range assignedPartitions2AfterList {
@@ -338,9 +331,7 @@ func TestConsumerRebalanceProcess(t *testing.T) {
 		consumer1Conf.GroupID, consumer1.id).First(&heartbeat1Final).Error
 	require.NoError(t, err)
 
-	var assignedPartitions1FinalList []types.PartitionInfo
-	err = json.Unmarshal(heartbeat1Final.AssignedPartitions, &assignedPartitions1FinalList)
-	require.NoError(t, err)
+	var assignedPartitions1FinalList []types.PartitionInfo = heartbeat1Final.AssignedPartitions
 
 	assignedPartitions1Final := make(map[string][]uint)
 	for _, p := range assignedPartitions1FinalList {

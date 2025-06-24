@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
 
 	"github.com/donutnomad/dbmq/internal/dal"
@@ -150,8 +152,8 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	}
 
 	// 添加调试日志显示发送结果
-	fmt.Printf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d, ID: %d, PerPartitionOffset: %d\n",
-		msg.Topic, partition, dbMsg.ID, dbMsg.PerPartitionOffset)
+	p.logger().Debug(fmt.Sprintf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d, ID: %d, PerPartitionOffset: %d",
+		msg.Topic, partition, dbMsg.ID, dbMsg.PerPartitionOffset))
 
 	// 6. 可选的智能通知机制
 	// 在后台goroutine中执行，不影响消息发送的性能和可靠性
@@ -181,15 +183,15 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 	if err != nil {
 		// 记录错误但不影响消息发送操作
 		// 通知失败不应该影响消息的可靠性
-		fmt.Printf("❌ [生产者通知] Redis通知脚本执行失败 %s: %v\n", channelKey, err)
+		p.logger().Error("❌ [生产者通知] Redis通知脚本执行失败", "channel", channelKey, "error", err)
 		return
 	}
 
 	// 调试信息：记录通知是否被发送或合并
 	if val, ok := res.(int64); ok && val == 1 {
-		fmt.Printf("📢 [生产者通知] 成功发送通知到 %s\n", channelKey)
+		p.logger().Debug("📢 [生产者通知] 成功发送通知到", "channel", channelKey)
 	} else {
-		fmt.Printf("🔄 [生产者通知] 通知被合并（已有通知在处理中）%s\n", channelKey)
+		p.logger().Debug("🔄 [生产者通知] 通知被合并（已有通知在处理中）", "channel", channelKey)
 	}
 }
 
@@ -244,4 +246,8 @@ func (p *Producer) hashPartition(key []byte, partitionCount uint) uint {
 // 目前是占位符，因为数据库和Redis连接由外部管理
 func (p *Producer) Close() {
 	// 当前无需特殊清理逻辑，数据库和Redis连接由外部管理
+}
+
+func (p *Producer) logger() *slog.Logger {
+	return logger.GetLogger().With("component", "producer")
 }

@@ -2,7 +2,6 @@ package dbmq
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -26,24 +25,24 @@ func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 			ConsumerID:         "consumer-1",
 			GroupID:            groupID,
 			GenerationID:       1,
-			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			SubscribedTopics:   []string{"test-topic"},
+			AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 			LastHeartbeat:      time.Now(),
 		},
 		{
 			ConsumerID:         "consumer-2",
 			GroupID:            groupID,
 			GenerationID:       1,
-			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			SubscribedTopics:   []string{"test-topic"},
+			AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 			LastHeartbeat:      time.Now(),
 		},
 		{
 			ConsumerID:         "consumer-nonexistent", // 这个消费者不存在于数据库中
 			GroupID:            groupID,
 			GenerationID:       1,
-			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			SubscribedTopics:   []string{"test-topic"},
+			AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 			LastHeartbeat:      time.Now(),
 		},
 	}
@@ -85,10 +84,7 @@ func TestDALUpdateAssignmentsPartialFailure(t *testing.T) {
 
 		// 检查分配是否被部分更新
 		if len(consumer.AssignedPartitions) > 0 {
-			var partitions []types.PartitionInfo
-			if err := json.Unmarshal(consumer.AssignedPartitions, &partitions); err == nil && len(partitions) > 0 {
-				t.Errorf("💥 BUG确认：消费者 %s 的分区分配被部分更新，事务应该完全回滚", consumer.ConsumerID)
-			}
+			t.Errorf("💥 BUG确认：消费者 %s 的分区分配被部分更新，事务应该完全回滚", consumer.ConsumerID)
 		}
 	}
 }
@@ -105,8 +101,8 @@ func TestDALUpdateAssignmentsConsistency(t *testing.T) {
 		ConsumerID:         "consumer-1",
 		GroupID:            groupID,
 		GenerationID:       1,
-		SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-		AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+		SubscribedTopics:   ([]string{"test-topic"}),
+		AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 		LastHeartbeat:      time.Now(),
 	}
 	require.NoError(t, db.Create(&consumer).Error)
@@ -142,8 +138,7 @@ func TestDALUpdateAssignmentsConsistency(t *testing.T) {
 	assert.Equal(t, uint(3), finalConsumer.GenerationID, "最终代际ID应该是3")
 
 	// 检查分区分配是否正确
-	var finalPartitions []types.PartitionInfo
-	require.NoError(t, json.Unmarshal(finalConsumer.AssignedPartitions, &finalPartitions))
+	var finalPartitions []types.PartitionInfo = finalConsumer.AssignedPartitions
 
 	expectedPartitions := assignments2["consumer-1"]
 	assert.Equal(t, expectedPartitions, finalPartitions, "最终分区分配应该是第二次更新的结果")

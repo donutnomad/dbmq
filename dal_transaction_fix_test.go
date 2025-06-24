@@ -2,7 +2,6 @@ package dbmq
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -26,16 +25,16 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 				ConsumerID:         "consumer-1",
 				GroupID:            groupID,
 				GenerationID:       1,
-				SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-				AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+				SubscribedTopics:   ([]string{"test-topic"}),
+				AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 				LastHeartbeat:      time.Now(),
 			},
 			{
 				ConsumerID:         "consumer-2",
 				GroupID:            groupID,
 				GenerationID:       1,
-				SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-				AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+				SubscribedTopics:   ([]string{"test-topic"}),
+				AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 				LastHeartbeat:      time.Now(),
 			},
 		}
@@ -68,8 +67,7 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 				"消费者 %s 的代际ID应该被更新为2", consumer.ConsumerID)
 
 			// 验证分区分配
-			var partitions []types.PartitionInfo
-			require.NoError(t, json.Unmarshal(consumer.AssignedPartitions, &partitions))
+			var partitions []types.PartitionInfo = consumer.AssignedPartitions
 
 			expectedPartitions := assignments[consumer.ConsumerID]
 			assert.Equal(t, expectedPartitions, partitions,
@@ -88,8 +86,8 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 			ConsumerID:         "existing-consumer",
 			GroupID:            failGroupID,
 			GenerationID:       1,
-			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			SubscribedTopics:   ([]string{"test-topic"}),
+			AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 			LastHeartbeat:      time.Now(),
 		}
 		require.NoError(t, db.Create(&consumer).Error)
@@ -117,15 +115,9 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 			"事务回滚后，existing-consumer的代际ID应该仍为1")
 
 		// 验证分区分配也没有被更新（应该为空或原值）
-		if len(unchangedConsumer.AssignedPartitions) > 0 {
-			var partitions []types.PartitionInfo
-			if err := json.Unmarshal(unchangedConsumer.AssignedPartitions, &partitions); err == nil {
-				// 如果能解析，应该不包含新的分配
-				for _, partition := range partitions {
-					if partition.Topic == "test-topic" && partition.Partition == 0 {
-						t.Error("事务回滚后，不应该包含新的分区分配")
-					}
-				}
+		for _, partition := range unchangedConsumer.AssignedPartitions {
+			if partition.Topic == "test-topic" && partition.Partition == 0 {
+				t.Error("事务回滚后，不应该包含新的分区分配")
 			}
 		}
 
@@ -140,8 +132,8 @@ func TestBugFix5_UpdateAssignmentsTransactionFix(t *testing.T) {
 			ConsumerID:         "simple-consumer",
 			GroupID:            simpleGroupID,
 			GenerationID:       1,
-			SubscribedTopics:   mustMarshalJSON([]string{"test-topic"}),
-			AssignedPartitions: mustMarshalJSON([]types.PartitionInfo{}), // 初始为空分区
+			SubscribedTopics:   ([]string{"test-topic"}),
+			AssignedPartitions: ([]types.PartitionInfo{}), // 初始为空分区
 			LastHeartbeat:      time.Now(),
 		}
 		require.NoError(t, db.Create(&consumer).Error)

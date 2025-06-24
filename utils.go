@@ -1,9 +1,25 @@
 package dbmq
 
 import (
-	"github.com/donutnomad/dbmq/types"
 	"sort"
+
+	"github.com/donutnomad/dbmq/types"
 )
+
+func CloneMap[K comparable, V any](m map[K]V) map[K]V {
+	clone := make(map[K]V)
+	for k, v := range m {
+		clone[k] = v
+	}
+	return clone
+}
+
+func isEmpty[Slice ~[]E, E any](s Slice) bool {
+	return len(s) == 0
+}
+func isNotEmpty[Slice ~[]E, E any](s Slice) bool {
+	return len(s) > 0
+}
 
 // SortBy 根据提供的比较函数对切片进行排序
 // 这是一个泛型函数，可以处理任何类型的切片

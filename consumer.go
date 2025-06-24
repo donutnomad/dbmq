@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
+	"github.com/samber/lo"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -60,6 +63,20 @@ type ConsumerConfig struct {
 	// 自动提交相关配置
 	EnableAutoCommit   bool          // 是否启用自动提交偏移量
 	AutoCommitInterval time.Duration // 自动提交间隔，仅在EnableAutoCommit为true时有效
+}
+
+func (c ConsumerConfig) GetPollFetchTimeout() time.Duration {
+	if c.PollFetchTimeout == 0 {
+		return 5 * time.Second
+	}
+	return c.PollFetchTimeout
+}
+
+func (c ConsumerConfig) GetPollFetchLimit() int {
+	if c.PollFetchLimit == 0 {
+		return 100
+	}
+	return c.PollFetchLimit
 }
 
 // ConsumerMessage 消费者接收到的消息（重复定义，为了保持兼容性）
@@ -169,7 +186,7 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
 func (c *Consumer) Close() {
-	log.Printf("Closing consumer %s...", c.id)
+	c.logger().Debug("Closing", "consumer-id", c.id)
 
 	// 停止所有后台循环
 	select {
@@ -192,21 +209,34 @@ func (c *Consumer) Close() {
 	// 在所有后台进程停止后，进行最后一次提交
 	// 这样可以避免与自动提交循环的竞争条件
 	if err := c.CommitSync(); err != nil {
-		log.Printf("ERROR: final commit failed for consumer %s: %v", c.id, err)
+		c.logger().Error(fmt.Sprintf("ERROR: final commit failed for consumer %s: %v", c.id, err))
 	}
 
 	// 通过删除心跳记录优雅离开消费组
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := dal.DeleteHeartbeat(ctx, c.db, c.config.GroupID, c.id); err != nil {
-		log.Printf("ERROR: failed to leave group gracefully for consumer %s: %v", c.id, err)
+		c.logger().Error(fmt.Sprintf("ERROR: failed to leave group gracefully for consumer %s: %v", c.id, err))
 	}
 
-	log.Printf("Consumer %s shut down.", c.id)
+	c.logger().Debug("Shutdown", "consumer-id", c.id)
+}
+
+type ErrFailedFetchMessage struct {
+	err error
+}
+
+func (e *ErrFailedFetchMessage) Error() string {
+	return e.err.Error()
 }
 
 // Poll 从订阅的Topic和分区中拉取消息
 // 这是消费者逻辑的核心，实现了复杂的拉取和通知机制
+// 会返回的错误:
+// ErrFailedFetchMessage
+// ErrRebalanceInProgress
+// context.DeadlineExceeded
+// context.Canceled
 func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
 	// 如果正在进行重新均衡，立即返回并提示用户
 	// 心跳循环负责处理重新均衡过程
@@ -216,18 +246,67 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 
 	// 获取当前分配的分区
 	assignedPartitions := c.getAssignedPartitions()
-	if len(assignedPartitions) == 0 {
-		// 没有分配的分区，等待超时后返回空列表
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(timeout):
-			return nil, nil // 超时，返回空列表
-		}
+
+	// 等待通知或超时
+	if err := c.waitPoll(ctx, !isEmpty(assignedPartitions), timeout); err != nil {
+		return nil, err
+	}
+	if isEmpty(assignedPartitions) {
+		return nil, nil
 	}
 
+	fetchCtx, cancel := context.WithTimeout(ctx, c.config.GetPollFetchTimeout())
+	defer cancel()
+
+	// 批量获取消息
+	allMessages, err := dal.FetchMessagesBatch(fetchCtx, c.db, lo.Map(assignedPartitions, func(p types.PartitionInfo, _ int) dal.PartitionRequest {
+		return dal.PartitionRequest{
+			Topic:     p.Topic,
+			Partition: p.Partition,
+			Offset:    c.getOffset(p),
+			Limit:     c.config.GetPollFetchLimit(),
+		}
+	}))
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		// 如果批量查询失败，记录错误并返回
+		c.logger().Error(fmt.Sprintf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err))
+		return nil, &ErrFailedFetchMessage{err}
+	}
+
+	// 按分区分组消息，用于更新偏移量和通知状态
+	messagesByPartition := lo.GroupBy(allMessages, func(msg types.Message) types.PartitionInfo {
+		return types.PartitionInfo{Topic: msg.Topic, Partition: msg.Partition}
+	})
+
+	// 更新每个分区的已拉取偏移量和通知状态
+	for partition, messages := range messagesByPartition {
+		// 更新该分区的已拉取偏移量
+		lastMessage, ok := lo.Last(messages)
+		if !ok {
+			continue
+		}
+		c.setPolledOffset(partition, lastMessage.PerPartitionOffset)
+
+		// 添加调试日志
+		c.logger().Debug(fmt.Sprintf("🔍 [Poll] 更新分区 %v 的polledOffset为 %d (消息ID: %d)",
+			partition, lastMessage.PerPartitionOffset, lastMessage.ID))
+
+		// "重新装填"该分区的通知触发器
+		c.tryResetNotificationState(context.Background(), partition)
+	}
+
+	return toConsumerMessages(allMessages), nil
+}
+
+// 返回错误
+// context.DeadlineExceeded
+// context.Canceled
+func (c *Consumer) waitPoll(ctx context.Context, useRedis bool, timeout time.Duration) error {
 	// 如果启用了通知优化，使用Redis Pub/Sub等待通知
-	if c.config.NotificationEnabled && c.redis != nil {
+	if useRedis && c.config.NotificationEnabled && c.redis != nil {
 		// 检查并确保PubSub连接健康
 		c.ensurePubSubConnection()
 
@@ -237,7 +316,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 			select {
 			case <-c.notifyCh:
 				// 有消息在等待，我们将立即进行拉取
-				log.Printf("Drained pending notification for consumer %s", c.id)
+				c.logger().Debug(fmt.Sprintf("Drained pending notification for consumer %s", c.id))
 				c.lastPubsubTime.Store(time.Now().Unix())
 			default:
 				// 没有消息在等待，使用非阻塞方式等待通知
@@ -253,7 +332,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 				select {
 				case msg := <-c.notifyCh:
 					if msg != nil {
-						log.Printf("Received notification for consumer %s: %s", c.id, msg.Channel)
+						c.logger().Debug(fmt.Sprintf("Received notification for consumer %s: %s", c.id, msg.Channel))
 						c.lastPubsubTime.Store(time.Now().Unix())
 					}
 					cancel()
@@ -264,7 +343,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 			}
 		} else {
 			// PubSub连接不健康，标记为不健康并回退到轮询模式
-			log.Printf("PubSub connection unhealthy for consumer %s, falling back to polling", c.id)
+			c.logger().Debug(fmt.Sprintf("PubSub connection unhealthy for consumer %s, falling back to polling", c.id))
 			c.pubsubHealthy.Store(false)
 		}
 		c.muSub.Unlock()
@@ -273,7 +352,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		if !c.pubsubHealthy.Load() {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return ctx.Err()
 			case <-time.After(min(timeout, 1*time.Second)): // 缩短轮询间隔
 			}
 		}
@@ -281,71 +360,18 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		// 如果禁用了通知，回退到简单的睡眠
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-time.After(timeout):
 		}
 	}
+	return nil
+}
 
-	// 使用批量查询从所有分配的分区拉取消息
-	// 这个拉取操作在通知或超时后执行
-	// 为拉取本身使用较短的上下文，因为主要的等待已经发生了
-	fetchTimeout := 5 * time.Second
-	if c.config.PollFetchTimeout > 0 {
-		fetchTimeout = c.config.PollFetchTimeout
+// 删除该分区的通知状态
+func (c *Consumer) tryResetNotificationState(ctx context.Context, partition types.PartitionInfo) {
+	if c.config.NotificationEnabled && c.redis != nil {
+		go c.resetNotificationState(ctx, partition)
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
-	defer cancel()
-
-	// 构建批量请求
-	var batchRequests []dal.PartitionRequest
-	for _, p := range assignedPartitions {
-		offset := c.getOffset(p)
-		limit := 100
-		if c.config.PollFetchLimit > 0 {
-			limit = c.config.PollFetchLimit
-		}
-		batchRequests = append(batchRequests, dal.PartitionRequest{
-			Topic:     p.Topic,
-			Partition: p.Partition,
-			Offset:    offset,
-			Limit:     limit,
-		})
-	}
-
-	// 批量获取消息
-	allMessages, err := dal.FetchMessagesBatch(fetchCtx, c.db, batchRequests)
-	if err != nil {
-		// 如果批量查询失败，记录错误并返回
-		log.Printf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err)
-		return nil, fmt.Errorf("batch fetch failed: %w", err)
-	}
-
-	// 按分区分组消息，用于更新偏移量和通知状态
-	messagesByPartition := make(map[types.PartitionInfo][]types.Message)
-	for _, msg := range allMessages {
-		partition := types.PartitionInfo{Topic: msg.Topic, Partition: msg.Partition}
-		messagesByPartition[partition] = append(messagesByPartition[partition], msg)
-	}
-
-	// 更新每个分区的已拉取偏移量和通知状态
-	for partition, messages := range messagesByPartition {
-		if len(messages) > 0 {
-			// 更新该分区的已拉取偏移量
-			lastMessage := messages[len(messages)-1]
-			c.setPolledOffset(partition, lastMessage.PerPartitionOffset)
-
-			// 添加调试日志
-			fmt.Printf("🔍 [Poll] 更新分区 %v 的polledOffset为 %d (消息ID: %d)\n",
-				partition, lastMessage.PerPartitionOffset, lastMessage.ID)
-
-			// "重新装填"该分区的通知触发器，因为我们刚刚拉取了数据
-			if c.config.NotificationEnabled && c.redis != nil {
-				go c.resetNotificationState(context.Background(), partition)
-			}
-		}
-	}
-
-	return toConsumerMessages(allMessages), nil
 }
 
 // heartbeatLoop 消费者的核心后台进程，负责：
@@ -377,12 +403,10 @@ func (c *Consumer) heartbeatLoop() {
 
 // autoCommitLoop 自动提交偏移量的后台进程
 // 定期提交已拉取的消息偏移量，无需手动调用CommitSync
-// autoCommitLoop 自动提交偏移量的后台进程
-// 定期提交已拉取的消息偏移量，无需手动调用CommitSync
 func (c *Consumer) autoCommitLoop() {
 	defer c.wg.Done()
 
-	log.Printf("Consumer %s: 启动自动提交循环，间隔: %v", c.id, c.config.AutoCommitInterval)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: 启动自动提交循环，间隔: %v", c.id, c.config.AutoCommitInterval))
 
 	ticker := time.NewTicker(c.config.AutoCommitInterval)
 	defer ticker.Stop()
@@ -392,23 +416,21 @@ func (c *Consumer) autoCommitLoop() {
 		case <-ticker.C:
 			// 执行自动提交，只提交有新拉取偏移量的分区
 			if err := c.autoCommitPolledOffsets(); err != nil {
-				log.Printf("ERROR: Consumer %s 自动提交失败: %v", c.id, err)
+				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s 自动提交失败: %v", c.id, err))
 			} else {
 				c.lastAutoCommit.Store(time.Now().Unix())
 			}
 		case <-c.stopCh:
 			// 在停止前执行最后一次提交
-			log.Printf("Consumer %s: 自动提交循环收到停止信号，执行最后一次提交", c.id)
+			c.logger().Debug(fmt.Sprintf("Consumer %s: 自动提交循环收到停止信号，执行最后一次提交", c.id))
 			if err := c.autoCommitPolledOffsets(); err != nil {
-				log.Printf("ERROR: Consumer %s 最终自动提交失败: %v", c.id, err)
+				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s 最终自动提交失败: %v", c.id, err))
 			}
 			return
 		}
 	}
 }
 
-// autoCommitPolledOffsets 自动提交已拉取但未提交的偏移量
-// 这是一个内部方法，只在自动提交模式下使用
 // autoCommitPolledOffsets 自动提交已拉取但未提交的偏移量
 // 这是一个内部方法，只在自动提交模式下使用
 func (c *Consumer) autoCommitPolledOffsets() error {
@@ -421,10 +443,7 @@ func (c *Consumer) autoCommitPolledOffsets() error {
 	}
 
 	// 创建需要提交的偏移量副本
-	offsetsToCommit := make(map[types.PartitionInfo]int64)
-	for partition, offset := range c.polledOffsets {
-		offsetsToCommit[partition] = offset
-	}
+	offsetsToCommit := CloneMap(c.polledOffsets)
 
 	// 执行数据库提交
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -442,7 +461,7 @@ func (c *Consumer) autoCommitPolledOffsets() error {
 		delete(c.polledOffsets, partition)
 	}
 
-	log.Printf("Consumer %s: 自动提交成功，提交了 %d 个分区的偏移量", c.id, len(offsetsToCommit))
+	c.logger().Debug(fmt.Sprintf("Consumer %s: 自动提交成功，提交了 %d 个分区的偏移量", c.id, len(offsetsToCommit)))
 	return nil
 }
 
@@ -450,20 +469,20 @@ func (c *Consumer) autoCommitPolledOffsets() error {
 func (c *Consumer) reconcileState(ctx context.Context) {
 	// 首先注册/更新心跳
 	if err := c.register(ctx); err != nil {
-		log.Printf("ERROR: failed to send heartbeat for consumer %s: %v", c.id, err)
+		c.logger().Debug(fmt.Sprintf("ERROR: failed to send heartbeat for consumer %s: %v", c.id, err))
 		return // 如果连心跳都无法发送，就不继续处理
 	}
 
 	// 从数据库获取我们自己的状态
 	hb, err := dal.GetHeartbeat(ctx, c.db, c.config.GroupID, c.id)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// 这在罕见的竞态条件下可能发生，我们在心跳和获取之间被踢出
-			// 下一次心跳会重新注册
-			log.Printf("WARN: could not find our own heartbeat for consumer %s, will retry.", c.id)
-		} else {
-			log.Printf("ERROR: failed to fetch consumer state for %s: %v", c.id, err)
-		}
+		c.logger().Error(fmt.Sprintf("ERROR: failed to fetch consumer state for %s: %v", c.id, err))
+		return
+	}
+	if hb == nil {
+		// 这在罕见的竞态条件下可能发生，我们在心跳和获取之间被踢出
+		// 下一次心跳会重新注册
+		c.logger().Warn(fmt.Sprintf("WARN: could not find our own heartbeat for consumer %s, will retry.", c.id))
 		return
 	}
 
@@ -476,20 +495,17 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 		return // 没有变化，无需操作
 	}
 
-	log.Printf("Consumer %s: Generation ID changed from %d to %d, starting rebalance", c.id, currentGenID, hb.GenerationID)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: Generation ID changed from %d to %d, starting rebalance", c.id, currentGenID, hb.GenerationID))
 
 	// ---- 需要重新均衡 ----
-	log.Printf("Rebalance detected for consumer %s. New Generation ID: %d", c.id, hb.GenerationID)
+	c.logger().Debug(fmt.Sprintf("Rebalance detected for consumer %s. New Generation ID: %d", c.id, hb.GenerationID))
 	c.rebalancing.Store(true)
 	defer c.rebalancing.Store(false)
 
-	log.Printf("Consumer %s: received assignment data: %s", c.id, string(hb.AssignedPartitions))
-	newPartitions, err := c.parsePartitions(hb.AssignedPartitions)
-	if err != nil {
-		log.Printf("ERROR: failed to parse new partition assignment for consumer %s: %v", c.id, err)
-		return
-	}
-	log.Printf("Consumer %s: parsed new partitions: %v", c.id, newPartitions)
+	newPartitions := lo.GroupByMap(hb.AssignedPartitions, func(item types.PartitionInfo) (string, uint) {
+		return item.Topic, item.Partition
+	})
+	c.logger().Debug(fmt.Sprintf("Consumer %s: parsed new partitions: %v", c.id, newPartitions))
 
 	// 1. 找出被撤销的分区
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
@@ -497,20 +513,20 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	// 2. 为被撤销的分区提交偏移量，确保工作不会丢失
 	// 使用新的代际ID进行提交，防止过时的提交
 	if len(revokedPartitions) > 0 {
-		log.Printf("Consumer %s revoking partitions: %v", c.id, revokedPartitions)
+		c.logger().Debug(fmt.Sprintf("Consumer %s revoking partitions: %v", c.id, revokedPartitions))
 		if err := c.commitOffsets(ctx, revokedPartitions, hb.GenerationID); err != nil {
-			log.Printf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err)
+			c.logger().Error(fmt.Sprintf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err))
 			// 即使提交失败也继续重新均衡
 		}
 	}
 
 	// 3. 清除内部状态并为新分配获取偏移量
-	log.Printf("Consumer %s: clearing and fetching offsets for new assignment", c.id)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: clearing and fetching offsets for new assignment", c.id))
 	if err := c.clearAndFetchOffsetsForNewAssignment(newPartitions); err != nil {
-		log.Printf("ERROR: failed to fetch offsets for new assignment on consumer %s: %v", c.id, err)
+		c.logger().Error(fmt.Sprintf("ERROR: failed to fetch offsets for new assignment on consumer %s: %v", c.id, err))
 		return // 这对重新均衡来说是致命错误
 	}
-	log.Printf("Consumer %s: successfully fetched offsets for new assignment", c.id)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: successfully fetched offsets for new assignment", c.id))
 
 	// 4. 如果启用了Redis订阅，更新Redis订阅
 	if c.config.NotificationEnabled && c.redis != nil {
@@ -542,20 +558,17 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	c.assignment = newPartitions
 	c.mu.Unlock()
 
-	log.Printf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions)
+	c.logger().Debug(fmt.Sprintf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions))
 }
 
 // register 向协调器发送心跳，有效地注册或更新消费者的存活状态和Topic订阅信息
 func (c *Consumer) register(ctx context.Context) error {
 	c.mu.RLock()
-	topicsData, err := json.Marshal(c.topics)
+	var topics = slices.Clone(c.topics)
 	c.mu.RUnlock()
-	if err != nil {
-		return fmt.Errorf("failed to marshal subscribed topics: %w", err)
-	}
 
 	// 心跳同时作为注册，这是一个upsert操作
-	return dal.UpsertHeartbeat(ctx, c.db, c.config.GroupID, c.id, topicsData)
+	return dal.UpsertHeartbeat(ctx, c.db, c.config.GroupID, c.id, topics)
 }
 
 // IsReady 如果消费者没有在重新均衡且有分配的分区，返回true
@@ -563,8 +576,7 @@ func (c *Consumer) IsReady() bool {
 	if c.rebalancing.Load() {
 		return false
 	}
-	assignedPartitions := c.getAssignedPartitions()
-	return len(assignedPartitions) > 0
+	return isNotEmpty(c.getAssignedPartitions())
 }
 
 // IsAutoCommitEnabled 返回是否启用了自动提交
@@ -577,10 +589,6 @@ func (c *Consumer) GetLastAutoCommitTime() time.Time {
 	return time.Unix(c.lastAutoCommit.Load(), 0)
 }
 
-// CommitSync 同步提交所有当前分配分区的偏移量
-// 这是一个阻塞操作
-// CommitSync 同步提交所有当前分配分区的偏移量
-// 这是一个阻塞操作，提交所有已拉取但尚未提交的消息偏移量
 // CommitSync 同步提交所有当前分配分区的偏移量
 // 这是一个阻塞操作，提交所有已拉取但尚未提交的消息偏移量
 func (c *Consumer) CommitSync() error {
@@ -677,16 +685,12 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 	}
 
 	// 添加调试日志
-	fmt.Printf("🔍 [CommitMessage] Topic: %s, Partition: %d, Offset: %d\n",
-		msg.Topic, msg.Partition, msg.Offset)
+	c.logger().Debug(fmt.Sprintf("🔍 [CommitMessage] Topic: %s, Partition: %d, Offset: %d",
+		msg.Topic, msg.Partition, msg.Offset))
 
 	return c.CommitOffsets(offsets)
 }
 
-// commitOffsets handles the database logic for committing a batch of offsets.
-// This is the legacy method that acquires locks internally.
-// commitOffsets 处理重新均衡时撤销分区的偏移量提交
-// 这是一个内部方法，用于重新均衡过程中的偏移量提交
 // commitOffsets 处理重新均衡时撤销分区的偏移量提交
 // 这是一个内部方法，用于重新均衡过程中的偏移量提交
 func (c *Consumer) commitOffsets(ctx context.Context, partitions []types.PartitionInfo, generationID uint) error {
@@ -767,14 +771,14 @@ func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 		defer cancel()
 
 		if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
-			log.Printf("ERROR: failed to subscribe to redis channels %v: %v", channels, err)
+			c.logger().Error(fmt.Sprintf("ERROR: failed to subscribe to redis channels %v: %v", channels, err))
 			c.pubsubHealthy.Store(false)
 		} else {
-			log.Printf("Consumer %s subscribed to channels: %v", c.id, channels)
+			c.logger().Debug("Subscribed to channels", "consumer-id", c.id, "channels", channels)
 			c.lastPubsubTime.Store(time.Now().Unix())
 		}
 	} else {
-		log.Printf("WARN: PubSub connection not available for consumer %s", c.id)
+		c.logger().Warn(fmt.Sprintf("WARN: PubSub connection not available for consumer %s", c.id))
 	}
 }
 
@@ -795,10 +799,10 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	defer cancel()
 
 	if err := c.pubsub.Unsubscribe(ctx, channels...); err != nil {
-		log.Printf("ERROR: failed to unsubscribe from redis channels %v: %v", channels, err)
+		c.logger().Error(fmt.Sprintf("ERROR: failed to unsubscribe from redis channels %v: %v", channels, err))
 		c.pubsubHealthy.Store(false)
 	} else {
-		log.Printf("Consumer %s unsubscribed from channels: %v", c.id, channels)
+		c.logger().Debug(fmt.Sprintf("Consumer %s unsubscribed from channels: %v", c.id, channels))
 		c.lastPubsubTime.Store(time.Now().Unix())
 	}
 
@@ -850,7 +854,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 
 	// 如果有被撤销的分区，先提交它们的偏移量
 	if len(revokedPartitions) > 0 {
-		log.Printf("Consumer %s: committing offsets for revoked partitions: %v", c.id, revokedPartitions)
+		c.logger().Debug(fmt.Sprintf("Consumer %s: committing offsets for revoked partitions: %v", c.id, revokedPartitions))
 
 		// 为撤销的分区准备偏移量提交
 		offsetsToCommit := make(map[types.PartitionInfo]int64)
@@ -872,10 +876,10 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 			c.mu.Lock()
 
 			if err != nil {
-				log.Printf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err)
+				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err))
 				// 继续执行，但记录错误
 			} else {
-				log.Printf("Consumer %s: successfully committed revoked partitions", c.id)
+				c.logger().Debug(fmt.Sprintf("Consumer %s: successfully committed revoked partitions", c.id))
 			}
 		}
 	}
@@ -899,10 +903,10 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	log.Printf("Consumer %s: fetching offsets for partitions: %v", c.id, partitionsToFetch)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, partitionsToFetch))
 	fetchedOffsets, err := dal.GetCommittedOffsets(ctx, c.db, c.config.GroupID, partitionsToFetch)
 	if err != nil {
-		log.Printf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err)
+		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err))
 		c.mu.Lock()
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
@@ -912,21 +916,21 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 		if _, exists := fetchedOffsets[p]; !exists {
 			startOffset, err := c.determineStartOffset(ctx, p)
 			if err != nil {
-				log.Printf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err)
+				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err))
 				fetchedOffsets[p] = -1 // 回退到-1，消费所有的消息
-				log.Printf("Consumer %s: fallback to offset -1 for partition %v due to error", c.id, p)
+				c.logger().Debug(fmt.Sprintf("Consumer %s: fallback to offset -1 for partition %v due to error", c.id, p))
 			} else {
 				fetchedOffsets[p] = startOffset
-				log.Printf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
-					c.id, p, c.config.ConsumeStrategy.String(), startOffset)
+				c.logger().Debug(fmt.Sprintf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
+					c.id, p, c.config.ConsumeStrategy.String(), startOffset))
 			}
 		} else {
-			log.Printf("Consumer %s: 🔄 continuing partition %v from committed offset %d",
-				c.id, p, fetchedOffsets[p])
+			c.logger().Debug(fmt.Sprintf("Consumer %s: 🔄 continuing partition %v from committed offset %d",
+				c.id, p, fetchedOffsets[p]))
 		}
 	}
 
-	log.Printf("Consumer %s: fetched offsets: %v", c.id, fetchedOffsets)
+	c.logger().Debug(fmt.Sprintf("Consumer %s: fetched offsets: %v", c.id, fetchedOffsets))
 
 	// 更新偏移量（重新获取锁）
 	c.mu.Lock()
@@ -965,25 +969,6 @@ func (c *Consumer) findRevokedPartitions(newPartitions map[string][]uint) []type
 	return revoked
 }
 
-// parsePartitions decodes the JSON partition assignment data.
-func (c *Consumer) parsePartitions(data []byte) (map[string][]uint, error) {
-	var partitions []types.PartitionInfo
-	if err := json.Unmarshal(data, &partitions); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal partition assignment: %w", err)
-	}
-	var m = make(map[string][]uint)
-	for _, partition := range partitions {
-		if _, ok := m[partition.Topic]; !ok {
-			m[partition.Topic] = []uint{partition.Partition}
-		} else {
-			m[partition.Topic] = append(m[partition.Topic], partition.Partition)
-		}
-	}
-	return m, nil
-}
-
-// getOffset 获取分区的下一个消费偏移量
-// 返回下一个应该消费的消息偏移量（已提交偏移量 + 1）
 // getOffset 获取分区的下一个消费偏移量
 // 返回下一个应该消费的消息偏移量
 func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
@@ -1008,15 +993,15 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	defer c.mu.Unlock()
 
 	// 添加调试日志
-	fmt.Printf("🔍 [setPolledOffset] 分区 %v 设置polledOffset为 %d\n", p, offset)
+	c.logger().Debug(fmt.Sprintf("🔍 [setPolledOffset] 分区 %v 设置polledOffset为 %d", p, offset))
 
 	// 检查新偏移量是否小于已提交的偏移量
 	if committedOffset, exists := c.committedOffsets[p]; exists {
 		// committedOffsets存储的是下一个要消费的偏移量
 		// 所以polledOffset不应该小于committedOffset-1
 		if offset < committedOffset-1 {
-			log.Printf("WARNING: Consumer %s: attempted to set polledOffset %d which is less than committed offset %d for partition %v",
-				c.id, offset, committedOffset-1, p)
+			c.logger().Warn(fmt.Sprintf("WARNING: Consumer %s: attempted to set polledOffset %d which is less than committed offset %d for partition %v",
+				c.id, offset, committedOffset-1, p))
 			return // 拒绝设置无效的偏移量
 		}
 	}
@@ -1025,15 +1010,15 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	if currentOffset, exists := c.polledOffsets[p]; exists {
 		if offset > currentOffset {
 			c.polledOffsets[p] = offset
-			fmt.Printf("✅ [setPolledOffset] 分区 %v polledOffset更新为 %d (之前: %d)\n", p, offset, currentOffset)
+			c.logger().Debug(fmt.Sprintf("✅ [setPolledOffset] 分区 %v polledOffset更新为 %d (之前: %d)", p, offset, currentOffset))
 		} else {
-			fmt.Printf("⚠️ [setPolledOffset] 分区 %v 忽略非递增offset %d (当前: %d)\n", p, offset, currentOffset)
+			c.logger().Debug(fmt.Sprintf("⚠️ [setPolledOffset] 分区 %v 忽略非递增offset %d (当前: %d)", p, offset, currentOffset))
 		}
 		// 如果新偏移量小于等于当前偏移量，则忽略（避免回退）
 	} else {
 		// 第一次设置此分区的偏移量
 		c.polledOffsets[p] = offset
-		fmt.Printf("🆕 [setPolledOffset] 分区 %v 首次设置polledOffset为 %d\n", p, offset)
+		c.logger().Debug(fmt.Sprintf("🆕 [setPolledOffset] 分区 %v 首次设置polledOffset为 %d", p, offset))
 	}
 }
 
@@ -1068,7 +1053,7 @@ func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 func (c *Consumer) resetNotificationState(ctx context.Context, p types.PartitionInfo) {
 	key := fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
 	if err := c.redis.Del(ctx, key).Err(); err != nil {
-		log.Printf("WARN: failed to reset notification state for %v: %v", p, err)
+		c.logger().Warn(fmt.Sprintf("WARN: failed to reset notification state for %v: %v", p, err))
 	}
 }
 
@@ -1083,7 +1068,7 @@ func (c *Consumer) ensurePubSubConnection() {
 
 	// 如果超过30秒没有活动，或者连接标记为不健康，尝试重新连接
 	if c.pubsub == nil || !c.pubsubHealthy.Load() || (now-lastActivity > 30) {
-		log.Printf("PubSub connection needs refresh for consumer %s", c.id)
+		c.logger().Debug(fmt.Sprintf("PubSub connection needs refresh for consumer %s", c.id))
 
 		// 关闭旧连接
 		if c.pubsub != nil {
@@ -1107,25 +1092,17 @@ func (c *Consumer) ensurePubSubConnection() {
 			if len(assignedPartitions) > 0 {
 				channels := toChannelNames(assignedPartitions)
 				if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
-					log.Printf("ERROR: failed to resubscribe to channels %v: %v", channels, err)
+					c.logger().Error(fmt.Sprintf("ERROR: failed to resubscribe to channels %v: %v", channels, err))
 					c.pubsubHealthy.Store(false)
 				} else {
-					log.Printf("Consumer %s resubscribed to channels: %v", c.id, channels)
+					c.logger().Debug("Resubscribed to channels", "consumer-id", c.id, "channels", channels)
 				}
 			}
 		} else {
-			log.Printf("ERROR: failed to create PubSub connection for consumer %s", c.id)
+			c.logger().Error(fmt.Sprintf("ERROR: failed to create PubSub connection for consumer %s", c.id))
 			c.pubsubHealthy.Store(false)
 		}
 	}
-}
-
-// min 返回两个time.Duration中的较小值
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // determineStartOffset 根据消费策略确定分区的起始偏移量
@@ -1135,31 +1112,32 @@ func (c *Consumer) determineStartOffset(ctx context.Context, partition types.Par
 	switch c.config.ConsumeStrategy {
 	case ConsumeFromEarliest:
 		// 从分区的第一条消息开始消费（偏移量-1，FetchMessages会获取offset > -1的消息）
-		log.Printf("Consumer %s: applying EARLIEST strategy for partition %v", c.id, partition)
+		c.logger().Debug(fmt.Sprintf("Consumer %s: applying EARLIEST strategy for partition %v", c.id, partition))
 		return -1, nil
-
 	case ConsumeFromLatest:
 		// 从最新的消息之后开始消费（跳过所有历史消息）
-		log.Printf("Consumer %s: applying LATEST strategy for partition %v", c.id, partition)
+		c.logger().Debug(fmt.Sprintf("Consumer %s: applying LATEST strategy for partition %v", c.id, partition))
 		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get latest offset: %w", err)
 		}
 		// 从最新偏移量的下一条消息开始消费
 		return latestOffset + 1, nil
-
 	case ConsumeFromCommitted:
 		// 从已提交的偏移量开始消费，如果没有已提交偏移量则从最新开始
 		// 由于此方法只在没有已提交偏移量时被调用，所以使用Latest作为后备策略
-		log.Printf("Consumer %s: applying COMMITTED strategy (fallback to LATEST) for partition %v", c.id, partition)
+		c.logger().Debug(fmt.Sprintf("Consumer %s: applying COMMITTED strategy (fallback to LATEST) for partition %v", c.id, partition))
 		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get latest offset for committed strategy fallback: %w", err)
 		}
 		// 从最新偏移量的下一条消息开始消费
 		return latestOffset + 1, nil
-
 	default:
 		return 0, fmt.Errorf("unknown consume strategy: %v", c.config.ConsumeStrategy)
 	}
+}
+
+func (c *Consumer) logger() *slog.Logger {
+	return logger.GetLogger().With("component", "consumer")
 }

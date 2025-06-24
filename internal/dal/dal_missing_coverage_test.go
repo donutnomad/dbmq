@@ -255,6 +255,14 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 	db, mock := newMockDB(t)
 	ctx := context.Background()
 
+	var genStrings = func(x string, size int) []string {
+		var result = make([]string, size)
+		for i := 0; i < size; i++ {
+			result[i] = x
+		}
+		return result
+	}
+
 	testCases := []struct {
 		name      string
 		heartbeat *types.ConsumerHeartbeat
@@ -266,8 +274,8 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 				GroupID:            "test-group",
 				ConsumerID:         "consumer-1",
 				GenerationID:       0,
-				SubscribedTopics:   []byte(`["topic-a"]`),
-				AssignedPartitions: []byte(`[]`),
+				SubscribedTopics:   []string{"topic-a"},
+				AssignedPartitions: []types.PartitionInfo{},
 				LastHeartbeat:      time.Now(),
 			},
 			expectErr: false,
@@ -278,8 +286,8 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 				GroupID:            "test-group",
 				ConsumerID:         "consumer-1",
 				GenerationID:       1,
-				SubscribedTopics:   []byte(`["topic-a","topic-b"]`),
-				AssignedPartitions: []byte(`[{"Topic":"topic-a","Partition":0}]`),
+				SubscribedTopics:   []string{"topic-a", "topic-b"},
+				AssignedPartitions: []types.PartitionInfo{{Topic: "topic-a", Partition: 0}},
 				LastHeartbeat:      time.Now(),
 			},
 			expectErr: false,
@@ -290,8 +298,8 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 				GroupID:            "group-🚀",
 				ConsumerID:         "consumer-测试",
 				GenerationID:       1,
-				SubscribedTopics:   []byte(`["topic-🌟"]`),
-				AssignedPartitions: []byte(`[]`),
+				SubscribedTopics:   []string{"topic-🌟"},
+				AssignedPartitions: []types.PartitionInfo{},
 				LastHeartbeat:      time.Now(),
 			},
 			expectErr: false,
@@ -302,8 +310,8 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 				GroupID:            "test-group",
 				ConsumerID:         "consumer-empty",
 				GenerationID:       1,
-				SubscribedTopics:   []byte(`[]`),
-				AssignedPartitions: []byte(`[]`),
+				SubscribedTopics:   []string{},
+				AssignedPartitions: []types.PartitionInfo{},
 				LastHeartbeat:      time.Now(),
 			},
 			expectErr: false,
@@ -314,8 +322,8 @@ func TestRegisterConsumer_AllScenarios(t *testing.T) {
 				GroupID:            "test-group",
 				ConsumerID:         "consumer-large",
 				GenerationID:       1,
-				SubscribedTopics:   []byte(`[` + strings.Repeat(`"topic-very-long-name-with-many-characters",`, 1000)[:len(strings.Repeat(`"topic-very-long-name-with-many-characters",`, 1000))-1] + `]`),
-				AssignedPartitions: []byte(`[]`),
+				SubscribedTopics:   genStrings("topic-very-long-name-with-many-characters", 1000),
+				AssignedPartitions: []types.PartitionInfo{},
 				LastHeartbeat:      time.Now(),
 			},
 			expectErr: false,

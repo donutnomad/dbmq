@@ -3,6 +3,7 @@ package types
 import (
 	"database/sql"
 	"encoding/json"
+	"gorm.io/datatypes"
 	"time"
 )
 
@@ -83,12 +84,12 @@ func (c *ConsumerGroupGeneration) TableName() string {
 // 存储消费者的活跃状态、订阅信息和分区分配
 // 这是协调器判断消费者是否存活和进行分区分配的核心表
 type ConsumerHeartbeat struct {
-	GroupID            string    `gorm:"primaryKey"`                                                                       // 消费组ID，复合主键之一
-	ConsumerID         string    `gorm:"primaryKey"`                                                                       // 消费者唯一ID（通常是UUID），复合主键之一
-	GenerationID       uint      `gorm:"not null"`                                                                         // 消费者当前所属的代际ID，用于版本控制
-	SubscribedTopics   []byte    `gorm:"type:json;not null"`                                                               // 消费者订阅的Topic列表，JSON格式，如["topic-A", "topic-B"]
-	AssignedPartitions []byte    `gorm:"type:json;not null"`                                                               // 协调器分配给消费者的分区，JSON格式，如{"topic-A": [0, 2]}
-	LastHeartbeat      time.Time `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_last_heartbeat"` // 最后心跳时间，用于检测消费者是否存活
+	GroupID            string                             `gorm:"primaryKey"`                                                                       // 消费组ID，复合主键之一
+	ConsumerID         string                             `gorm:"primaryKey"`                                                                       // 消费者唯一ID（通常是UUID），复合主键之一
+	GenerationID       uint                               `gorm:"not null"`                                                                         // 消费者当前所属的代际ID，用于版本控制
+	SubscribedTopics   datatypes.JSONSlice[string]        `gorm:"type:json;not null"`                                                               // 消费者订阅的Topic列表，JSON格式，如["topic-A", "topic-B"]
+	AssignedPartitions datatypes.JSONSlice[PartitionInfo] `gorm:"type:json;not null"`                                                               // 协调器分配给消费者的分区，JSON格式，如{"topic-A": [0, 2]}
+	LastHeartbeat      time.Time                          `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_last_heartbeat"` // 最后心跳时间，用于检测消费者是否存活
 }
 
 func (c *ConsumerHeartbeat) TableName() string {
