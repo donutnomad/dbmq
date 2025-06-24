@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq"
-	"github.com/donutnomad/dbmq/internal/db"
-	"gorm.io/gorm"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/db"
+	"gorm.io/gorm"
 )
 
 // OrderMessage 订单消息结构
@@ -111,11 +112,11 @@ func SuperDemo() {
 	defer admin.Close()
 
 	// 创建"创建订单"主题
-	fmt.Println("🎯 创建主题: 创建订单")
-	topicName := "创建订单"
+	fmt.Println("🎯 创建主题: 创建订单DEBUG")
+	topicName := "创建订单3"
 	topicReq := dbmq.NewTopicRequest{
 		Name:          topicName,
-		NumPartitions: 1, // 1个分区
+		NumPartitions: 3, // 1个分区
 	}
 
 	// 尝试创建主题，如果已存在则忽略
@@ -127,18 +128,18 @@ func SuperDemo() {
 	fmt.Println()
 
 	// 4. 创建生产者
-	fmt.Println("📤 创建生产者...")
-	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
-		DB:                   dbClient,
-		Redis:                redisClient,
-		NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
-		NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
-	})
-	if err != nil {
-		log.Fatalf("❌ 创建生产者失败: %v", err)
-	}
-	defer producer.Close()
-	fmt.Println("✅ 生产者创建成功")
+	//fmt.Println("📤 创建生产者...")
+	//producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
+	//	DB:                   dbClient,
+	//	Redis:                redisClient,
+	//	NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
+	//	NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
+	//})
+	//if err != nil {
+	//	log.Fatalf("❌ 创建生产者失败: %v", err)
+	//}
+	//defer producer.Close()
+	//fmt.Println("✅ 生产者创建成功")
 
 	// 5. 创建两个消费组的消费者
 	fmt.Println("📥 创建消费者...")
@@ -164,7 +165,7 @@ func SuperDemo() {
 	consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
-		GroupID:             "消费组002",
+		GroupID:             "消费组001",
 		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
 		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
 		Topics:              []string{topicName},
@@ -182,7 +183,7 @@ func SuperDemo() {
 	consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,
 		Redis:               redisClient,
-		GroupID:             "消费组003",
+		GroupID:             "消费组001",
 		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
 		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
 		Topics:              []string{topicName},
@@ -199,8 +200,8 @@ func SuperDemo() {
 
 	fmt.Println("✅ 消费者创建成功")
 	fmt.Println("   - 消费组001: 订单处理服务（手动提交模式）")
-	fmt.Println("   - 消费组002: 数据分析服务（自动提交模式，间隔: 3秒）")
-	fmt.Println("   - 消费组003: 从最新消息开始消费（自动提交模式，间隔: 4秒）")
+	fmt.Println("   - 消费组001: 数据分析服务（自动提交模式，间隔: 3秒）")
+	fmt.Println("   - 消费组001: 从最新消息开始消费（自动提交模式，间隔: 4秒）")
 	fmt.Println()
 
 	// 6. 启动消费者订阅
@@ -263,11 +264,11 @@ func SuperDemo() {
 	}()
 
 	// 11. 启动生产者发送消息
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		produceOrderMessages(ctx, producer, topicName)
-	}()
+	//wg.Add(1)
+	//go func() {
+	//	defer wg.Done()
+	//	produceOrderMessages(ctx, producer, topicName)
+	//}()
 
 	fmt.Println("🎬 演示开始！所有服务已启动...")
 	fmt.Println("📊 实时监控消息流转...")

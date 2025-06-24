@@ -149,6 +149,10 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 		return nil, fmt.Errorf("failed to create message in db: %w", err)
 	}
 
+	// 添加调试日志显示发送结果
+	fmt.Printf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d, ID: %d, PerPartitionOffset: %d\n",
+		msg.Topic, partition, dbMsg.ID, dbMsg.PerPartitionOffset)
+
 	// 6. 可选的智能通知机制
 	// 在后台goroutine中执行，不影响消息发送的性能和可靠性
 	if p.config.NotificationEnabled && p.redis != nil {

@@ -332,7 +332,11 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		if len(messages) > 0 {
 			// 更新该分区的已拉取偏移量
 			lastMessage := messages[len(messages)-1]
-			c.setPolledOffset(partition, lastMessage.ID)
+			c.setPolledOffset(partition, lastMessage.PerPartitionOffset)
+
+			// 添加调试日志
+			fmt.Printf("🔍 [Poll] 更新分区 %v 的polledOffset为 %d (消息ID: %d)\n",
+				partition, lastMessage.PerPartitionOffset, lastMessage.ID)
 
 			// "重新装填"该分区的通知触发器，因为我们刚刚拉取了数据
 			if c.config.NotificationEnabled && c.redis != nil {
@@ -675,6 +679,11 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 	offsets := map[types.PartitionInfo]int64{
 		partition: msg.Offset,
 	}
+
+	// 添加调试日志
+	fmt.Printf("🔍 [CommitMessage] Topic: %s, Partition: %d, Offset: %d\n",
+		msg.Topic, msg.Partition, msg.Offset)
+
 	return c.CommitOffsets(offsets)
 }
 
@@ -908,8 +917,8 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 			startOffset, err := c.determineStartOffset(ctx, p)
 			if err != nil {
 				log.Printf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err)
-				fetchedOffsets[p] = 0 // 回退到0
-				log.Printf("Consumer %s: fallback to offset 0 for partition %v due to error", c.id, p)
+				fetchedOffsets[p] = -1 // 回退到-1，消费所有的消息
+				log.Printf("Consumer %s: fallback to offset -1 for partition %v due to error", c.id, p)
 			} else {
 				fetchedOffsets[p] = startOffset
 				log.Printf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
@@ -997,9 +1006,13 @@ func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
 
 // setPolledOffset 设置分区的已拉取偏移量
 // 这个方法确保偏移量是单调递增的，避免回退
+// 参数offset现在是per_partition_offset（分区内偏移量），而不是全局ID
 func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 添加调试日志
+	fmt.Printf("🔍 [setPolledOffset] 分区 %v 设置polledOffset为 %d\n", p, offset)
 
 	// 检查新偏移量是否小于已提交的偏移量
 	if committedOffset, exists := c.committedOffsets[p]; exists {
@@ -1016,11 +1029,15 @@ func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	if currentOffset, exists := c.polledOffsets[p]; exists {
 		if offset > currentOffset {
 			c.polledOffsets[p] = offset
+			fmt.Printf("✅ [setPolledOffset] 分区 %v polledOffset更新为 %d (之前: %d)\n", p, offset, currentOffset)
+		} else {
+			fmt.Printf("⚠️ [setPolledOffset] 分区 %v 忽略非递增offset %d (当前: %d)\n", p, offset, currentOffset)
 		}
 		// 如果新偏移量小于等于当前偏移量，则忽略（避免回退）
 	} else {
 		// 第一次设置此分区的偏移量
 		c.polledOffsets[p] = offset
+		fmt.Printf("🆕 [setPolledOffset] 分区 %v 首次设置polledOffset为 %d\n", p, offset)
 	}
 }
 

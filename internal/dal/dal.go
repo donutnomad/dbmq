@@ -257,11 +257,23 @@ func BatchCommitOffsets(ctx context.Context, db *gorm.DB, groupID string, genera
 // CommitOffset 为单个分区提交偏移量
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
 func CommitOffset(ctx context.Context, db *gorm.DB, groupID string, generationID uint, p types.PartitionInfo, offset int64) error {
+	// 添加调试日志
+	fmt.Printf("🔍 [CommitOffset] GroupID: %s, Topic: %s, Partition: %d, Offset: %d, GenerationID: %d\n",
+		groupID, p.Topic, p.Partition, offset, generationID)
+
 	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
 	// 它防止来自先前代际（具有较小generation_id）的消费者
 	// 覆盖来自当前或未来代际的消费者的偏移量
 	sql := "INSERT INTO `mq_consumer_group_offsets` (`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `committed_offset` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`committed_offset`), `committed_offset`), `generation_id` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`generation_id`), `generation_id`), `updated_at` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`updated_at`), `updated_at`)"
-	return db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, offset, generationID, time.Now()).Error
+	err := db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, offset, generationID, time.Now()).Error
+
+	if err != nil {
+		fmt.Printf("❌ [CommitOffset] 提交失败: %v\n", err)
+	} else {
+		fmt.Printf("✅ [CommitOffset] 提交成功\n")
+	}
+
+	return err
 }
 
 // CreateMessage 向数据库插入新消息
@@ -280,9 +292,22 @@ func CreateMessage(ctx context.Context, db *gorm.DB, msg *types.Message) error {
 		// 设置新消息的分区偏移量
 		msg.PerPartitionOffset = maxOffset + 1
 
+		// 添加调试日志
+		fmt.Printf("🔍 [CreateMessage] Topic: %s, Partition: %d, MaxOffset: %d, NewOffset: %d\n",
+			msg.Topic, msg.Partition, maxOffset, msg.PerPartitionOffset)
+
 		// 插入消息
 		// 数据库的唯一约束 uk_topic_partition_offset 会确保offset的唯一性
-		return tx.Create(msg).Error
+		err = tx.Create(msg).Error
+		if err != nil {
+			fmt.Printf("❌ [CreateMessage] 插入失败: %v\n", err)
+			return err
+		}
+
+		fmt.Printf("✅ [CreateMessage] 插入成功 - ID: %d, PerPartitionOffset: %d\n",
+			msg.ID, msg.PerPartitionOffset)
+
+		return nil
 	})
 }
 
