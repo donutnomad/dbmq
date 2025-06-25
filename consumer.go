@@ -162,6 +162,10 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	return consumer, nil
 }
 
+func (c *Consumer) Id() string {
+	return c.id
+}
+
 // SubscribeTopics 注册消费者要监听的Topic列表
 // 必须在第一次调用Poll之前调用
 // 同时触发消费者加入消费组并开始心跳
@@ -949,22 +953,50 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
 
-	// 为没有已提交偏移量的分区应用消费策略
+	// 为没有已提交偏移量的分区应用消费策略并立即记录到数据库
+	newPartitionOffsets := make(map[types.PartitionInfo]int64)
 	for _, p := range partitionsToFetch {
 		if _, exists := fetchedOffsets[p]; !exists {
 			startOffset, err := c.determineStartOffset(ctx, p)
 			if err != nil {
 				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to determine start offset for %v: %v", c.id, p, err))
-				fetchedOffsets[p] = -1 // 回退到-1，消费所有的消息
+				startOffset = -1 // 回退到-1，消费所有的消息
 				c.logger().Debug(fmt.Sprintf("Consumer %s: fallback to offset -1 for partition %v due to error", c.id, p))
-			} else {
-				fetchedOffsets[p] = startOffset
-				c.logger().Debug(fmt.Sprintf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
-					c.id, p, c.config.ConsumeStrategy.String(), startOffset))
 			}
+
+			fetchedOffsets[p] = startOffset
+			newPartitionOffsets[p] = startOffset
+			c.logger().Debug(fmt.Sprintf("Consumer %s: 🆕 first time consuming partition %v, using %s strategy, starting from offset %d",
+				c.id, p, c.config.ConsumeStrategy.String(), startOffset))
 		} else {
 			c.logger().Debug(fmt.Sprintf("Consumer %s: 🔄 continuing partition %v from committed offset %d",
 				c.id, p, fetchedOffsets[p]))
+		}
+	}
+
+	// 立即将新分区的初始偏移量记录到数据库，确保策略只应用一次
+	if len(newPartitionOffsets) > 0 {
+		c.logger().Debug(fmt.Sprintf("Consumer %s: recording initial offsets for new partitions: %v", c.id, newPartitionOffsets))
+
+		// 将下一个要消费的偏移量转换为committed_offset
+		initialCommittedOffsets := make(map[types.PartitionInfo]int64)
+		for partition, nextOffset := range newPartitionOffsets {
+			// nextOffset是下一个要消费的偏移量，需要转换为committed_offset
+			if nextOffset == -1 {
+				// -1是特殊值，表示从头开始消费，committed_offset也应该是-1
+				initialCommittedOffsets[partition] = -1
+			} else {
+				// nextOffset >= 0时，committed_offset是已消费的最后一个偏移量
+				// 所以 committed_offset = nextOffset - 1
+				initialCommittedOffsets[partition] = nextOffset - 1
+			}
+		}
+
+		if err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, initialCommittedOffsets); err != nil {
+			c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to record initial offsets: %v", c.id, err))
+			// 继续执行，但记录错误。这不是致命错误，因为重新注册时会重新应用策略
+		} else {
+			c.logger().Debug(fmt.Sprintf("Consumer %s: successfully recorded initial offsets", c.id))
 		}
 	}
 
