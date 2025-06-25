@@ -14,9 +14,7 @@ import (
 func TestAdminClient_CreateTopic(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试创建基本Topic
 	req := NewTopicRequest{
@@ -24,7 +22,7 @@ func TestAdminClient_CreateTopic(t *testing.T) {
 		NumPartitions: 3,
 	}
 
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	require.NoError(t, err)
 
 	// 验证Topic已创建
@@ -38,9 +36,7 @@ func TestAdminClient_CreateTopic(t *testing.T) {
 func TestAdminClient_CreateTopicWithConfig(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试创建带配置的Topic
 	retentionHours := 24
@@ -53,7 +49,7 @@ func TestAdminClient_CreateTopicWithConfig(t *testing.T) {
 		},
 	}
 
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	require.NoError(t, err)
 
 	// 验证Topic和配置已创建
@@ -69,9 +65,7 @@ func TestAdminClient_CreateTopicWithConfig(t *testing.T) {
 func TestAdminClient_CreateTopics_Batch(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试批量创建Topic
 	requests := []NewTopicRequest{
@@ -99,7 +93,7 @@ func TestAdminClient_CreateTopics_Batch(t *testing.T) {
 
 		// 验证数据库中的Topic
 		var topic types.Topic
-		err = dbClient.Where("topic_name = ?", requests[i].Name).First(&topic).Error
+		err := dbClient.Where("topic_name = ?", requests[i].Name).First(&topic).Error
 		require.NoError(t, err)
 		assert.Equal(t, uint(requests[i].NumPartitions), topic.PartitionCount)
 	}
@@ -108,16 +102,14 @@ func TestAdminClient_CreateTopics_Batch(t *testing.T) {
 func TestAdminClient_CreateTopic_ValidationErrors(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试空名称
 	req := NewTopicRequest{
 		Name:          "",
 		NumPartitions: 1,
 	}
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "topic name cannot be empty")
 
@@ -149,9 +141,7 @@ func TestAdminClient_CreateTopic_ValidationErrors(t *testing.T) {
 func TestAdminClient_ListTopics(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 创建几个Topic
 	topics := []string{"list-topic-1", "list-topic-2", "list-topic-3"}
@@ -160,7 +150,7 @@ func TestAdminClient_ListTopics(t *testing.T) {
 			Name:          topicName,
 			NumPartitions: 1,
 		}
-		err = admin.CreateTopic(context.Background(), req)
+		err := admin.CreateTopic(context.Background(), req)
 		require.NoError(t, err)
 	}
 
@@ -177,9 +167,7 @@ func TestAdminClient_ListTopics(t *testing.T) {
 func TestAdminClient_DescribeTopics(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 创建测试Topic
 	retentionHours := 48
@@ -191,7 +179,7 @@ func TestAdminClient_DescribeTopics(t *testing.T) {
 			CleanupPolicy:  "delete",
 		},
 	}
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	require.NoError(t, err)
 
 	// 描述Topic
@@ -212,12 +200,10 @@ func TestAdminClient_DescribeTopics(t *testing.T) {
 func TestAdminClient_DescribeTopics_NotFound(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 尝试描述不存在的Topic
-	_, err = admin.DescribeTopics(context.Background(), []string{"non-existent-topic"})
+	_, err := admin.DescribeTopics(context.Background(), []string{"non-existent-topic"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "non-existent-topic")
 }
@@ -225,16 +211,14 @@ func TestAdminClient_DescribeTopics_NotFound(t *testing.T) {
 func TestAdminClient_DeleteTopics(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 创建测试Topic
 	req := NewTopicRequest{
 		Name:          "delete-topic",
 		NumPartitions: 2,
 	}
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	require.NoError(t, err)
 
 	// 创建一些测试数据
@@ -287,12 +271,10 @@ func TestAdminClient_DeleteTopics(t *testing.T) {
 func TestAdminClient_DeleteTopics_NotFound(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 尝试删除不存在的Topic
-	err = admin.DeleteTopics(context.Background(), []string{"non-existent-topic"})
+	err := admin.DeleteTopics(context.Background(), []string{"non-existent-topic"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "non-existent-topic")
 }
@@ -300,9 +282,7 @@ func TestAdminClient_DeleteTopics_NotFound(t *testing.T) {
 func TestAdminClient_ValidateOnly(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试仅验证模式
 	req := NewTopicRequest{
@@ -317,7 +297,7 @@ func TestAdminClient_ValidateOnly(t *testing.T) {
 
 	// 验证Topic没有实际创建
 	var count int64
-	err = dbClient.Model(&types.Topic{}).Where("topic_name = ?", req.Name).Count(&count).Error
+	err := dbClient.Model(&types.Topic{}).Where("topic_name = ?", req.Name).Count(&count).Error
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
@@ -325,9 +305,7 @@ func TestAdminClient_ValidateOnly(t *testing.T) {
 func TestAdminClient_ErrorTypes(t *testing.T) {
 	dbClient, _ := setupIntegrationTest(t)
 
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
-	require.NoError(t, err)
-	defer admin.Close()
+	admin := NewAdminClient(dbClient)
 
 	// 测试ErrTopicAlreadyExists错误类型
 	req := NewTopicRequest{
@@ -336,7 +314,7 @@ func TestAdminClient_ErrorTypes(t *testing.T) {
 	}
 
 	// 第一次创建应该成功
-	err = admin.CreateTopic(context.Background(), req)
+	err := admin.CreateTopic(context.Background(), req)
 	require.NoError(t, err)
 
 	// 第二次创建应该返回ErrTopicAlreadyExists
