@@ -3,6 +3,7 @@ package types
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"gorm.io/datatypes"
 	"time"
 )
@@ -118,6 +119,10 @@ func (c *ConsumerGroupOffset) TableName() string {
 type PartitionInfo struct {
 	Topic     string // Topic名称
 	Partition uint   // 分区号
+}
+
+func (p PartitionInfo) String() string {
+	return fmt.Sprintf("(topic=%s,partition=%d)", p.Topic, p.Partition)
 }
 
 // ProducerMessage 生产者要发送的消息结构

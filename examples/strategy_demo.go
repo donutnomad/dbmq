@@ -56,10 +56,7 @@ func StrategyDemo() {
 
 	// 3. 创建管理客户端
 	fmt.Println("⚙️  创建管理客户端...")
-	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{DB: dbClient})
-	if err != nil {
-		log.Fatalf("❌ 创建管理客户端失败: %v", err)
-	}
+	admin := dbmq.NewAdminClient(dbClient)
 	fmt.Println("✅ 管理客户端创建成功")
 
 	// 4. 创建主题

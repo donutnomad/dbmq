@@ -53,11 +53,7 @@ func NewRestAPIServer(config RestAPIConfig) (*RestAPIServer, error) {
 	}
 
 	// 创建管理客户端
-	adminClient, err := NewAdminClient(AdminConfig{DB: config.DB})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create admin client: %w", err)
-	}
-
+	adminClient := NewAdminClient(config.DB)
 	return &RestAPIServer{
 		config:        config,
 		metricsClient: metricsClient,

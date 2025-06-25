@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/donutnomad/dbmq/types"
 	"time"
@@ -23,14 +24,10 @@ type AdminClient struct {
 }
 
 // NewAdminClient 创建新的管理客户端实例
-func NewAdminClient(config AdminConfig) (*AdminClient, error) {
-	if config.DB == nil {
-		return nil, fmt.Errorf("database connection is required")
-	}
-
+func NewAdminClient(db *gorm.DB) *AdminClient {
 	return &AdminClient{
-		db: config.DB,
-	}, nil
+		db: db,
+	}
 }
 
 // TopicConfig Topic配置结构，模仿Kafka的TopicConfig
@@ -57,6 +54,18 @@ type TopicResult struct {
 // CreateTopicsResult 批量创建Topic的结果
 type CreateTopicsResult struct {
 	Results []TopicResult // 每个Topic的创建结果
+}
+
+func (ac *AdminClient) CreateTopicIfNotExist(ctx context.Context, req NewTopicRequest) error {
+	err := ac.CreateTopic(ctx, req)
+	if err != nil {
+		var topicExistsErr *ErrTopicAlreadyExists
+		if errors.As(err, &topicExistsErr) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // CreateTopic 创建单个Topic
@@ -199,12 +208,6 @@ type TopicDescription struct {
 	NumPartitions int          `json:"numPartitions"` // 分区数量
 	Config        *TopicConfig `json:"config"`        // Topic配置
 	CreatedAt     time.Time    `json:"createdAt"`     // 创建时间
-}
-
-// Close 关闭管理客户端
-func (ac *AdminClient) Close() {
-	// AdminClient本身不需要特殊的清理操作
-	// 数据库连接由调用者管理
 }
 
 // validateTopicRequest 验证Topic创建请求

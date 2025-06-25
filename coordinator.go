@@ -280,10 +280,10 @@ func (c *Coordinator) leaderLoop() {
 			c.logger().Debug("Coordinator stopping leader loop.")
 			return
 		case <-rebalanceTicker.C:
-			c.logger().Debug("Leader coordinator starting global rebalance scan...")
+			c.logger().Debug("Starting global rebalance scan...")
 			c.scanAndRebalanceAllGroups()
 		case <-cleanupTicker.C:
-			c.logger().Debug("Leader coordinator starting message retention cleanup...")
+			c.logger().Debug("Starting message retention cleanup...")
 			c.runRetentionCleanup()
 		}
 	}
@@ -472,7 +472,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 		return nil // 没有变化，无需重新均衡
 	}
 
-	c.logger().Debug(fmt.Sprintf("Rebalance needed for group '%s'. Old members: %v, New members: %v",
+	c.logger().Info(fmt.Sprintf("Rebalance needed for group '%s'. Old members: %v, New members: %v",
 		groupID, c.getMemberIDs(groupID), activeConsumerIDs))
 
 	// ========== 第四步：开始重新均衡协议 - 代际隔离 ==========
@@ -528,7 +528,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 这个缓存用于下次重新均衡时的成员变化检测，
 	// 避免每次都需要查询数据库。
 	c.updateMembers(groupID, activeConsumerIDs)
-	c.logger().Debug(fmt.Sprintf("Rebalance for group '%s' to generation %d completed successfully.",
+	c.logger().Info(fmt.Sprintf("Rebalance for group '%s' to generation %d completed successfully.",
 		groupID, newGenerationID))
 	return nil
 }

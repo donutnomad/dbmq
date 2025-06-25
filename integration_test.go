@@ -19,9 +19,8 @@ func TestIntegration_FullFlow(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
 	// 1. Create a Topic for the test using AdminClient
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	admin := NewAdminClient(dbClient)
 	require.NoError(t, err)
-	defer admin.Close()
 
 	topicReq := NewTopicRequest{
 		Name:          "integration-topic",
@@ -128,9 +127,8 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
 	// 1. 创建测试主题（2个分区）使用AdminClient
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	admin := NewAdminClient(dbClient)
 	require.NoError(t, err)
-	defer admin.Close()
 
 	topicReq := NewTopicRequest{
 		Name:          "multi-group-topic",
@@ -265,9 +263,8 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
 	// 1. 创建测试主题使用AdminClient
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	admin := NewAdminClient(dbClient)
 	require.NoError(t, err)
-	defer admin.Close()
 
 	topicReq := NewTopicRequest{
 		Name:          "failover-topic",
@@ -381,9 +378,8 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
 	// 1. 创建测试主题使用AdminClient
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	admin := NewAdminClient(dbClient)
 	require.NoError(t, err)
-	defer admin.Close()
 
 	retentionHours := 1
 	topicReq := NewTopicRequest{
@@ -484,9 +480,8 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
 	// 1. 创建测试主题使用AdminClient
-	admin, err := NewAdminClient(AdminConfig{DB: dbClient})
+	admin := NewAdminClient(dbClient)
 	require.NoError(t, err)
-	defer admin.Close()
 
 	topicReq := NewTopicRequest{
 		Name:          "notification-topic",

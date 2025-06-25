@@ -29,7 +29,7 @@ admin, err := pkg.NewAdminClient(pkg.AdminConfig{
 if err != nil {
     log.Fatal(err)
 }
-defer admin.Close()
+
 ```
 
 ### 2. 创建Topic
