@@ -113,6 +113,10 @@ func (ras *RestAPIServer) registerRoutes(router *mux.Router) {
 	api.HandleFunc("/actuator/health", ras.healthHandler).Methods("GET") // 兼容Spring Boot
 	api.HandleFunc("/actuator/info", ras.infoHandler).Methods("GET")     // 兼容Spring Boot
 
+	// 添加统计页面路由
+	api.HandleFunc("/dashboard", ras.dashboardHandler).Methods("GET")
+	api.HandleFunc("/dashboard/data", ras.dashboardDataHandler).Methods("GET")
+
 	// 集群信息接口（兼容Kafka UI）
 	api.HandleFunc("/clusters", ras.getClustersHandler).Methods("GET")
 	api.HandleFunc("/clusters/{clusterId}/metrics", ras.getClusterMetricsHandler).Methods("GET")
@@ -556,4 +560,483 @@ type responseRecorder struct {
 func (rec *responseRecorder) WriteHeader(code int) {
 	rec.statusCode = code
 	rec.ResponseWriter.WriteHeader(code)
+}
+
+// 统计仪表板页面处理器
+func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Request) {
+	html := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DBMQ 监控仪表板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+
+        .status-online {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .stat-card h3 {
+            color: #666;
+            font-size: 1.1em;
+            margin-bottom: 10px;
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th,
+        .table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        .table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .refresh-info {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 20px;
+        }
+
+        .metric-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+
+        .metric-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .metric-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .metric-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        @media (max-width: 768px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .stat-value {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 DBMQ 监控仪表板</h1>
+            <span class="status-badge status-online">系统运行中</span>
+            <div style="margin-top: 10px; color: #666;">
+                最后更新: <span id="lastUpdate">--</span>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Topic 总数</h3>
+                <div class="stat-value" id="topicCount">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>消费组总数</h3>
+                <div class="stat-value" id="consumerGroupCount">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>总消息数</h3>
+                <div class="stat-value" id="totalMessages">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>系统运行时间</h3>
+                <div class="stat-value" id="uptime">--</div>
+            </div>
+        </div>
+
+        <div class="content-grid">
+            <div class="section">
+                <h2>📋 Topic 列表</h2>
+                <div id="topicsLoading" class="loading">
+                    <div class="spinner"></div>
+                    <div>加载 Topics 中...</div>
+                </div>
+                <div id="topicsContent" style="display: none;">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Topic 名称</th>
+                                <th>分区数</th>
+                                <th>消息数</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="topicsTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>👥 消费组列表</h2>
+                <div id="consumersLoading" class="loading">
+                    <div class="spinner"></div>
+                    <div>加载消费组中...</div>
+                </div>
+                <div id="consumersContent" style="display: none;">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>消费组 ID</th>
+                                <th>状态</th>
+                                <th>成员数</th>
+                                <th>延迟</th>
+                            </tr>
+                        </thead>
+                        <tbody id="consumersTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="refresh-info">
+            🔄 页面每 30 秒自动刷新一次
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+
+        // 格式化数字显示
+        function formatNumber(num) {
+            if (num === undefined || num === null) return '--';
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(1) + 'M';
+            } else if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toString();
+        }
+
+        // 格式化运行时间
+        function formatUptime(seconds) {
+            if (!seconds) return '--';
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) {
+                return days + '天 ' + hours + '小时';
+            } else if (hours > 0) {
+                return hours + '小时 ' + minutes + '分钟';
+            } else {
+                return minutes + '分钟';
+            }
+        }
+
+        // 获取状态徽章
+        function getStatusBadge(status) {
+            const statusMap = {
+                'active': { class: 'metric-success', text: '活跃' },
+                'stable': { class: 'metric-success', text: '稳定' },
+                'empty': { class: 'metric-info', text: '空闲' },
+                'dead': { class: 'metric-warning', text: '停止' }
+            };
+            
+            const statusInfo = statusMap[status] || { class: 'metric-info', text: status || '未知' };
+            return '<span class="metric-badge ' + statusInfo.class + '">' + statusInfo.text + '</span>';
+        }
+
+        // 加载仪表板数据
+        async function loadDashboardData() {
+            try {
+                const response = await fetch('/api/v1/dashboard/data');
+                const result = await response.json();
+                
+                if (result.success) {
+                    updateDashboard(result.data);
+                } else {
+                    console.error('Failed to load dashboard data:', result.error);
+                }
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+            }
+        }
+
+        // 更新仪表板显示
+        function updateDashboard(data) {
+            // 更新统计数据
+            document.getElementById('topicCount').textContent = data.topics ? data.topics.length : 0;
+            document.getElementById('consumerGroupCount').textContent = data.consumerGroups ? data.consumerGroups.length : 0;
+            
+            let totalMessages = 0;
+            if (data.topics) {
+                data.topics.forEach(topic => {
+                    if (topic.messageCount) {
+                        totalMessages += topic.messageCount;
+                    }
+                });
+            }
+            document.getElementById('totalMessages').textContent = formatNumber(totalMessages);
+            
+            if (data.system && data.system.uptime) {
+                document.getElementById('uptime').textContent = formatUptime(data.system.uptime);
+            }
+
+            // 更新 Topics 表格
+            updateTopicsTable(data.topics || []);
+            
+            // 更新消费组表格
+            updateConsumerGroupsTable(data.consumerGroups || []);
+            
+            // 更新最后更新时间
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString('zh-CN');
+        }
+
+        // 更新 Topics 表格
+        function updateTopicsTable(topics) {
+            const tbody = document.getElementById('topicsTable');
+            tbody.innerHTML = '';
+            
+            if (topics.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #666;">暂无 Topic 数据</td></tr>';
+            } else {
+                topics.forEach(topic => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = 
+                        '<td>' + (topic.name || topic.topicName || '--') + '</td>' +
+                        '<td>' + (topic.partitionCount || topic.partitions?.length || '--') + '</td>' +
+                        '<td>' + formatNumber(topic.messageCount || 0) + '</td>' +
+                        '<td>' + getStatusBadge(topic.status || 'active') + '</td>';
+                    tbody.appendChild(row);
+                });
+            }
+            
+            // 显示内容，隐藏加载动画
+            document.getElementById('topicsLoading').style.display = 'none';
+            document.getElementById('topicsContent').style.display = 'block';
+        }
+
+        // 更新消费组表格
+        function updateConsumerGroupsTable(consumerGroups) {
+            const tbody = document.getElementById('consumersTable');
+            tbody.innerHTML = '';
+            
+            if (consumerGroups.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #666;">暂无消费组数据</td></tr>';
+            } else {
+                consumerGroups.forEach(group => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = 
+                        '<td>' + (group.groupId || group.name || '--') + '</td>' +
+                        '<td>' + getStatusBadge(group.state || group.status || 'unknown') + '</td>' +
+                        '<td>' + (group.memberCount || group.members?.length || 0) + '</td>' +
+                        '<td>' + formatNumber(group.lag || 0) + '</td>';
+                    tbody.appendChild(row);
+                });
+            }
+            
+            // 显示内容，隐藏加载动画
+            document.getElementById('consumersLoading').style.display = 'none';
+            document.getElementById('consumersContent').style.display = 'block';
+        }
+
+        // 初始化页面
+        function init() {
+            loadDashboardData();
+            
+            // 设置定时刷新（30秒）
+            refreshInterval = setInterval(loadDashboardData, 30000);
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', init);
+        
+        // 页面隐藏时清除定时器，显示时重新设置
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+            } else {
+                loadDashboardData();
+                refreshInterval = setInterval(loadDashboardData, 30000);
+            }
+        });
+    </script>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
+}
+
+// 仪表板数据处理器
+func (ras *RestAPIServer) dashboardDataHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 获取 Topics 数据
+	topics, err := ras.metricsClient.GetAllTopicsMetrics(ctx)
+	if err != nil {
+		topics = []TopicMetrics{} // 如果出错，返回空数组而不是失败
+	}
+
+	// 获取消费组数据
+	consumerGroups, err := ras.metricsClient.GetAllConsumerGroupsMetrics(ctx)
+	if err != nil {
+		consumerGroups = []ConsumerGroupMetrics{} // 如果出错，返回空数组而不是失败
+	}
+
+	// 获取系统信息
+	brokerMetrics, err := ras.metricsClient.GetBrokerMetrics(ctx)
+	var systemInfo map[string]interface{}
+	if err == nil {
+		systemInfo = map[string]interface{}{
+			"uptime":  brokerMetrics.Uptime,
+			"version": brokerMetrics.Version,
+		}
+	} else {
+		systemInfo = map[string]interface{}{
+			"uptime":  0,
+			"version": "unknown",
+		}
+	}
+
+	dashboardData := map[string]interface{}{
+		"topics":         topics,
+		"consumerGroups": consumerGroups,
+		"system":         systemInfo,
+		"timestamp":      time.Now().Format(time.RFC3339),
+	}
+
+	ras.writeSuccessResponse(w, dashboardData)
 }
