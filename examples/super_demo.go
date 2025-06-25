@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"log"
 	"sync"
 	"time"
@@ -93,23 +94,9 @@ func SuperDemo() {
 	coordinator.Start()
 	defer coordinator.Stop()
 
-	// 等待协调器成为领导者
-	fmt.Println("⏳ 等待协调器成为领导者...")
-	for !coordinator.IsLeader() {
-		time.Sleep(100 * time.Millisecond)
-	}
-	fmt.Println("✅ 协调器已成为领导者")
-	fmt.Println()
-
 	// 3. 创建AdminClient并创建主题
 	fmt.Println("📝 创建管理客户端...")
-	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{
-		DB: dbClient,
-	})
-	if err != nil {
-		log.Fatalf("❌ 创建管理客户端失败: %v", err)
-	}
-	defer admin.Close()
+	admin := dbmq.NewAdminClient(dbClient)
 
 	// 创建"创建订单"主题
 	fmt.Println("🎯 创建主题: 创建订单DEBUG")
@@ -120,7 +107,7 @@ func SuperDemo() {
 	}
 
 	// 尝试创建主题，如果已存在则忽略
-	err = createTopicIfNotExists(admin, topicReq)
+	err = admin.CreateTopicIfNotExist(context.Background(), topicReq)
 	if err != nil {
 		log.Fatalf("❌ 创建主题失败: %v", err)
 	}
@@ -128,18 +115,18 @@ func SuperDemo() {
 	fmt.Println()
 
 	// 4. 创建生产者
-	//fmt.Println("📤 创建生产者...")
-	//producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
-	//	DB:                   dbClient,
-	//	Redis:                redisClient,
-	//	NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
-	//	NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
-	//})
-	//if err != nil {
-	//	log.Fatalf("❌ 创建生产者失败: %v", err)
-	//}
-	//defer producer.Close()
-	//fmt.Println("✅ 生产者创建成功")
+	fmt.Println("📤 创建生产者...")
+	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
+		DB:                   dbClient,
+		Redis:                redisClient,
+		NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
+		NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
+	})
+	if err != nil {
+		log.Fatalf("❌ 创建生产者失败: %v", err)
+	}
+	defer producer.Close()
+	fmt.Println("✅ 生产者创建成功")
 
 	// 5. 创建两个消费组的消费者
 	fmt.Println("📥 创建消费者...")
@@ -161,42 +148,42 @@ func SuperDemo() {
 	}
 	defer consumer001.Close()
 
-	// 消费组002 - 数据分析服务（自动提交模式）
-	consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
-		DB:                  dbClient,
-		Redis:               redisClient,
-		GroupID:             "消费组001",
-		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
-		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
-		Topics:              []string{topicName},
-		PollFetchLimit:      10,
-		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
-		EnableAutoCommit:    true,            // 启用自动提交
-		AutoCommitInterval:  3 * time.Second, // 每3秒自动提交一次
-	})
-	if err != nil {
-		log.Fatalf("❌ 创建消费者002失败: %v", err)
-	}
-	defer consumer002.Close()
-
-	// 消费组003 - 从最新消息开始消费（自动提交模式）
-	consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
-		DB:                  dbClient,
-		Redis:               redisClient,
-		GroupID:             "消费组001",
-		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
-		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
-		Topics:              []string{topicName},
-		PollFetchLimit:      10,
-		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
-		ConsumeStrategy:     dbmq.ConsumeFromLatest,
-		EnableAutoCommit:    true,            // 启用自动提交
-		AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
-	})
-	if err != nil {
-		log.Fatalf("❌ 创建消费者003失败: %v", err)
-	}
-	defer consumer003.Close()
+	//// 消费组002 - 数据分析服务（自动提交模式）
+	//consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
+	//	DB:                  dbClient,
+	//	Redis:               redisClient,
+	//	GroupID:             "消费组001",
+	//	NotificationEnabled: redisClient != nil, // 重新启用Redis通知
+	//	HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
+	//	Topics:              []string{topicName},
+	//	PollFetchLimit:      10,
+	//	PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+	//	EnableAutoCommit:    true,            // 启用自动提交
+	//	AutoCommitInterval:  3 * time.Second, // 每3秒自动提交一次
+	//})
+	//if err != nil {
+	//	log.Fatalf("❌ 创建消费者002失败: %v", err)
+	//}
+	//defer consumer002.Close()
+	//
+	//// 消费组003 - 从最新消息开始消费（自动提交模式）
+	//consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
+	//	DB:                  dbClient,
+	//	Redis:               redisClient,
+	//	GroupID:             "消费组001",
+	//	NotificationEnabled: redisClient != nil, // 重新启用Redis通知
+	//	HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
+	//	Topics:              []string{topicName},
+	//	PollFetchLimit:      10,
+	//	PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+	//	ConsumeStrategy:     dbmq.ConsumeFromLatest,
+	//	EnableAutoCommit:    true,            // 启用自动提交
+	//	AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
+	//})
+	//if err != nil {
+	//	log.Fatalf("❌ 创建消费者003失败: %v", err)
+	//}
+	//defer consumer003.Close()
 
 	fmt.Println("✅ 消费者创建成功")
 	fmt.Println("   - 消费组001: 订单处理服务（手动提交模式）")
@@ -210,24 +197,18 @@ func SuperDemo() {
 	if err != nil {
 		log.Fatalf("❌ 消费者001订阅失败: %v", err)
 	}
-
-	err = consumer002.SubscribeTopics(topicName)
-	if err != nil {
-		log.Fatalf("❌ 消费者002订阅失败: %v", err)
-	}
-
-	err = consumer003.SubscribeTopics(topicName)
-	if err != nil {
-		log.Fatalf("❌ 消费者003订阅失败: %v", err)
-	}
+	//
+	//err = consumer002.SubscribeTopics(topicName)
+	//if err != nil {
+	//	log.Fatalf("❌ 消费者002订阅失败: %v", err)
+	//}
+	//
+	//err = consumer003.SubscribeTopics(topicName)
+	//if err != nil {
+	//	log.Fatalf("❌ 消费者003订阅失败: %v", err)
+	//}
 
 	fmt.Println("✅ 消费者订阅启动成功")
-
-	// // 等待消费者完成分区分配
-	// fmt.Println("⏳ 等待消费者完成分区分配...")
-	// time.Sleep(3 * time.Second) // 给协调器时间进行重新均衡
-	// fmt.Println("✅ 消费者分区分配完成")
-	// fmt.Println()
 
 	// 7. 创建上下文和等待组，用于协调所有goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -249,26 +230,26 @@ func SuperDemo() {
 		consumeMessagesWithManualCommit(ctx, consumer001, "消费者001", "订单处理服务")
 	}()
 
-	// 9. 启动消费者002的消费循环（自动提交模式）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
-	}()
-
-	// 10. 启动消费者003的消费循环（自动提交模式）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
-	}()
-
-	// 11. 启动生产者发送消息
+	//// 9. 启动消费者002的消费循环（自动提交模式）
 	//wg.Add(1)
 	//go func() {
 	//	defer wg.Done()
-	//	produceOrderMessages(ctx, producer, topicName)
+	//	consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
 	//}()
+	//
+	//// 10. 启动消费者003的消费循环（自动提交模式）
+	//wg.Add(1)
+	//go func() {
+	//	defer wg.Done()
+	//	consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
+	//}()
+
+	// 11. 启动生产者发送消息
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		produceOrderMessages(ctx, producer, topicName)
+	}()
 
 	fmt.Println("🎬 演示开始！所有服务已启动...")
 	fmt.Println("📊 实时监控消息流转...")
@@ -281,20 +262,6 @@ func SuperDemo() {
 	fmt.Println("🏁 演示结束！")
 	fmt.Println("📈 所有消费者和生产者已优雅关闭")
 	fmt.Println("💾 消息已持久化到数据库")
-}
-
-// createTopicIfNotExists 创建主题，如果已存在则忽略
-func createTopicIfNotExists(admin *dbmq.AdminClient, req dbmq.NewTopicRequest) error {
-	err := admin.CreateTopic(context.Background(), req)
-	if err != nil {
-		var topicExistsErr *dbmq.ErrTopicAlreadyExists
-		if errors.As(err, &topicExistsErr) {
-			fmt.Printf("ℹ️  主题 %s 已存在，跳过创建\n", req.Name)
-			return nil
-		}
-		return err
-	}
-	return nil
 }
 
 // clearConsumerGroupOffsets 清除指定消费组的所有偏移量提交记录
@@ -409,6 +376,8 @@ func consumeMessagesWithManualCommit(ctx context.Context, consumer *dbmq.Consume
 				} else {
 					// 处理失败，不提交偏移量，这条消息会在下次重新消费
 					fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.Offset)
+					fmt.Println("等待下一次再次得到该消息呢")
+					spew.Dump(msg)
 				}
 			}
 		}
@@ -475,41 +444,41 @@ func processOrderMessageWithResult(msg dbmq.ConsumerMessage, consumerName, servi
 	}
 
 	// 模拟不同服务的处理逻辑
-	success := true // 默认处理成功
+	success := false // 默认处理成功
 
 	switch serviceName {
 	case "订单处理服务":
-		fmt.Printf("🔄 [%s] 处理订单: %s | 客户: %s | 金额: %.2f | 状态: %s (手动提交)\n",
-			consumerName, order.OrderID, order.CustomerID, order.Amount, order.Status)
-
-		// 模拟订单处理时间
-		time.Sleep(100 * time.Millisecond)
-
-		// 模拟处理失败的情况（比如金额异常）
-		if order.Amount < 0 {
-			fmt.Printf("❌ [%s] 订单处理失败: %s (金额异常: %.2f)\n", consumerName, order.OrderID, order.Amount)
-			success = false
-		} else {
-			fmt.Printf("✅ [%s] 订单处理完成: %s\n", consumerName, order.OrderID)
-		}
+		//fmt.Printf("🔄 [%s] 处理订单: %s | 客户: %s | 金额: %.2f | 状态: %s (手动提交)\n",
+		//	consumerName, order.OrderID, order.CustomerID, order.Amount, order.Status)
+		//
+		//// 模拟订单处理时间
+		//time.Sleep(100 * time.Millisecond)
+		//
+		//// 模拟处理失败的情况（比如金额异常）
+		//if order.Amount < 0 {
+		//	fmt.Printf("❌ [%s] 订单处理失败: %s (金额异常: %.2f)\n", consumerName, order.OrderID, order.Amount)
+		//	success = false
+		//} else {
+		//	fmt.Printf("✅ [%s] 订单处理完成: %s\n", consumerName, order.OrderID)
+		//}
 
 	case "数据分析服务":
-		fmt.Printf("📊 [%s] 分析订单数据: %s | 金额: %.2f | 时间: %s (自动提交)\n",
-			consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
+		//fmt.Printf("📊 [%s] 分析订单数据: %s | 金额: %.2f | 时间: %s (自动提交)\n",
+		//	consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
 
 		// 模拟数据分析时间
 		time.Sleep(50 * time.Millisecond)
 
-		fmt.Printf("📈 [%s] 数据分析完成: %s (客户群体分析已更新)\n", consumerName, order.OrderID)
+		//fmt.Printf("📈 [%s] 数据分析完成: %s (客户群体分析已更新)\n", consumerName, order.OrderID)
 
 	case "从最新的地方开始消费":
-		fmt.Printf("🆕 [%s] 处理最新订单: %s | 金额: %.2f | 时间: %s (自动提交)\n",
-			consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
+		//fmt.Printf("🆕 [%s] 处理最新订单: %s | 金额: %.2f | 时间: %s (自动提交)\n",
+		//	consumerName, order.OrderID, order.Amount, order.CreatedAt.Format("15:04:05"))
 
 		// 模拟处理时间
 		time.Sleep(30 * time.Millisecond)
 
-		fmt.Printf("✨ [%s] 最新订单处理完成: %s\n", consumerName, order.OrderID)
+		//fmt.Printf("✨ [%s] 最新订单处理完成: %s\n", consumerName, order.OrderID)
 	}
 
 	// 显示消息元数据

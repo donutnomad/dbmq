@@ -42,13 +42,7 @@ func AdminExample() {
 	}
 
 	// 2. 创建AdminClient
-	admin, err := dbmq.NewAdminClient(dbmq.AdminConfig{
-		DB: dbClient,
-	})
-	if err != nil {
-		log.Fatalf("Failed to create admin client: %v", err)
-	}
-	defer admin.Close()
+	admin := dbmq.NewAdminClient(dbClient)
 
 	ctx := context.Background()
 

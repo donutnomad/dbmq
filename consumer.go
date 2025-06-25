@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -206,10 +207,15 @@ func (c *Consumer) Close() {
 	}
 	c.muSub.Unlock()
 
-	// 在所有后台进程停止后，进行最后一次提交
-	// 这样可以避免与自动提交循环的竞争条件
-	if err := c.CommitSync(); err != nil {
-		c.logger().Error(fmt.Sprintf("ERROR: final commit failed for consumer %s: %v", c.id, err))
+	// 在所有后台进程停止后，只有在自动提交模式下才进行最后一次提交
+	// 手动提交模式下，用户应该负责提交所有需要确认的消息
+	// 这样可以避免与自动提交循环的竞争条件，也避免在手动模式下误提交未确认的消息
+	if c.config.EnableAutoCommit {
+		if err := c.CommitSync(); err != nil {
+			c.logger().Error(fmt.Sprintf("ERROR: final auto-commit failed for consumer %s: %v", c.id, err))
+		}
+	} else {
+		c.logger().Debug(fmt.Sprintf("Consumer %s: 手动提交模式，跳过Close时的自动提交。用户应确保所有消息都已手动提交。", c.id))
 	}
 
 	// 通过删除心跳记录优雅离开消费组
@@ -510,13 +516,30 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	// 1. 找出被撤销的分区
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
 
-	// 2. 为被撤销的分区提交偏移量，确保工作不会丢失
+	// 2. 为被撤销的分区提交偏移量，确保工作不会丢失（仅在自动提交模式下）
 	// 使用新的代际ID进行提交，防止过时的提交
 	if len(revokedPartitions) > 0 {
-		c.logger().Debug(fmt.Sprintf("Consumer %s revoking partitions: %v", c.id, revokedPartitions))
-		if err := c.commitOffsets(ctx, revokedPartitions, hb.GenerationID); err != nil {
-			c.logger().Error(fmt.Sprintf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err))
-			// 即使提交失败也继续重新均衡
+		if c.config.EnableAutoCommit {
+			c.logger().Debug(fmt.Sprintf("Consumer %s auto-commit mode, committing offsets for revoked partitions: %v", c.id, revokedPartitions))
+			if err := c.commitOffsets(ctx, revokedPartitions, hb.GenerationID); err != nil {
+				c.logger().Error(fmt.Sprintf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err))
+				// 即使提交失败也继续重新均衡
+			}
+		} else {
+			// 手动提交模式下，记录警告但不自动提交
+			c.mu.RLock()
+			var uncommittedPartitions []types.PartitionInfo
+			for _, p := range revokedPartitions {
+				if _, exists := c.polledOffsets[p]; exists {
+					uncommittedPartitions = append(uncommittedPartitions, p)
+				}
+			}
+			c.mu.RUnlock()
+
+			if len(uncommittedPartitions) > 0 {
+				c.logger().Warn(fmt.Sprintf("WARNING: Consumer %s: 手动提交模式下，重新均衡导致分区 %v 被撤销，但这些分区有未提交的消息。这些消息将被重新消费。", c.id, uncommittedPartitions))
+			}
+			c.logger().Debug(fmt.Sprintf("Consumer %s manual commit mode, not auto-committing revoked partitions: %v", c.id, revokedPartitions))
 		}
 	}
 
@@ -558,7 +581,7 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	c.assignment = newPartitions
 	c.mu.Unlock()
 
-	c.logger().Debug(fmt.Sprintf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions))
+	c.logger().Info(fmt.Sprintf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions))
 }
 
 // register 向协调器发送心跳，有效地注册或更新消费者的存活状态和Topic订阅信息
@@ -771,10 +794,10 @@ func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 		defer cancel()
 
 		if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
-			c.logger().Error(fmt.Sprintf("ERROR: failed to subscribe to redis channels %v: %v", channels, err))
+			c.logger().Error(fmt.Sprintf("ERROR: failed to subscribe to redis channels %v: %v", strings.Join(channels, ","), err))
 			c.pubsubHealthy.Store(false)
 		} else {
-			c.logger().Debug("Subscribed to channels", "consumer-id", c.id, "channels", channels)
+			c.logger().Debug("Subscribed to channels", "consumer-id", c.id, "channels", strings.Join(channels, ","))
 			c.lastPubsubTime.Store(time.Now().Unix())
 		}
 	} else {
@@ -852,35 +875,50 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 		}
 	}
 
-	// 如果有被撤销的分区，先提交它们的偏移量
+	// 如果有被撤销的分区，根据提交模式决定是否提交它们的偏移量
 	if len(revokedPartitions) > 0 {
-		c.logger().Debug(fmt.Sprintf("Consumer %s: committing offsets for revoked partitions: %v", c.id, revokedPartitions))
+		if c.config.EnableAutoCommit {
+			c.logger().Debug(fmt.Sprintf("Consumer %s: auto-commit mode, committing offsets for revoked partitions: %v", c.id, revokedPartitions))
 
-		// 为撤销的分区准备偏移量提交
-		offsetsToCommit := make(map[types.PartitionInfo]int64)
-		for _, p := range revokedPartitions {
-			// 优先提交polledOffset，如果没有则提交committedOffset-1
-			if polledOffset, exists := c.polledOffsets[p]; exists {
-				offsetsToCommit[p] = polledOffset
-			} else if committedOffset, exists := c.committedOffsets[p]; exists && committedOffset > 0 {
-				offsetsToCommit[p] = committedOffset - 1
+			// 为撤销的分区准备偏移量提交
+			offsetsToCommit := make(map[types.PartitionInfo]int64)
+			for _, p := range revokedPartitions {
+				// 优先提交polledOffset，如果没有则提交committedOffset-1
+				if polledOffset, exists := c.polledOffsets[p]; exists {
+					offsetsToCommit[p] = polledOffset
+				} else if committedOffset, exists := c.committedOffsets[p]; exists && committedOffset > 0 {
+					offsetsToCommit[p] = committedOffset - 1
+				}
 			}
-		}
 
-		// 执行提交（暂时释放锁）
-		if len(offsetsToCommit) > 0 {
-			c.mu.Unlock()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
-			cancel()
-			c.mu.Lock()
+			// 执行提交（暂时释放锁）
+			if len(offsetsToCommit) > 0 {
+				c.mu.Unlock()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, offsetsToCommit)
+				cancel()
+				c.mu.Lock()
 
-			if err != nil {
-				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err))
-				// 继续执行，但记录错误
-			} else {
-				c.logger().Debug(fmt.Sprintf("Consumer %s: successfully committed revoked partitions", c.id))
+				if err != nil {
+					c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err))
+					// 继续执行，但记录错误
+				} else {
+					c.logger().Debug(fmt.Sprintf("Consumer %s: successfully committed revoked partitions", c.id))
+				}
 			}
+		} else {
+			// 手动提交模式下，不自动提交被撤销分区的偏移量
+			// 记录警告信息，提醒用户可能丢失未提交的消息
+			var uncommittedPartitions []types.PartitionInfo
+			for _, p := range revokedPartitions {
+				if _, exists := c.polledOffsets[p]; exists {
+					uncommittedPartitions = append(uncommittedPartitions, p)
+				}
+			}
+			if len(uncommittedPartitions) > 0 {
+				c.logger().Warn(fmt.Sprintf("WARNING: Consumer %s: 手动提交模式下，重新均衡导致分区 %v 被撤销，但这些分区有未提交的消息。这些消息将被重新消费。", c.id, uncommittedPartitions))
+			}
+			c.logger().Debug(fmt.Sprintf("Consumer %s: manual commit mode, not auto-committing revoked partitions: %v", c.id, revokedPartitions))
 		}
 	}
 
@@ -1095,7 +1133,7 @@ func (c *Consumer) ensurePubSubConnection() {
 					c.logger().Error(fmt.Sprintf("ERROR: failed to resubscribe to channels %v: %v", channels, err))
 					c.pubsubHealthy.Store(false)
 				} else {
-					c.logger().Debug("Resubscribed to channels", "consumer-id", c.id, "channels", channels)
+					c.logger().Debug("Resubscribed to channels", "consumer-id", c.id, "channels", strings.Join(channels, ","))
 				}
 			}
 		} else {
