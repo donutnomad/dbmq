@@ -148,6 +148,8 @@ func SuperDemo() {
 	}
 	defer consumer001.Close()
 
+	fmt.Println("》》》》》》》》》》》》》》》》》》》》》》》我是组1:", consumer001.Id())
+
 	//// 消费组002 - 数据分析服务（自动提交模式）
 	//consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 	//	DB:                  dbClient,
@@ -230,19 +232,19 @@ func SuperDemo() {
 		consumeMessagesWithManualCommit(ctx, consumer001, "消费者001", "订单处理服务")
 	}()
 
-	//// 9. 启动消费者002的消费循环（自动提交模式）
-	//wg.Add(1)
-	//go func() {
-	//	defer wg.Done()
-	//	consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
-	//}()
-	//
-	//// 10. 启动消费者003的消费循环（自动提交模式）
-	//wg.Add(1)
-	//go func() {
-	//	defer wg.Done()
-	//	consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
-	//}()
+	// 9. 启动消费者002的消费循环（自动提交模式）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
+	}()
+
+	// 10. 启动消费者003的消费循环（自动提交模式）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
+	}()
 
 	// 11. 启动生产者发送消息
 	wg.Add(1)
@@ -364,7 +366,7 @@ func consumeMessagesWithManualCommit(ctx context.Context, consumer *dbmq.Consume
 			for i, msg := range messages {
 				// 处理消息
 				success := processOrderMessageWithResult(msg, consumerName, serviceName)
-
+				success = false
 				if success {
 					// 处理成功，提交这个具体消息的偏移量
 					if err := consumer.CommitMessage(msg); err != nil {
@@ -444,7 +446,7 @@ func processOrderMessageWithResult(msg dbmq.ConsumerMessage, consumerName, servi
 	}
 
 	// 模拟不同服务的处理逻辑
-	success := false // 默认处理成功
+	success := true // 默认处理成功
 
 	switch serviceName {
 	case "订单处理服务":

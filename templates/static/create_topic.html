@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>创建 Topic - DBMQ</title>
+    <link rel="stylesheet" href="/static/css/create_topic.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+            <h1>创建新 Topic</h1>
+        </div>
+
+        <div class="section">
+            <div id="message" style="display: none;"></div>
+            
+            <form id="createTopicForm">
+                <div class="form-group">
+                    <label for="topicName">Topic 名称 *</label>
+                    <input type="text" id="topicName" name="topicName" required>
+                    <small>Topic名称，只能包含字母、数字、下划线和连字符</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="partitions">分区数 *</label>
+                    <input type="number" id="partitions" name="partitions" min="1" max="100" value="3" required>
+                    <small>分区数量，建议根据预期的并发消费者数量设置</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="retentionHours">保留时间（小时）</label>
+                    <input type="number" id="retentionHours" name="retentionHours" min="1" value="168">
+                    <small>消息保留时间，默认168小时（7天）</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="description">描述</label>
+                    <textarea id="description" name="description" rows="3"></textarea>
+                    <small>Topic的描述信息（可选）</small>
+                </div>
+
+                <button type="submit" class="btn-primary">创建 Topic</button>
+                <button type="button" class="btn-secondary" onclick="window.location.href='/api/v1/dashboard'">取消</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/js/create_topic.js"></script>
+</body>
+</html>

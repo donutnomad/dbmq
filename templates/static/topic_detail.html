@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topic 详情</title>
+    <link rel="stylesheet" href="/static/css/topic_detail.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+            <h1>Topic 详情</h1>
+            <h2>` + topicName + `</h2>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div>加载Topic详情中...</div>
+        </div>
+
+        <div id="content" style="display: none;">
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>分区数</h3>
+                    <div class="info-value" id="partitionCount">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>消息总数</h3>
+                    <div class="info-value" id="messageCount">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>存储大小</h3>
+                    <div class="info-value" id="sizeBytes">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>最新偏移量</h3>
+                    <div class="info-value" id="latestOffset">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>分区详情</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>分区ID</th>
+                                <th>最新偏移量</th>
+                                <th>消息数</th>
+                                <th>存储大小</th>
+                            </tr>
+                        </thead>
+                        <tbody id="partitionsTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Topic配置</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>配置项</th>
+                                <th>值</th>
+                            </tr>
+                        </thead>
+                        <tbody id="configTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>消息浏览器</h2>
+                <div class="message-controls">
+                    <div class="control-group">
+                        <label>分区:</label>
+                        <select id="partitionSelect">
+                            <option value="">所有分区</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>搜索:</label>
+                        <input type="text" id="searchInput" placeholder="搜索消息键或内容...">
+                    </div>
+                    <div class="control-group">
+                        <label>数量:</label>
+                        <select id="limitSelect">
+                            <option value="20">20</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                        </select>
+                    </div>
+                    <button id="searchBtn" class="btn-primary">查询消息</button>
+                    <button id="refreshBtn" class="btn-secondary">刷新</button>
+                </div>
+
+                <div id="messagesContainer">
+                    <div class="loading" id="messagesLoading" style="display: none;">
+                        <div class="spinner"></div>
+                        <div>加载消息中...</div>
+                    </div>
+                    <div id="messagesTable"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="error" style="display: none;" class="error">
+            <strong>错误:</strong> <span id="errorMessage"></span>
+        </div>
+    </div>
+
+    <script>
+        const topicName = '` + topicName + `';
+    </script>
+    <script src="/static/js/topic_detail.js"></script>
+</body>
+</html>

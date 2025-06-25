@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>消费组详情</title>
+    <link rel="stylesheet" href="/static/css/consumer_group_detail.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+            <h1>消费组详情</h1>
+            <h2>` + groupId + `</h2>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div>加载消费组详情中...</div>
+        </div>
+
+        <div id="content" style="display: none;">
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>状态</h3>
+                    <div class="info-value" id="state">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>成员数</h3>
+                    <div class="info-value" id="memberCount">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>总延迟</h3>
+                    <div class="info-value" id="lag">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>代际ID</h3>
+                    <div class="info-value" id="generationId">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>消费者成员</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>消费者ID</th>
+                                <th>客户端ID</th>
+                                <th>主机</th>
+                                <th>分配分区数</th>
+                                <th>最后心跳</th>
+                            </tr>
+                        </thead>
+                        <tbody id="membersTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>分区延迟详情</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Topic</th>
+                                <th>分区</th>
+                                <th>当前偏移量</th>
+                                <th>最新偏移量</th>
+                                <th>延迟</th>
+                            </tr>
+                        </thead>
+                        <tbody id="partitionLagsTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>分配的Topics</h2>
+                <div id="assignedTopics" class="assigned-topics">
+                    <span style="color: #666;">加载中...</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="error" style="display: none;" class="error">
+            <strong>错误:</strong> <span id="errorMessage"></span>
+        </div>
+    </div>
+
+    <script>
+        // 定义全局变量 groupId，用于 JavaScript 文件中的 API 调用
+        const groupId = '` + groupId + `';
+    </script>
+    <script src="/static/js/consumer_group_detail.js"></script>
+</body>
+</html>
