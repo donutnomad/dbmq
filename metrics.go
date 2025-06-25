@@ -422,14 +422,14 @@ func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetric
 // GetAllConsumerGroupsMetrics 获取所有消费组的监控指标
 // 兼容Kafka UI的消费组列表页面
 func (mc *MetricsClient) GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error) {
-	// 获取所有活跃消费组
-	activeGroups, err := dal.FindAllActiveGroups(ctx, mc.db, 30*time.Second)
+	// 获取所有消费组（包括活跃和非活跃的）
+	allGroups, err := dal.FindAllGroups(ctx, mc.db)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get active groups: %w", err)
+		return nil, fmt.Errorf("failed to get all groups: %w", err)
 	}
 
 	var metricsSlice []ConsumerGroupMetrics
-	for _, groupID := range activeGroups {
+	for _, groupID := range allGroups {
 		groupMetrics, err := mc.GetConsumerGroupMetrics(ctx, groupID)
 		if err != nil {
 			// 记录错误但继续处理其他消费组

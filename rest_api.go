@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/donutnomad/dbmq/types"
 	"github.com/gorilla/mux"
 	"gorm.io/gorm"
 )
@@ -27,6 +28,7 @@ type RestAPIServer struct {
 	metricsClient *MetricsClient
 	adminClient   *AdminClient
 	server        *http.Server
+	startTime     time.Time // 服务启动时间
 }
 
 // NewRestAPIServer 创建新的REST API服务器实例
@@ -92,6 +94,7 @@ func (ras *RestAPIServer) Start() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	ras.startTime = time.Now()
 	fmt.Printf("Starting DBMQ REST API server on %s\n", addr)
 	return ras.server.ListenAndServe()
 }
@@ -119,6 +122,11 @@ func (ras *RestAPIServer) registerRoutes(router *mux.Router) {
 	// 添加详情页面路由
 	api.HandleFunc("/dashboard/topic/{topicName}", ras.topicDetailHandler).Methods("GET")
 	api.HandleFunc("/dashboard/consumer-group/{groupId}", ras.consumerGroupDetailHandler).Methods("GET")
+	// 添加Topic管理页面
+	api.HandleFunc("/dashboard/topics/create", ras.topicCreatePageHandler).Methods("GET")
+	api.HandleFunc("/dashboard/topics/manage", ras.topicManagePageHandler).Methods("GET")
+	// 添加消息生产页面
+	api.HandleFunc("/dashboard/producer", ras.messageProducerPageHandler).Methods("GET")
 
 	// 集群信息接口（兼容Kafka UI）
 	api.HandleFunc("/clusters", ras.getClustersHandler).Methods("GET")
@@ -458,36 +466,127 @@ func (ras *RestAPIServer) getDBMQStatsHandler(w http.ResponseWriter, r *http.Req
 
 // 获取Topic消息处理器
 func (ras *RestAPIServer) getTopicMessagesHandler(w http.ResponseWriter, r *http.Request) {
-	// ctx := r.Context() // 预留给将来的消息查询实现使用
+	ctx := r.Context()
 	vars := mux.Vars(r)
 	topicName := vars["topicName"]
 
 	// 解析查询参数
 	query := r.URL.Query()
-	partition := query.Get("partition")
-	offset := query.Get("offset")
-	limit := query.Get("limit")
+	partitionStr := query.Get("partition")
+	offsetStr := query.Get("offset")
+	limitStr := query.Get("limit")
+	searchKey := query.Get("search")
+	fromTime := query.Get("from_time")
+	toTime := query.Get("to_time")
 
 	// 设置默认值
-	limitInt := 10
-	if limit != "" {
-		if l, err := strconv.Atoi(limit); err == nil && l > 0 && l <= 100 {
+	limitInt := 50
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 500 {
 			limitInt = l
 		}
 	}
 
-	// 这里可以扩展实现消息查询逻辑
-	// 目前返回基本信息，将来可以使用ctx进行数据库查询
+	offsetInt := int64(0)
+	if offsetStr != "" {
+		if o, err := strconv.ParseInt(offsetStr, 10, 64); err == nil && o >= 0 {
+			offsetInt = o
+		}
+	}
+
+	var partitionInt *uint
+	if partitionStr != "" {
+		if p, err := strconv.ParseUint(partitionStr, 10, 32); err == nil {
+			part := uint(p)
+			partitionInt = &part
+		}
+	}
+
+	messages, err := ras.getMessages(ctx, topicName, partitionInt, offsetInt, limitInt, searchKey, fromTime, toTime)
+	if err != nil {
+		ras.writeErrorResponse(w, http.StatusInternalServerError, "Failed to get messages", err)
+		return
+	}
+
 	result := map[string]interface{}{
 		"topic":     topicName,
-		"partition": partition,
-		"offset":    offset,
+		"partition": partitionStr,
+		"offset":    offsetInt,
 		"limit":     limitInt,
-		"messages":  []interface{}{}, // 实际实现中这里会返回消息列表
-		"note":      "Message browsing feature can be extended based on requirements",
+		"search":    searchKey,
+		"messages":  messages,
+		"total":     len(messages),
 	}
 
 	ras.writeSuccessResponse(w, result)
+}
+
+// getMessages 获取消息列表
+func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, partition *uint, offset int64, limit int, searchKey, fromTime, toTime string) ([]map[string]interface{}, error) {
+	var messages []types.Message
+	query := ras.config.DB.WithContext(ctx).Where("topic = ?", topicName)
+
+	// 分区过滤
+	if partition != nil {
+		query = query.Where("`partition` = ?", *partition)
+	}
+
+	// 偏移量过滤
+	if offset > 0 {
+		query = query.Where("offset >= ?", offset)
+	}
+
+	// 时间范围过滤
+	if fromTime != "" {
+		if t, err := time.Parse(time.RFC3339, fromTime); err == nil {
+			query = query.Where("created_at >= ?", t)
+		}
+	}
+	if toTime != "" {
+		if t, err := time.Parse(time.RFC3339, toTime); err == nil {
+			query = query.Where("created_at <= ?", t)
+		}
+	}
+
+	// 关键字搜索
+	if searchKey != "" {
+		query = query.Where("(message_key LIKE ? OR body LIKE ?)", "%"+searchKey+"%", "%"+searchKey+"%")
+	}
+
+	// 排序和限制
+	err := query.Order("created_at DESC").Limit(limit).Find(&messages).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为响应格式
+	result := make([]map[string]interface{}, len(messages))
+	for i, msg := range messages {
+		// 将字节数组转换为字符串
+		var messageKey string
+		if msg.MessageKey.Valid {
+			messageKey = msg.MessageKey.String
+		} else {
+			messageKey = ""
+		}
+
+		// 将消息体字节转换为字符串
+		messageValue := string(msg.Body)
+
+		result[i] = map[string]interface{}{
+			"id":        msg.ID,
+			"topic":     msg.Topic,
+			"partition": msg.Partition,
+			"offset":    msg.PerPartitionOffset,
+			"key":       messageKey,
+			"value":     messageValue,
+			"timestamp": msg.CreatedAt.Format(time.RFC3339),
+			"size":      len(msg.Body),
+			"headers":   msg.Headers,
+		}
+	}
+
+	return result, nil
 }
 
 // 写入成功响应
@@ -581,108 +680,128 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
             min-height: 100vh;
-            padding: 20px;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
         }
 
         .header {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            text-align: center;
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
 
         .header h1 {
-            color: #333;
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            color: #1a1a1a;
+            font-size: 18px;
+            margin: 0;
+            font-weight: 600;
         }
 
         .status-badge {
             display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.9em;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
         }
 
         .status-online {
-            background: #4CAF50;
-            color: white;
+            background: #e6f4ea;
+            color: #1e7e34;
         }
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
         }
 
         .stat-card {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            text-align: center;
+            background: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .stat-card h3 {
             color: #666;
-            font-size: 1.1em;
-            margin-bottom: 10px;
+            font-size: 13px;
+            margin-bottom: 4px;
+            font-weight: 500;
         }
 
         .stat-value {
-            font-size: 2.5em;
-            font-weight: bold;
-            color: #333;
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
         }
 
         .content-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
         }
 
         .section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background: #fff;
+            border-radius: 6px;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .section h2 {
-            color: #333;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #eee;
+            color: #1a1a1a;
+            font-size: 15px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .table {
             width: 100%;
             border-collapse: collapse;
+            font-size: 13px;
         }
 
         .table th,
         .table td {
-            padding: 12px;
+            padding: 8px;
             text-align: left;
             border-bottom: 1px solid #eee;
+            line-height: 1.4;
         }
 
         .table th {
             background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
+            font-weight: 500;
+            color: #666;
+            font-size: 12px;
+            white-space: nowrap;
         }
 
         .table tr:hover {
@@ -691,18 +810,18 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
 
         .loading {
             text-align: center;
-            padding: 40px;
+            padding: 24px;
             color: #666;
         }
 
         .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
+            width: 24px;
+            height: 24px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
+            margin: 0 auto 12px;
         }
 
         @keyframes spin {
@@ -713,21 +832,21 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
         .refresh-info {
             text-align: center;
             color: #666;
-            font-size: 0.9em;
-            margin-top: 20px;
+            font-size: 12px;
+            margin-top: 12px;
         }
 
         .metric-badge {
             display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
         }
 
         .metric-success {
-            background: #d4edda;
-            color: #155724;
+            background: #e6f4ea;
+            color: #1e7e34;
         }
 
         .metric-warning {
@@ -736,8 +855,35 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
         }
 
         .metric-info {
-            background: #d1ecf1;
-            color: #0c5460;
+            background: #e1f0ff;
+            color: #0056b3;
+        }
+
+        .btn-create, .btn-manage {
+            display: inline-block;
+            padding: 4px 8px;
+            margin-left: 8px;
+            background: #1890ff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: normal;
+            border: none;
+            cursor: pointer;
+            line-height: 1.4;
+        }
+
+        .btn-manage {
+            background: #52c41a;
+        }
+
+        .btn-create:hover {
+            background: #096dd9;
+        }
+
+        .btn-manage:hover {
+            background: #389e0d;
         }
 
         @media (max-width: 768px) {
@@ -746,22 +892,126 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
             }
             
             .header h1 {
-                font-size: 2em;
+                font-size: 16px;
             }
             
             .stat-value {
-                font-size: 2em;
+                font-size: 18px;
+            }
+
+            body {
+                padding: 8px;
             }
         }
+
+        .table-container {
+            max-height: 600px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+
+        .table-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .table-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
+
+        .topic-link {
+            color: #1a1a1a;
+            text-decoration: none;
+        }
+
+        .topic-link:hover {
+            color: #1890ff;
+            text-decoration: underline;
+        }
+
+        .refresh-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 40px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #1890ff;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+        }
+
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 DBMQ 监控仪表板</h1>
-            <span class="status-badge status-online">系统运行中</span>
-            <div style="margin-top: 10px; color: #666;">
-                最后更新: <span id="lastUpdate">--</span>
+            <div class="header-left">
+                <h1>DBMQ 监控仪表板</h1>
+                <span class="status-badge status-online">系统运行中</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <div class="refresh-toggle">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="autoRefreshToggle" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span>自动刷新</span>
+                </div>
+                <div style="color: #666; font-size: 12px;">
+                    最后更新: <span id="lastUpdate">--</span>
+                </div>
             </div>
         </div>
 
@@ -786,57 +1036,89 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
 
         <div class="content-grid">
             <div class="section">
-                <h2>📋 Topic 列表</h2>
+                <h2>
+                    <span>Topic 列表</span>
+                    <div>
+                        <a href="/api/v1/dashboard/topics/create" class="btn-create">创建Topic</a>
+                        <a href="/api/v1/dashboard/topics/manage" class="btn-manage">管理</a>
+                    </div>
+                </h2>
                 <div id="topicsLoading" class="loading">
                     <div class="spinner"></div>
                     <div>加载 Topics 中...</div>
                 </div>
                 <div id="topicsContent" style="display: none;">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Topic 名称</th>
-                                <th>分区数</th>
-                                <th>消息数</th>
-                                <th>状态</th>
-                            </tr>
-                        </thead>
-                        <tbody id="topicsTable">
-                        </tbody>
-                    </table>
+                    <div class="table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Topic 名称</th>
+                                    <th>分区数</th>
+                                    <th>消息数</th>
+                                    <th>状态</th>
+                                </tr>
+                            </thead>
+                            <tbody id="topicsTable">
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
             <div class="section">
-                <h2>👥 消费组列表</h2>
+                <h2>
+                    <span>消费组列表</span>
+                    <a href="/api/v1/dashboard/producer" class="btn-create">发送消息</a>
+                </h2>
                 <div id="consumersLoading" class="loading">
                     <div class="spinner"></div>
                     <div>加载消费组中...</div>
                 </div>
                 <div id="consumersContent" style="display: none;">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>消费组 ID</th>
-                                <th>状态</th>
-                                <th>成员数</th>
-                                <th>延迟</th>
-                            </tr>
-                        </thead>
-                        <tbody id="consumersTable">
-                        </tbody>
-                    </table>
+                    <div class="table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>消费组 ID</th>
+                                    <th>状态</th>
+                                    <th>成员数</th>
+                                    <th>延迟</th>
+                                </tr>
+                            </thead>
+                            <tbody id="consumersTable">
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
 
         <div class="refresh-info">
-            🔄 页面每 2 秒自动刷新一次
+            <span id="refreshStatus">页面每 5 秒自动刷新一次</span>
         </div>
     </div>
 
     <script>
         let refreshInterval;
+        let isAutoRefreshEnabled = true;
+        let chartData = {
+            timestamps: []
+        };
+
+        // 切换自动刷新状态
+        function toggleAutoRefresh(enabled) {
+            isAutoRefreshEnabled = enabled;
+            if (enabled) {
+                loadDashboardData();
+                refreshInterval = setInterval(loadDashboardData, 5000);
+                document.getElementById('refreshStatus').textContent = '页面每 5 秒自动刷新一次';
+            } else {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+                document.getElementById('refreshStatus').textContent = '自动刷新已关闭';
+            }
+        }
 
         // 格式化数字显示
         function formatNumber(num) {
@@ -938,10 +1220,10 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
                     row.style.cursor = 'pointer';
                     row.onclick = function(e) {
                         e.preventDefault();
-                        window.open('/api/v1/dashboard/topic/' + encodeURIComponent(topicName), '_blank');
+                        window.location.href = '/api/v1/dashboard/topic/' + encodeURIComponent(topicName);
                     };
                     row.innerHTML = 
-                        '<td><a href="#" onclick="event.preventDefault(); window.open(\'/api/v1/dashboard/topic/' + encodeURIComponent(topicName) + '\', \'_blank\'); return false;" style="color: #007bff; text-decoration: none;">' + topicName + '</a></td>' +
+                        '<td><a href="/api/v1/dashboard/topic/' + encodeURIComponent(topicName) + '" class="topic-link" onclick="event.stopPropagation()">' + topicName + '</a></td>' +
                         '<td>' + (topic.partitionCount || topic.partitions?.length || '--') + '</td>' +
                         '<td>' + formatNumber(topic.messageCount || 0) + '</td>' +
                         '<td>' + getStatusBadge(topic.status || 'active') + '</td>';
@@ -968,10 +1250,10 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
                     row.style.cursor = 'pointer';
                     row.onclick = function(e) {
                         e.preventDefault();
-                        window.open('/api/v1/dashboard/consumer-group/' + encodeURIComponent(groupId), '_blank');
+                        window.location.href = '/api/v1/dashboard/consumer-group/' + encodeURIComponent(groupId);
                     };
                     row.innerHTML = 
-                        '<td><a href="#" onclick="event.preventDefault(); window.open(\'/api/v1/dashboard/consumer-group/' + encodeURIComponent(groupId) + '\', \'_blank\'); return false;" style="color: #007bff; text-decoration: none;">' + groupId + '</a></td>' +
+                        '<td><a href="/api/v1/dashboard/consumer-group/' + encodeURIComponent(groupId) + '" class="topic-link" onclick="event.stopPropagation()">' + groupId + '</a></td>' +
                         '<td>' + getStatusBadge(group.state || group.status || 'unknown') + '</td>' +
                         '<td>' + (group.memberCount || group.members?.length || 0) + '</td>' +
                         '<td>' + formatNumber(group.lag || 0) + '</td>';
@@ -988,8 +1270,13 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
         function init() {
             loadDashboardData();
             
-            // 设置定时刷新（2秒）
-            refreshInterval = setInterval(loadDashboardData, 2000);
+            // 设置定时刷新（5秒）
+            refreshInterval = setInterval(loadDashboardData, 5000);
+
+            // 绑定自动刷新开关事件
+            document.getElementById('autoRefreshToggle').addEventListener('change', function(e) {
+                toggleAutoRefresh(e.target.checked);
+            });
         }
 
         // 页面加载完成后初始化
@@ -997,13 +1284,16 @@ func (ras *RestAPIServer) dashboardHandler(w http.ResponseWriter, r *http.Reques
         
         // 页面隐藏时清除定时器，显示时重新设置
         document.addEventListener('visibilitychange', function() {
+            const autoRefreshToggle = document.getElementById('autoRefreshToggle');
             if (document.hidden) {
                 if (refreshInterval) {
                     clearInterval(refreshInterval);
                 }
             } else {
-                loadDashboardData();
-                refreshInterval = setInterval(loadDashboardData, 2000);
+                if (autoRefreshToggle.checked) {
+                    loadDashboardData();
+                    refreshInterval = setInterval(loadDashboardData, 5000);
+                }
             }
         });
     </script>
@@ -1032,18 +1322,10 @@ func (ras *RestAPIServer) dashboardDataHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	// 获取系统信息
-	brokerMetrics, err := ras.metricsClient.GetBrokerMetrics(ctx)
-	var systemInfo map[string]interface{}
-	if err == nil {
-		systemInfo = map[string]interface{}{
-			"uptime":  brokerMetrics.Uptime,
-			"version": brokerMetrics.Version,
-		}
-	} else {
-		systemInfo = map[string]interface{}{
-			"uptime":  0,
-			"version": "unknown",
-		}
+	uptime := time.Since(ras.startTime).Seconds()
+	systemInfo := map[string]interface{}{
+		"uptime":  uptime,
+		"version": "1.0.0",
 	}
 
 	dashboardData := map[string]interface{}{
@@ -1075,102 +1357,121 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
             min-height: 100vh;
-            padding: 20px;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
         }
 
         .header {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .header h1 {
-            color: #333;
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .back-button {
-            display: inline-block;
-            padding: 8px 16px;
-            background: #007bff;
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #1890ff;
             color: white;
             text-decoration: none;
-            border-radius: 5px;
-            margin-bottom: 15px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            line-height: 1.4;
         }
 
         .back-button:hover {
-            background: #0056b3;
+            background: #096dd9;
+        }
+
+        .header h1 {
+            color: #1a1a1a;
+            font-size: 18px;
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+
+        .header h2 {
+            color: #666;
+            font-size: 14px;
+            font-weight: normal;
         }
 
         .info-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
         }
 
         .info-card {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .info-card h3 {
             color: #666;
-            font-size: 1.1em;
-            margin-bottom: 10px;
+            font-size: 13px;
+            margin-bottom: 4px;
+            font-weight: 500;
         }
 
         .info-value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #333;
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
         }
 
         .section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
+            background: #fff;
+            border-radius: 6px;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 12px;
         }
 
         .section h2 {
-            color: #333;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #eee;
+            color: #1a1a1a;
+            font-size: 15px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
         }
 
         .table {
             width: 100%;
             border-collapse: collapse;
+            font-size: 13px;
         }
 
         .table th,
         .table td {
-            padding: 12px;
+            padding: 8px;
             text-align: left;
             border-bottom: 1px solid #eee;
+            line-height: 1.4;
         }
 
         .table th {
             background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
+            font-weight: 500;
+            color: #666;
+            font-size: 12px;
+            white-space: nowrap;
         }
 
         .table tr:hover {
@@ -1179,18 +1480,18 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
 
         .loading {
             text-align: center;
-            padding: 40px;
+            padding: 24px;
             color: #666;
         }
 
         .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
+            width: 24px;
+            height: 24px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
+            margin: 0 auto 12px;
         }
 
         @keyframes spin {
@@ -1199,11 +1500,182 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
         }
 
         .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #cf1322;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+            font-size: 13px;
+        }
+
+        .message-controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .control-group label {
+            font-weight: 500;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .control-group input, .control-group select {
+            padding: 4px 8px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 12px;
+            min-width: 100px;
+        }
+
+        .btn-primary, .btn-secondary {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 1.4;
+        }
+
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #096dd9;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #595959;
+            border: 1px solid #d9d9d9;
+        }
+
+        .btn-secondary:hover {
+            background: #e8e8e8;
+        }
+
+        .table-container {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+
+        .table-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .table-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
+
+        .message-item {
+            border: 1px solid #f0f0f0;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            background: white;
+        }
+
+        .message-header {
+            background: #fafafa;
+            padding: 8px 12px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .message-header:hover {
+            background: #f5f5f5;
+        }
+
+        .message-meta {
+            display: flex;
+            gap: 16px;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .message-content {
+            padding: 12px;
+            display: none;
+        }
+
+        .message-content.expanded {
+            display: block;
+        }
+
+        .message-value {
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .message-key {
+            font-weight: 500;
+            color: #1890ff;
+        }
+
+        .no-messages {
+            text-align: center;
+            padding: 24px;
+            color: #666;
+            background: #fafafa;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .message-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .control-group {
+                flex-direction: column;
+                align-items: stretch;
+            }
         }
     </style>
 </head>
@@ -1211,8 +1683,8 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
     <div class="container">
         <div class="header">
             <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
-            <h1>📋 Topic 详情</h1>
-            <h2 style="color: #666; margin-top: 10px;">` + topicName + `</h2>
+            <h1>Topic 详情</h1>
+            <h2>` + topicName + `</h2>
         </div>
 
         <div id="loading" class="loading">
@@ -1241,33 +1713,72 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
             </div>
 
             <div class="section">
-                <h2>🗂️ 分区详情</h2>
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>分区ID</th>
-                            <th>最新偏移量(从0开始计数)</th>
-                            <th>消息数</th>
-                            <th>存储大小</th>
-                        </tr>
-                    </thead>
-                    <tbody id="partitionsTable">
-                    </tbody>
-                </table>
+                <h2>分区详情</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>分区ID</th>
+                                <th>最新偏移量</th>
+                                <th>消息数</th>
+                                <th>存储大小</th>
+                            </tr>
+                        </thead>
+                        <tbody id="partitionsTable">
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <div class="section">
-                <h2>⚙️ Topic配置</h2>
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>配置项</th>
-                            <th>值</th>
-                        </tr>
-                    </thead>
-                    <tbody id="configTable">
-                    </tbody>
-                </table>
+                <h2>Topic配置</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>配置项</th>
+                                <th>值</th>
+                            </tr>
+                        </thead>
+                        <tbody id="configTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>消息浏览器</h2>
+                <div class="message-controls">
+                    <div class="control-group">
+                        <label>分区:</label>
+                        <select id="partitionSelect">
+                            <option value="">所有分区</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>搜索:</label>
+                        <input type="text" id="searchInput" placeholder="搜索消息键或内容...">
+                    </div>
+                    <div class="control-group">
+                        <label>数量:</label>
+                        <select id="limitSelect">
+                            <option value="20">20</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                        </select>
+                    </div>
+                    <button id="searchBtn" class="btn-primary">查询消息</button>
+                    <button id="refreshBtn" class="btn-secondary">刷新</button>
+                </div>
+
+                <div id="messagesContainer">
+                    <div class="loading" id="messagesLoading" style="display: none;">
+                        <div class="spinner"></div>
+                        <div>加载消息中...</div>
+                    </div>
+                    <div id="messagesTable"></div>
+                </div>
             </div>
         </div>
 
@@ -1355,9 +1866,15 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
                 configTable.innerHTML = '<tr><td colspan="2" style="text-align: center; color: #666;">暂无配置数据</td></tr>';
             }
 
+            // 初始化分区选择器
+            initializePartitionSelect(data.partitions);
+
             // 显示内容，隐藏加载动画
             document.getElementById('loading').style.display = 'none';
             document.getElementById('content').style.display = 'block';
+
+            // 自动加载最新消息
+            loadMessages();
         }
 
         // 显示错误
@@ -1367,8 +1884,120 @@ func (ras *RestAPIServer) topicDetailHandler(w http.ResponseWriter, r *http.Requ
             document.getElementById('error').style.display = 'block';
         }
 
-        // 页面加载完成后加载数据
-        document.addEventListener('DOMContentLoaded', loadTopicDetail);
+        // 初始化分区选择器
+        function initializePartitionSelect(partitions) {
+            const partitionSelect = document.getElementById('partitionSelect');
+            partitionSelect.innerHTML = '<option value="">所有分区</option>';
+            
+            if (partitions && partitions.length > 0) {
+                partitions.forEach(partition => {
+                    const option = document.createElement('option');
+                    option.value = partition.partition;
+                    option.textContent = '分区 ' + partition.partition;
+                    partitionSelect.appendChild(option);
+                });
+            }
+        }
+
+        // 加载消息
+        async function loadMessages() {
+            const messagesLoading = document.getElementById('messagesLoading');
+            const messagesTable = document.getElementById('messagesTable');
+            
+            messagesLoading.style.display = 'block';
+            messagesTable.innerHTML = '';
+
+            try {
+                const partition = document.getElementById('partitionSelect').value;
+                const search = document.getElementById('searchInput').value;
+                const limit = document.getElementById('limitSelect').value;
+
+                let url = '/api/v1/dbmq/topics/` + topicName + `/messages?limit=' + limit;
+                if (partition) url += '&partition=' + partition;
+                if (search) url += '&search=' + encodeURIComponent(search);
+
+                const response = await fetch(url);
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayMessages(result.data.messages);
+                } else {
+                    showError(result.error || '获取消息失败');
+                }
+            } catch (error) {
+                showError('网络错误: ' + error.message);
+            } finally {
+                messagesLoading.style.display = 'none';
+            }
+        }
+
+        // 显示消息列表
+        function displayMessages(messages) {
+            const messagesTable = document.getElementById('messagesTable');
+            
+            if (!messages || messages.length === 0) {
+                messagesTable.innerHTML = '<div class="no-messages">📭 暂无消息数据</div>';
+                return;
+            }
+
+            let html = '';
+            messages.forEach((msg, index) => {
+                const timestamp = new Date(msg.timestamp).toLocaleString('zh-CN');
+                const msgKey = msg.key || '(无键)';
+                const msgValue = msg.value || '';
+                html += '<div class="message-item">' +
+                    '<div class="message-header" onclick="toggleMessage(' + index + ')">' +
+                        '<div>' +
+                            '<span class="message-key">' + msgKey + '</span>' +
+                            '<div class="message-meta">' +
+                                '<span>分区: ' + msg.partition + '</span>' +
+                                '<span>偏移量: ' + msg.offset + '</span>' +
+                                '<span>时间: ' + timestamp + '</span>' +
+                                '<span>大小: ' + formatBytes(msg.size) + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                        '<span id="toggle-' + index + '">🔼</span>' +
+                    '</div>' +
+                    '<div class="message-content expanded" id="content-' + index + '">' +
+                        '<div class="message-value">' + msgValue + '</div>' +
+                    '</div>' +
+                '</div>';
+            });
+            
+            messagesTable.innerHTML = html;
+        }
+
+        // 切换消息展开/折叠
+        function toggleMessage(index) {
+            const content = document.getElementById('content-' + index);
+            const toggle = document.getElementById('toggle-' + index);
+            
+            if (content.classList.contains('expanded')) {
+                content.classList.remove('expanded');
+                toggle.textContent = '🔽';
+            } else {
+                content.classList.add('expanded');
+                toggle.textContent = '🔼';
+            }
+        }
+
+        // 绑定事件监听器
+        document.addEventListener('DOMContentLoaded', function() {
+            loadTopicDetail();
+
+            // 搜索按钮事件
+            document.getElementById('searchBtn').addEventListener('click', loadMessages);
+            
+            // 刷新按钮事件
+            document.getElementById('refreshBtn').addEventListener('click', loadMessages);
+            
+            // 回车搜索
+            document.getElementById('searchInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    loadMessages();
+                }
+            });
+        });
     </script>
 </body>
 </html>`
@@ -1397,102 +2026,121 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
             min-height: 100vh;
-            padding: 20px;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
         }
 
         .header {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .header h1 {
-            color: #333;
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .back-button {
-            display: inline-block;
-            padding: 8px 16px;
-            background: #007bff;
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #1890ff;
             color: white;
             text-decoration: none;
-            border-radius: 5px;
-            margin-bottom: 15px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            line-height: 1.4;
         }
 
         .back-button:hover {
-            background: #0056b3;
+            background: #096dd9;
+        }
+
+        .header h1 {
+            color: #1a1a1a;
+            font-size: 18px;
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+
+        .header h2 {
+            color: #666;
+            font-size: 14px;
+            font-weight: normal;
         }
 
         .info-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
         }
 
         .info-card {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .info-card h3 {
             color: #666;
-            font-size: 1.1em;
-            margin-bottom: 10px;
+            font-size: 13px;
+            margin-bottom: 4px;
+            font-weight: 500;
         }
 
         .info-value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #333;
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
         }
 
         .section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
+            background: #fff;
+            border-radius: 6px;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 12px;
         }
 
         .section h2 {
-            color: #333;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #eee;
+            color: #1a1a1a;
+            font-size: 15px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
         }
 
         .table {
             width: 100%;
             border-collapse: collapse;
+            font-size: 13px;
         }
 
         .table th,
         .table td {
-            padding: 12px;
+            padding: 8px;
             text-align: left;
             border-bottom: 1px solid #eee;
+            line-height: 1.4;
         }
 
         .table th {
             background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
+            font-weight: 500;
+            color: #666;
+            font-size: 12px;
+            white-space: nowrap;
         }
 
         .table tr:hover {
@@ -1501,18 +2149,18 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
 
         .loading {
             text-align: center;
-            padding: 40px;
+            padding: 24px;
             color: #666;
         }
 
         .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
+            width: 24px;
+            height: 24px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
+            margin: 0 auto 12px;
         }
 
         @keyframes spin {
@@ -1521,24 +2169,26 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
         }
 
         .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #cf1322;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+            font-size: 13px;
         }
 
         .metric-badge {
             display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.9em;
-            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
         }
 
         .metric-success {
-            background: #d4edda;
-            color: #155724;
+            background: #e6f4ea;
+            color: #1e7e34;
         }
 
         .metric-warning {
@@ -1547,8 +2197,62 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
         }
 
         .metric-info {
-            background: #d1ecf1;
-            color: #0c5460;
+            background: #e1f0ff;
+            color: #0056b3;
+        }
+
+        .table-container {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+
+        .table-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .table-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
+
+        .assigned-topics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 12px;
+            background: #fafafa;
+            border-radius: 4px;
+        }
+
+        .topic-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #e1f0ff;
+            color: #0056b3;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -1556,8 +2260,8 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
     <div class="container">
         <div class="header">
             <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
-            <h1>👥 消费组详情</h1>
-            <h2 style="color: #666; margin-top: 10px;">` + groupId + `</h2>
+            <h1>消费组详情</h1>
+            <h2>` + groupId + `</h2>
         </div>
 
         <div id="loading" class="loading">
@@ -1586,42 +2290,46 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
             </div>
 
             <div class="section">
-                <h2>🧑‍💼 消费者成员</h2>
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>消费者ID</th>
-                            <th>客户端ID</th>
-                            <th>主机</th>
-                            <th>分配分区数</th>
-                            <th>最后心跳</th>
-                        </tr>
-                    </thead>
-                    <tbody id="membersTable">
-                    </tbody>
-                </table>
+                <h2>消费者成员</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>消费者ID</th>
+                                <th>客户端ID</th>
+                                <th>主机</th>
+                                <th>分配分区数</th>
+                                <th>最后心跳</th>
+                            </tr>
+                        </thead>
+                        <tbody id="membersTable">
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <div class="section">
-                <h2>📊 分区延迟详情</h2>
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Topic</th>
-                            <th>分区</th>
-                            <th>当前偏移量</th>
-                            <th>最新偏移量</th>
-                            <th>延迟</th>
-                        </tr>
-                    </thead>
-                    <tbody id="partitionLagsTable">
-                    </tbody>
-                </table>
+                <h2>分区延迟详情</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Topic</th>
+                                <th>分区</th>
+                                <th>当前偏移量</th>
+                                <th>最新偏移量</th>
+                                <th>延迟</th>
+                            </tr>
+                        </thead>
+                        <tbody id="partitionLagsTable">
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <div class="section">
-                <h2>📋 分配的Topics</h2>
-                <div id="assignedTopics" style="padding: 10px;">
+                <h2>分配的Topics</h2>
+                <div id="assignedTopics" class="assigned-topics">
                     <span style="color: #666;">加载中...</span>
                 </div>
             </div>
@@ -1734,7 +2442,7 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
             const assignedTopicsDiv = document.getElementById('assignedTopics');
             if (data.assignedTopics && data.assignedTopics.length > 0) {
                 assignedTopicsDiv.innerHTML = data.assignedTopics.map(topic => 
-                    '<span class="metric-badge metric-info" style="margin: 5px;">' + topic + '</span>'
+                    '<span class="topic-badge">' + topic + '</span>'
                 ).join('');
             } else {
                 assignedTopicsDiv.innerHTML = '<span style="color: #666;">暂无分配的Topics</span>';
@@ -1754,6 +2462,1155 @@ func (ras *RestAPIServer) consumerGroupDetailHandler(w http.ResponseWriter, r *h
 
         // 页面加载完成后加载数据
         document.addEventListener('DOMContentLoaded', loadConsumerGroupDetail);
+    </script>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
+}
+
+// Topic创建页面处理器
+func (ras *RestAPIServer) topicCreatePageHandler(w http.ResponseWriter, r *http.Request) {
+	html := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>创建 Topic - DBMQ</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #1890ff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .back-button:hover {
+            background: #096dd9;
+        }
+
+        .header h1 {
+            color: #1a1a1a;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .section {
+            background: #fff;
+            border-radius: 6px;
+            padding: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+            color: #1a1a1a;
+            font-size: 13px;
+        }
+
+        .form-group input, 
+        .form-group textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .form-group input:hover, 
+        .form-group textarea:hover {
+            border-color: #40a9ff;
+        }
+
+        .form-group input:focus, 
+        .form-group textarea:focus {
+            border-color: #1890ff;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+        }
+
+        .form-group small {
+            color: #666;
+            font-size: 12px;
+            margin-top: 4px;
+            display: block;
+        }
+
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .btn-primary:hover {
+            background: #096dd9;
+        }
+
+        .btn-primary:disabled {
+            background: #bfbfbf;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #595959;
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-left: 8px;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .btn-secondary:hover {
+            background: #e8e8e8;
+        }
+
+        .alert {
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .alert-success {
+            background: #e6f4ea;
+            color: #1e7e34;
+            border: 1px solid #b7dfb9;
+        }
+
+        .alert-error {
+            background: #fff2f0;
+            color: #cf1322;
+            border: 1px solid #ffccc7;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .container {
+                width: 100%;
+            }
+
+            .form-group input,
+            .form-group textarea {
+                font-size: 16px; /* 防止iOS缩放 */
+            }
+
+            .btn-secondary {
+                margin-left: 0;
+                margin-top: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+            <h1>创建新 Topic</h1>
+        </div>
+
+        <div class="section">
+            <div id="message" style="display: none;"></div>
+            
+            <form id="createTopicForm">
+                <div class="form-group">
+                    <label for="topicName">Topic 名称 *</label>
+                    <input type="text" id="topicName" name="topicName" required>
+                    <small>Topic名称，只能包含字母、数字、下划线和连字符</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="partitions">分区数 *</label>
+                    <input type="number" id="partitions" name="partitions" min="1" max="100" value="3" required>
+                    <small>分区数量，建议根据预期的并发消费者数量设置</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="retentionHours">保留时间（小时）</label>
+                    <input type="number" id="retentionHours" name="retentionHours" min="1" value="168">
+                    <small>消息保留时间，默认168小时（7天）</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="description">描述</label>
+                    <textarea id="description" name="description" rows="3"></textarea>
+                    <small>Topic的描述信息（可选）</small>
+                </div>
+
+                <button type="submit" class="btn-primary">创建 Topic</button>
+                <button type="button" class="btn-secondary" onclick="window.location.href='/api/v1/dashboard'">取消</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('createTopicForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const topicData = {
+                name: formData.get('topicName'),
+                numPartitions: parseInt(formData.get('partitions')),
+                config: {
+                    'retention.hours': parseInt(formData.get('retentionHours') || 168)
+                }
+            };
+
+            if (formData.get('description')) {
+                topicData.description = formData.get('description');
+            }
+
+            try {
+                const response = await fetch('/api/v1/clusters/dbmq-cluster/topics', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(topicData)
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage('Topic 创建成功！', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/api/v1/dashboard';
+                    }, 2000);
+                } else {
+                    showMessage('创建失败: ' + (result.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                showMessage('网络错误: ' + error.message, 'error');
+            }
+        });
+
+        function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.className = 'alert alert-' + type;
+            messageDiv.textContent = text;
+            messageDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+    </script>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
+}
+
+// Topic管理页面处理器
+func (ras *RestAPIServer) topicManagePageHandler(w http.ResponseWriter, r *http.Request) {
+	html := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topic 管理 - DBMQ</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #1890ff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .back-button:hover {
+            background: #096dd9;
+        }
+
+        .btn-create {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #52c41a;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .btn-create:hover {
+            background: #389e0d;
+        }
+
+        .header h1 {
+            color: #1a1a1a;
+            font-size: 18px;
+            font-weight: 600;
+            margin-left: 12px;
+        }
+
+        .section {
+            background: #fff;
+            border-radius: 6px;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .table th,
+        .table td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+            line-height: 1.4;
+        }
+
+        .table th {
+            background: #f8f9fa;
+            font-weight: 500;
+            color: #666;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .btn-danger {
+            background: #ff4d4f;
+            color: white;
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .btn-danger:hover {
+            background: #cf1322;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 24px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 12px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .table-container {
+            max-height: 600px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+
+        .table-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .table-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
+
+        .topic-link {
+            color: #1a1a1a;
+            text-decoration: none;
+        }
+
+        .topic-link:hover {
+            color: #1890ff;
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+
+            .header-left {
+                width: 100%;
+            }
+
+            .btn-create {
+                margin-top: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-left">
+                <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+                <h1>Topic 管理</h1>
+            </div>
+            <a href="/api/v1/dashboard/topics/create" class="btn-create">+ 创建新 Topic</a>
+        </div>
+
+        <div class="section">
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <div>加载 Topics 中...</div>
+            </div>
+
+            <div id="content" style="display: none;">
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Topic 名称</th>
+                                <th>分区数</th>
+                                <th>消息数</th>
+                                <th>存储大小</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="topicsTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 格式化数字显示
+        function formatNumber(num) {
+            if (num === undefined || num === null) return '--';
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(1) + 'M';
+            } else if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toString();
+        }
+
+        // 格式化字节大小
+        function formatBytes(bytes) {
+            if (bytes === 0 || !bytes) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // 加载Topics
+        async function loadTopics() {
+            try {
+                const response = await fetch('/api/v1/clusters/dbmq-cluster/topics');
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayTopics(result.data);
+                } else {
+                    alert('获取Topics失败: ' + (result.error || '未知错误'));
+                }
+            } catch (error) {
+                alert('网络错误: ' + error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+            }
+        }
+
+        // 显示Topics
+        function displayTopics(topics) {
+            const tbody = document.getElementById('topicsTable');
+            tbody.innerHTML = '';
+            
+            if (!topics || topics.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">暂无 Topic 数据</td></tr>';
+                return;
+            }
+
+            topics.forEach(topic => {
+                const row = document.createElement('tr');
+                const topicName = topic.name || topic.topicName || '--';
+                row.innerHTML = 
+                    '<td><a href="/api/v1/dashboard/topic/' + encodeURIComponent(topicName) + '" class="topic-link">' + topicName + '</a></td>' +
+                    '<td>' + (topic.partitionCount || '--') + '</td>' +
+                    '<td>' + formatNumber(topic.messageCount || 0) + '</td>' +
+                    '<td>' + formatBytes(topic.sizeBytes || 0) + '</td>' +
+                    '<td>' + (topic.createdAt ? new Date(topic.createdAt).toLocaleString('zh-CN') : '--') + '</td>' +
+                    '<td><button class="btn-danger" onclick="deleteTopic(\'' + topicName + '\')">删除</button></td>';
+                tbody.appendChild(row);
+            });
+        }
+
+        // 删除Topic
+        async function deleteTopic(topicName) {
+            if (!confirm('确定要删除 Topic "' + topicName + '" 吗？此操作不可撤销！')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/v1/clusters/dbmq-cluster/topics/' + encodeURIComponent(topicName), {
+                    method: 'DELETE'
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Topic 删除成功！');
+                    loadTopics(); // 重新加载列表
+                } else {
+                    alert('删除失败: ' + (result.error || '未知错误'));
+                }
+            } catch (error) {
+                alert('网络错误: ' + error.message);
+            }
+        }
+
+        // 页面加载完成后加载数据
+        document.addEventListener('DOMContentLoaded', loadTopics);
+    </script>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
+}
+
+// 消息生产页面处理器
+func (ras *RestAPIServer) messageProducerPageHandler(w http.ResponseWriter, r *http.Request) {
+	html := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>消息生产器 - DBMQ</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: #fff;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #1890ff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .back-button:hover {
+            background: #096dd9;
+        }
+
+        .header h1 {
+            color: #1a1a1a;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .section {
+            background: #fff;
+            border-radius: 6px;
+            padding: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 12px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+            color: #1a1a1a;
+            font-size: 13px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .form-group input:hover,
+        .form-group select:hover,
+        .form-group textarea:hover {
+            border-color: #40a9ff;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            border-color: #1890ff;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+        }
+
+        .form-group small {
+            color: #666;
+            font-size: 12px;
+            margin-top: 4px;
+            display: block;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .btn-primary:hover {
+            background: #096dd9;
+        }
+
+        .btn-primary:disabled {
+            background: #bfbfbf;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #595959;
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-left: 8px;
+            line-height: 1.4;
+            transition: all 0.3s;
+        }
+
+        .btn-secondary:hover {
+            background: #e8e8e8;
+        }
+
+        .alert {
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .alert-success {
+            background: #e6f4ea;
+            color: #1e7e34;
+            border: 1px solid #b7dfb9;
+        }
+
+        .alert-error {
+            background: #fff2f0;
+            color: #cf1322;
+            border: 1px solid #ffccc7;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 12px;
+            border-radius: 4px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .stat-success {
+            background: #e6f4ea;
+        }
+
+        .stat-success .stat-value {
+            color: #1e7e34;
+        }
+
+        .stat-error {
+            background: #fff2f0;
+        }
+
+        .stat-error .stat-value {
+            color: #cf1322;
+        }
+
+        .stat-total {
+            background: #e1f0ff;
+        }
+
+        .stat-total .stat-value {
+            color: #0056b3;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .container {
+                width: 100%;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .form-group input,
+            .form-group select,
+            .form-group textarea {
+                font-size: 16px; /* 防止iOS缩放 */
+            }
+
+            .btn-secondary {
+                margin-left: 0;
+                margin-top: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/api/v1/dashboard" class="back-button">← 返回仪表板</a>
+            <h1>消息生产器</h1>
+            <p>发送消息到指定Topic</p>
+        </div>
+
+        <div class="section">
+            <div id="message" style="display: none;"></div>
+            
+            <form id="producerForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="topic">目标 Topic *</label>
+                        <select id="topic" name="topic" required>
+                            <option value="">选择Topic...</option>
+                        </select>
+                        <small>选择要发送消息的Topic</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="messageKey">消息Key</label>
+                        <input type="text" id="messageKey" name="messageKey">
+                        <small>用于分区路由的消息键（可选）</small>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="messageValue">消息内容 *</label>
+                    <textarea id="messageValue" name="messageValue" rows="6" required placeholder="输入消息内容，支持JSON格式..."></textarea>
+                    <small>消息的实际内容</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="headers">消息头（JSON格式）</label>
+                    <textarea id="headers" name="headers" rows="3" placeholder='{"header1": "value1", "header2": "value2"}'></textarea>
+                    <small>可选的消息头，JSON格式</small>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="batchCount">批量发送数量</label>
+                        <input type="number" id="batchCount" name="batchCount" min="1" max="1000" value="1">
+                        <small>一次性发送的消息数量</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="interval">发送间隔（毫秒）</label>
+                        <input type="number" id="interval" name="interval" min="0" value="0">
+                        <small>批量发送时消息间的间隔</small>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-primary" id="sendBtn">发送消息</button>
+                <button type="button" class="btn-secondary" onclick="clearForm()">清空</button>
+                <button type="button" class="btn-secondary" onclick="loadSampleMessage()">示例消息</button>
+            </form>
+        </div>
+
+        <div class="section">
+            <h3 style="margin-bottom: 12px; font-size: 15px; color: #1a1a1a;">发送统计</h3>
+            <div class="stats-grid">
+                <div class="stat-card stat-success">
+                    <div class="stat-value" id="successCount">0</div>
+                    <div class="stat-label">成功</div>
+                </div>
+                <div class="stat-card stat-error">
+                    <div class="stat-value" id="errorCount">0</div>
+                    <div class="stat-label">失败</div>
+                </div>
+                <div class="stat-card stat-total">
+                    <div class="stat-value" id="totalCount">0</div>
+                    <div class="stat-label">总计</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let stats = { success: 0, error: 0, total: 0 };
+
+        // 页面加载时获取Topics列表
+        document.addEventListener('DOMContentLoaded', async function() {
+            await loadTopics();
+        });
+
+        // 加载Topics列表
+        async function loadTopics() {
+            try {
+                const response = await fetch('/api/v1/clusters/dbmq-cluster/topics');
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    const topicSelect = document.getElementById('topic');
+                    topicSelect.innerHTML = '<option value="">选择Topic...</option>';
+                    
+                    result.data.forEach(topic => {
+                        const option = document.createElement('option');
+                        option.value = topic.name || topic.topicName;
+                        option.textContent = topic.name || topic.topicName;
+                        topicSelect.appendChild(option);
+                    });
+                } else {
+                    showMessage('获取Topics列表失败: ' + (result.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                showMessage('网络错误: ' + error.message, 'error');
+            }
+        }
+
+        // 表单提交处理
+        document.getElementById('producerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await sendMessage();
+        });
+
+        // 发送消息
+        async function sendMessage() {
+            const formData = new FormData(document.getElementById('producerForm'));
+            const sendBtn = document.getElementById('sendBtn');
+            
+            // 验证表单
+            const topic = formData.get('topic');
+            const messageValue = formData.get('messageValue');
+            
+            if (!topic || !messageValue) {
+                showMessage('请填写必需的字段（Topic和消息内容）', 'error');
+                return;
+            }
+
+            // 解析headers
+            let headers = {};
+            const headersStr = formData.get('headers');
+            if (headersStr) {
+                try {
+                    headers = JSON.parse(headersStr);
+                } catch (e) {
+                    showMessage('消息头格式错误，请使用有效的JSON格式', 'error');
+                    return;
+                }
+            }
+
+            const batchCount = parseInt(formData.get('batchCount')) || 1;
+            const interval = parseInt(formData.get('interval')) || 0;
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = '发送中...';
+
+            try {
+                for (let i = 0; i < batchCount; i++) {
+                    const messageData = {
+                        topic: topic,
+                        key: formData.get('messageKey') || null,
+                        value: messageValue,
+                        headers: headers
+                    };
+
+                    try {
+                        const response = await fetch('/api/v1/clusters/dbmq-cluster/topics/' + encodeURIComponent(topic) + '/messages', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(messageData)
+                        });
+
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            stats.success++;
+                        } else {
+                            stats.error++;
+                            console.error('Message send failed:', result.error);
+                        }
+                    } catch (error) {
+                        stats.error++;
+                        console.error('Network error:', error);
+                    }
+
+                    stats.total++;
+                    updateStats();
+
+                    // 等待间隔时间
+                    if (interval > 0 && i < batchCount - 1) {
+                        await new Promise(resolve => setTimeout(resolve, interval));
+                    }
+                }
+
+                showMessage('消息发送完成！成功: ' + stats.success + '，失败: ' + stats.error, 
+                           stats.error === 0 ? 'success' : 'error');
+                           
+            } catch (error) {
+                showMessage('发送失败: ' + error.message, 'error');
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.textContent = '发送消息';
+            }
+        }
+
+        // 更新统计显示
+        function updateStats() {
+            document.getElementById('successCount').textContent = stats.success;
+            document.getElementById('errorCount').textContent = stats.error;
+            document.getElementById('totalCount').textContent = stats.total;
+        }
+
+        // 清空表单
+        function clearForm() {
+            document.getElementById('producerForm').reset();
+            stats = { success: 0, error: 0, total: 0 };
+            updateStats();
+        }
+
+        // 加载示例消息
+        function loadSampleMessage() {
+            document.getElementById('messageKey').value = 'sample-key-' + Date.now();
+            document.getElementById('messageValue').value = JSON.stringify({
+                id: Date.now(),
+                message: "这是一个示例消息",
+                timestamp: new Date().toISOString(),
+                data: {
+                    user: "用户123",
+                    action: "示例操作"
+                }
+            }, null, 2);
+            document.getElementById('headers').value = JSON.stringify({
+                "source": "dashboard",
+                "version": "1.0"
+            }, null, 2);
+        }
+
+        // 显示消息
+        function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.className = 'alert alert-' + type;
+            messageDiv.textContent = text;
+            messageDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
+        }
     </script>
 </body>
 </html>`

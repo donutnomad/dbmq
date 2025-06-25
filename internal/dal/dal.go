@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gorm.io/datatypes"
 	"strings"
 	"time"
+
+	"gorm.io/datatypes"
 
 	"github.com/donutnomad/dbmq/types"
 
@@ -342,6 +343,15 @@ func FindAllActiveGroups(ctx context.Context, db *gorm.DB, timeout time.Duration
 	err := db.WithContext(ctx).
 		Raw(sql, time.Now().Add(-timeout)).
 		Pluck("group_id", &groupIDs).Error
+	return groupIDs, err
+}
+
+// FindAllGroups 查找所有消费组ID，包括活跃和非活跃的
+// 通过联合查询心跳表和代际表获取所有消费组
+func FindAllGroups(ctx context.Context, db *gorm.DB) ([]string, error) {
+	var groupIDs []string
+	sql := "SELECT DISTINCT `group_id` FROM (SELECT `group_id` FROM `mq_consumer_heartbeats` UNION SELECT `group_id` FROM `mq_consumer_group_generations`) AS all_groups"
+	err := db.WithContext(ctx).Raw(sql).Pluck("group_id", &groupIDs).Error
 	return groupIDs, err
 }
 
