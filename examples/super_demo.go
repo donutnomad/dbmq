@@ -322,8 +322,8 @@ func produceOrderMessages(ctx context.Context, producer *dbmq.Producer, topicNam
 				continue
 			}
 
-			fmt.Printf("📤 [生产者] 发送订单消息: %s (分区: %d, 偏移量: %d, 金额: %.2f)\n",
-				order.OrderID, result.Partition, result.Offset, order.Amount)
+			fmt.Printf("📤 [生产者] 发送订单消息: %s (分区: %d,金额: %.2f)\n",
+				order.OrderID, result.Partition, order.Amount)
 
 			orderCounter++
 		}

@@ -44,7 +44,8 @@ func InitMySQL(mysqlConf MySQLConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
+	// 连接池调优
+	sqlDB.SetMaxOpenConns(200) // 增加连接数
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	return dbClient, nil

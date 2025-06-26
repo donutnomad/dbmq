@@ -37,7 +37,7 @@ func BatchFetchExample() {
 	}
 
 	for i := range messages {
-		if err := dal.CreateMessage(ctx, db, &messages[i]); err != nil {
+		if err := dal.CreateMessage(ctx, db, messages[i]); err != nil {
 			log.Printf("Failed to create message: %v", err)
 		}
 	}
@@ -57,7 +57,7 @@ func BatchFetchExample() {
 
 	// 执行批量获取
 	start := time.Now()
-	allMessages, err := dal.FetchMessagesBatch(ctx, db, batchRequests)
+	allMessages, err := dal.NewMqDao(db).FetchMessagesBatch(ctx, batchRequests)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -80,7 +80,7 @@ func BatchFetchExample() {
 	var individualMessages []types.Message
 
 	for _, req := range batchRequests {
-		messages, err := dal.FetchMessages(ctx, db, req.Topic, req.Partition, req.Offset, req.Limit)
+		messages, err := dal.NewMqDao(db).FetchMessages(ctx, req.Topic, req.Partition, req.Offset, req.Limit)
 		if err != nil {
 			log.Printf("单独查询失败 %s:%d: %v", req.Topic, req.Partition, err)
 			continue

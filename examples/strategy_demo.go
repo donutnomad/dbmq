@@ -99,7 +99,7 @@ func StrategyDemo() {
 			log.Printf("❌ 发送历史消息失败: %v", err)
 			continue
 		}
-		fmt.Printf("📤 发送历史消息 #%d (偏移量: %d)\n", i, result.Offset)
+		fmt.Printf("📤 发送历史消息 #%d 进入分区:(%d)\n", i, result.Partition)
 		time.Sleep(100 * time.Millisecond)
 	}
 	fmt.Println("✅ 历史消息发送完成")

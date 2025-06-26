@@ -2,9 +2,9 @@ package dbmq
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/samber/lo"
 	"hash/fnv"
 	"log/slog"
 	"sync"
@@ -45,7 +45,6 @@ type ProducerMessage struct {
 type SendResult struct {
 	Topic     string // 消息所在的Topic
 	Partition uint   // 消息所在的分区
-	Offset    int64  // 消息在分区中的偏移量
 }
 
 const (
@@ -79,12 +78,14 @@ type Producer struct {
 	config             ProducerConfig // 生产者配置
 	db                 *gorm.DB       // 数据库连接
 	redis              *redis.Client  // Redis连接（可选）
-	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*types.Topic
+	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*types.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
 	roundRobinCounters sync.Map       // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
+	dao                *dal.MqDao
 }
 
 // NewProducer 创建新的生产者实例
 // 如果NotificationStateTTL为0，则使用默认值60秒
+// 如果OffsetCacheTTL为0，则使用默认值300秒
 func NewProducer(config ProducerConfig) (*Producer, error) {
 	if config.NotificationStateTTL == 0 {
 		config.NotificationStateTTL = defaultNotificationStateTTL
@@ -95,6 +96,7 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 		redis:              config.Redis,
 		topicMetadataCache: sync.Map{},
 		roundRobinCounters: sync.Map{},
+		dao:                dal.NewMqDao(config.DB),
 	}, nil
 }
 
@@ -118,42 +120,20 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	if msg.Key != nil {
 		// 如果消息设置了Key（包括空key），使用哈希分区确保相同Key的消息总是路由到同一分区
 		// 这确保了即使是空key也会有一致的分区分配
-		partition = p.hashPartition(msg.Key, partitionCount)
+		partition = hashPartition(msg.Key, partitionCount)
 	} else {
 		// 如果消息没有设置Key（Key为nil），使用轮询分区实现负载均衡
 		partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
 	}
-
 	// 4. 构造数据库消息对象并持久化
-	dbMsg := &types.Message{
-		Topic:     msg.Topic,
-		Partition: partition,
-		Body:      msg.Value,
-		CreatedAt: time.Now(),
-	}
-
-	// 设置消息Key（如果有）
-	if msg.Key != nil {
-		dbMsg.MessageKey.String = string(msg.Key)
-		dbMsg.MessageKey.Valid = true
-	}
-	// 序列化消息头（如果有）
-	if msg.Headers != nil {
-		headersJSON, err := json.Marshal(msg.Headers)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal headers to json: %w", err)
-		}
-		dbMsg.Headers = headersJSON
-	}
-
-	// 5. 持久化消息到数据库
+	dbMsg := types.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, time.Now())
 	if err := dal.CreateMessage(ctx, p.db, dbMsg); err != nil {
 		return nil, fmt.Errorf("failed to create message in db: %w", err)
 	}
 
 	// 添加调试日志显示发送结果
-	p.logger().Debug(fmt.Sprintf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d, ID: %d, PerPartitionOffset: %d",
-		msg.Topic, partition, dbMsg.ID, dbMsg.PerPartitionOffset))
+	p.logger().Debug(fmt.Sprintf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d",
+		msg.Topic, partition))
 
 	// 6. 可选的智能通知机制
 	// 在后台goroutine中执行，不影响消息发送的性能和可靠性
@@ -165,8 +145,118 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	return &SendResult{
 		Topic:     msg.Topic,
 		Partition: partition,
-		Offset:    dbMsg.PerPartitionOffset, // 分区内的偏移量
 	}, nil
+}
+
+// BatchSendResult 批量发送的结果
+type BatchSendResult []SendResult
+
+// SendBatch 批量发送消息，显著提升高吞吐量场景的性能
+// 通过减少数据库事务数量和网络往返次数来优化性能
+// 注意：批量发送是原子性的，要么全部成功，要么全部失败
+func (p *Producer) SendBatch(ctx context.Context, messages []*ProducerMessage) (BatchSendResult, error) {
+	if len(messages) == 0 {
+		return nil, nil
+	}
+
+	// 验证所有消息
+	for i, msg := range messages {
+		if msg == nil || msg.Topic == "" {
+			return nil, fmt.Errorf("message at index %d: producer message and topic cannot be empty", i)
+		}
+	}
+
+	// 按Topic分组消息，以便批量获取元数据
+	topicGroups := lo.GroupBy(messages, func(item *ProducerMessage) string {
+		return item.Topic
+	})
+
+	// 预先获取所有Topic的元数据
+	topicMetadataMap := make(map[string]*types.Topic)
+	for topicName := range topicGroups {
+		topicMeta, err := p.getTopicMetadata(ctx, topicName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get metadata for topic %s: %w", topicName, err)
+		}
+		topicMetadataMap[topicName] = topicMeta
+	}
+
+	// 准备批量插入的数据库消息
+	var dbMessages []*types.Message
+	var notificationPartitions []struct {
+		topic     string
+		partition uint
+	}
+
+	currentTime := time.Now()
+
+	// 为每条消息分配分区并构造数据库对象
+	for _, msg := range messages {
+		partitionCount := topicMetadataMap[msg.Topic].PartitionCount
+		// 选择目标分区
+		var partition uint
+		if msg.Key != nil {
+			partition = hashPartition(msg.Key, partitionCount)
+		} else {
+			partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
+		}
+		// 构造数据库消息对象
+		dbMsg := types.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, currentTime)
+		dbMessages = append(dbMessages, &dbMsg)
+
+		// 记录需要发送通知的分区（去重）
+		if p.config.NotificationEnabled && p.redis != nil {
+			notificationPartitions = append(notificationPartitions, struct {
+				topic     string
+				partition uint
+			}{msg.Topic, partition})
+		}
+	}
+
+	// 批量插入消息到数据库
+	if err := dal.CreateMessagesBatch(ctx, p.db, dbMessages); err != nil {
+		return nil, fmt.Errorf("failed to create messages batch in db: %w", err)
+	}
+
+	// 构造返回结果
+	results := lo.Map(dbMessages, func(dbMsg *types.Message, index int) SendResult {
+		return SendResult{
+			Topic:     dbMsg.Topic,
+			Partition: dbMsg.Partition,
+		}
+	})
+
+	// 添加调试日志
+	p.logger().Debug(fmt.Sprintf("📤 [Producer] 批量发送成功 - %d 条消息", len(messages)))
+
+	// 批量发送通知（在后台执行）
+	if p.config.NotificationEnabled && p.redis != nil {
+		go p.sendBatchNotifications(context.Background(), notificationPartitions)
+	}
+
+	return results, nil
+}
+
+// sendBatchNotifications 批量发送通知，去重相同的topic-partition组合
+func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []struct {
+	topic     string
+	partition uint
+}) {
+	// 去重分区
+	uniquePartitions := make(map[string]struct {
+		topic     string
+		partition uint
+	})
+
+	for _, partition := range partitions {
+		key := fmt.Sprintf("%s:%d", partition.topic, partition.partition)
+		uniquePartitions[key] = partition
+	}
+
+	// 为每个唯一分区发送通知
+	for _, partition := range uniquePartitions {
+		go p.sendNotification(ctx, partition.topic, partition.partition)
+	}
 }
 
 // sendNotification 发送智能通知到Redis
@@ -204,7 +294,7 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*typ
 	}
 
 	// 缓存未命中，从数据库查询
-	topics, err := dal.FindTopicsByNames(ctx, p.db, []string{topicName})
+	topics, err := p.dao.FindTopicsByNames(ctx, []string{topicName})
 	if err != nil {
 		return nil, fmt.Errorf("failed to find topic '%s': %w", topicName, err)
 	}
@@ -233,7 +323,7 @@ func (p *Producer) nextRoundRobinPartition(topic string, partitionCount uint) ui
 
 // hashPartition 使用哈希算法选择分区
 // 使用FNV-1a哈希算法，确保相同Key总是路由到同一分区，保证消息顺序
-func (p *Producer) hashPartition(key []byte, partitionCount uint) uint {
+func hashPartition(key []byte, partitionCount uint) uint {
 	if partitionCount == 0 {
 		return 0
 	}

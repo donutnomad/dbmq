@@ -77,6 +77,7 @@ type Coordinator struct {
 	mu               sync.Mutex                     // 保护members map的互斥锁
 	members          map[string]map[string]struct{} // groupID -> set of consumer IDs，缓存消费组成员信息
 	stopped          atomic.Bool                    // 原子布尔值，标记是否已停止
+	dao              *dal.MqDao
 }
 
 // NewCoordinator 创建一个新的协调器
@@ -105,6 +106,7 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		cancel:           cancel,
 		members:          make(map[string]map[string]struct{}),
 		rebalancingLocks: newGroupLocks(),
+		dao:              dal.NewMqDao(config.DB),
 	}
 }
 
@@ -306,7 +308,7 @@ func (c *Coordinator) runRetentionCleanup() {
 	startTime := time.Now()
 
 	// 1. 获取所有Topic以了解它们的保留策略
-	allTopics, err := dal.GetAllTopics(ctx, c.db)
+	allTopics, err := c.dao.GetAllTopics(ctx)
 	if err != nil {
 		c.logger().Error("Cleanup failed to get topics", "error", err)
 		return
@@ -320,7 +322,7 @@ func (c *Coordinator) runRetentionCleanup() {
 	}
 
 	// 2. Calculate global low watermark for all consumed partitions
-	watermarks, err := dal.GetConsumerGroupLowWatermarks(ctx, c.db)
+	watermarks, err := c.dao.GetConsumerGroupLowWatermarks(ctx)
 	if err != nil {
 		c.logger().Error("Cleanup failed to get low watermarks", "error", err)
 		return
@@ -348,11 +350,11 @@ func (c *Coordinator) runRetentionCleanup() {
 
 				if lowWatermark, ok := watermarks[p]; ok {
 					// This partition is consumed, so use the low watermark
-					deletedCount, err = dal.DeleteMessagesByPartition(ctx, c.db, p.Topic, p.Partition, lowWatermark, retentionDate, cleanupBatchSize)
+					deletedCount, err = c.dao.DeleteMessagesByPartition(ctx, p.Topic, p.Partition, lowWatermark, retentionDate, cleanupBatchSize)
 				} else {
 					// This partition is not in the watermark map, meaning no group has ever committed an offset for it.
 					// We can only clean it up based on time.
-					deletedCount, err = dal.DeleteMessagesByPartitionUnconsumed(ctx, c.db, p.Topic, p.Partition, retentionDate, cleanupBatchSize)
+					deletedCount, err = c.dao.DeleteMessagesByPartitionUnconsumed(ctx, p.Topic, p.Partition, retentionDate, cleanupBatchSize)
 				}
 
 				if err != nil {
@@ -397,7 +399,7 @@ func (c *Coordinator) scanAndRebalanceAllGroups() {
 	defer cancel()
 
 	// 找到活跃的消费组IDs
-	activeGroupIds, err := dal.FindAllActiveGroups(ctx, c.db, c.config.HeartbeatTimeout)
+	activeGroupIds, err := c.dao.FindAllActiveGroups(ctx, c.config.HeartbeatTimeout)
 	if err != nil {
 		c.logger().Error("Failed to scan for active groups", "error", err)
 		return
@@ -452,7 +454,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 查找该消费组中所有活跃的消费者。活跃性通过心跳超时判断：
 	// 如果消费者在HeartbeatTimeout时间内没有发送心跳，则认为已死亡。
 	// 这是重新均衡决策的基础数据。
-	activeConsumers, err := dal.FindActiveConsumers(ctx, c.db, groupID, c.config.HeartbeatTimeout)
+	activeConsumers, err := c.dao.FindActiveConsumers(ctx, groupID, c.config.HeartbeatTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to find active consumers: %w", err)
 	}
@@ -480,7 +482,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// - 新代际ID会使所有旧消费者的请求失效（代际不匹配）
 	// - 防止旧消费者继续处理消息，避免重复消费
 	// - 实现"围栏"效应，确保只有新分配的消费者能工作
-	newGenerationID, err := dal.IncrementAndGetGenerationID(ctx, c.db, groupID)
+	newGenerationID, err := c.dao.IncrementAndGetGenerationID(ctx, groupID)
 	if err != nil {
 		return fmt.Errorf("failed to increment generation id: %w", err)
 	}
@@ -518,7 +520,7 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 将新的分区分配持久化到数据库中。
 	// UpdateAssignments函数内部会自动创建事务，确保所有消费者的分配
 	// 要么全部成功，要么全部失败，维护分配状态的一致性。
-	err = dal.UpdateAssignments(ctx, c.db, groupID, newGenerationID, newAssignments)
+	err = c.dao.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
 	if err != nil {
 		return fmt.Errorf("failed to update assignments: %w", err)
 	}
@@ -644,7 +646,7 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 	}
 
 	// 从数据库查询主题的元数据信息
-	dbTopics, err := dal.FindTopicsByNames(ctx, c.db, topicNames)
+	dbTopics, err := c.dao.FindTopicsByNames(ctx, topicNames)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find topics by name: %w", err)
 	}

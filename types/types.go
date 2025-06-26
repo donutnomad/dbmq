@@ -62,6 +62,52 @@ type Message struct {
 	CreatedAt          time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3);index:idx_created_at"` // 消息创建时间
 }
 
+func NewMessage(topic string, partition uint, messageKey []byte, headers map[string]string, body []byte, createdAt time.Time) Message {
+	var messageKey_ sql.NullString
+	var headers_ []byte
+	// 设置消息Key（如果有）
+	if len(messageKey) > 0 {
+		messageKey_.String = string(messageKey)
+		messageKey_.Valid = true
+	}
+	// 序列化消息头（如果有）
+	if headers != nil {
+		headersJSON, err := json.Marshal(headers)
+		if err != nil {
+			panic(fmt.Errorf("failed to marshal headers to json: %w", err))
+		}
+		headers_ = headersJSON
+	}
+
+	msg := Message{
+		Topic:      topic,
+		Partition:  partition,
+		MessageKey: messageKey_,
+		Headers:    headers_,
+		Body:       body,
+		CreatedAt:  createdAt,
+	}
+
+	return msg
+}
+
+func (m *Message) Fix() {
+	headers := m.Headers
+	if headers == nil {
+		headers = []byte("null") // 确保不为nil
+	}
+
+	body := m.Body
+	if body == nil {
+		body = []byte{} // 确保不为nil
+	}
+
+	createdAt := m.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+}
+
 func (m *Message) TableName() string {
 	return "mq_messages"
 }

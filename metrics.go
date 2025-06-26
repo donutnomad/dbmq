@@ -19,7 +19,8 @@ type MetricsConfig struct {
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
-	db *gorm.DB
+	db  *gorm.DB
+	dao *dal.MqDao
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
@@ -29,7 +30,8 @@ func NewMetricsClient(config MetricsConfig) (*MetricsClient, error) {
 	}
 
 	return &MetricsClient{
-		db: config.DB,
+		db:  config.DB,
+		dao: dal.NewMqDao(config.DB),
 	}, nil
 }
 
@@ -140,7 +142,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 	metrics.MessageCount = messageCount
 
 	// 获取活跃消费组数量
-	activeGroups, err := dal.FindAllActiveGroups(ctx, mc.db, 30*time.Second)
+	activeGroups, err := mc.dao.FindAllActiveGroups(ctx, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active groups: %w", err)
 	}
@@ -194,7 +196,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 	for i := uint(0); i < topic.PartitionCount; i++ {
 		// 获取分区最新偏移量
-		latestOffset, err := dal.GetLatestOffset(ctx, mc.db, topicName, i)
+		latestOffset, err := mc.dao.GetTopicLatestOffsetByPartition(ctx, topicName, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get latest offset for partition %d: %w", i, err)
 		}
@@ -251,7 +253,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取消费组代际信息
-	generation, err := dal.GetConsumerGroupGeneration(ctx, mc.db, groupID)
+	generation, err := mc.dao.GetConsumerGroupGeneration(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get consumer group generation: %w", err)
 	}
@@ -323,13 +325,13 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			partition := types.PartitionInfo{Topic: topic, Partition: i}
 
 			// 获取已提交偏移量
-			committedOffsets, err := dal.GetCommittedOffsets(ctx, mc.db, groupID, []types.PartitionInfo{partition})
+			committedOffsets, err := mc.dao.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
 			if err != nil {
 				continue
 			}
 
 			// 获取最新偏移量
-			latestOffset, err := dal.GetLatestOffset(ctx, mc.db, topic, i)
+			latestOffset, err := mc.dao.GetTopicLatestOffsetByPartition(ctx, topic, i)
 			if err != nil {
 				continue
 			}
@@ -400,7 +402,7 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 // 兼容Kafka UI的Topic列表页面
 func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error) {
 	// 获取所有Topic
-	topics, err := dal.GetAllTopics(ctx, mc.db)
+	topics, err := mc.dao.GetAllTopics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all topics: %w", err)
 	}
@@ -423,7 +425,7 @@ func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetric
 // 兼容Kafka UI的消费组列表页面
 func (mc *MetricsClient) GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error) {
 	// 获取所有消费组（包括活跃和非活跃的）
-	allGroups, err := dal.FindAllGroups(ctx, mc.db)
+	allGroups, err := mc.dao.FindAllGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all groups: %w", err)
 	}

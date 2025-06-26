@@ -123,6 +123,7 @@ type Consumer struct {
 
 	stopCh chan struct{}  // 停止信号频道
 	wg     sync.WaitGroup // 等待组，用于优雅关闭
+	dao    *dal.MqDao
 }
 
 // NewConsumer 创建新的消费者实例
@@ -152,6 +153,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		assignment:       make(map[string][]uint),
 		committedOffsets: make(map[types.PartitionInfo]int64),
 		polledOffsets:    make(map[types.PartitionInfo]int64),
+		dao:              dal.NewMqDao(config.DB),
 	}
 
 	// 初始化原子变量
@@ -225,7 +227,7 @@ func (c *Consumer) Close() {
 	// 通过删除心跳记录优雅离开消费组
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := dal.DeleteHeartbeat(ctx, c.db, c.config.GroupID, c.id); err != nil {
+	if err := c.dao.DeleteConsumerHeartbeat(ctx, c.config.GroupID, c.id); err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: failed to leave group gracefully for consumer %s: %v", c.id, err))
 	}
 
@@ -269,7 +271,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	defer cancel()
 
 	// 批量获取消息
-	allMessages, err := dal.FetchMessagesBatch(fetchCtx, c.db, lo.Map(assignedPartitions, func(p types.PartitionInfo, _ int) dal.PartitionRequest {
+	allMessages, err := c.dao.FetchMessagesBatch(fetchCtx, lo.Map(assignedPartitions, func(p types.PartitionInfo, _ int) dal.PartitionRequest {
 		return dal.PartitionRequest{
 			Topic:     p.Topic,
 			Partition: p.Partition,
@@ -484,7 +486,7 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	}
 
 	// 从数据库获取我们自己的状态
-	hb, err := dal.GetHeartbeat(ctx, c.db, c.config.GroupID, c.id)
+	hb, err := c.dao.GetConsumerHeartbeat(ctx, c.config.GroupID, c.id)
 	if err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: failed to fetch consumer state for %s: %v", c.id, err))
 		return
@@ -588,14 +590,15 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	c.logger().Info(fmt.Sprintf("Rebalance completed for consumer %s. New assignment: %v", c.id, newPartitions))
 }
 
+func (c *Consumer) getTopics() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return slices.Clone(c.topics)
+}
+
 // register 向协调器发送心跳，有效地注册或更新消费者的存活状态和Topic订阅信息
 func (c *Consumer) register(ctx context.Context) error {
-	c.mu.RLock()
-	var topics = slices.Clone(c.topics)
-	c.mu.RUnlock()
-
-	// 心跳同时作为注册，这是一个upsert操作
-	return dal.UpsertHeartbeat(ctx, c.db, c.config.GroupID, c.id, topics)
+	return c.dao.UpsertConsumerHeartbeat(ctx, c.config.GroupID, c.id, c.getTopics())
 }
 
 // IsReady 如果消费者没有在重新均衡且有分配的分区，返回true
@@ -946,7 +949,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	defer cancel()
 
 	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, partitionsToFetch))
-	fetchedOffsets, err := dal.GetCommittedOffsets(ctx, c.db, c.config.GroupID, partitionsToFetch)
+	fetchedOffsets, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, partitionsToFetch)
 	if err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err))
 		c.mu.Lock()
@@ -1187,7 +1190,7 @@ func (c *Consumer) determineStartOffset(ctx context.Context, partition types.Par
 	case ConsumeFromLatest:
 		// 从最新的消息之后开始消费（跳过所有历史消息）
 		c.logger().Debug(fmt.Sprintf("Consumer %s: applying LATEST strategy for partition %v", c.id, partition))
-		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
+		latestOffset, err := c.dao.GetTopicLatestOffsetByPartition(ctx, partition.Topic, partition.Partition)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get latest offset: %w", err)
 		}
@@ -1197,7 +1200,7 @@ func (c *Consumer) determineStartOffset(ctx context.Context, partition types.Par
 		// 从已提交的偏移量开始消费，如果没有已提交偏移量则从最新开始
 		// 由于此方法只在没有已提交偏移量时被调用，所以使用Latest作为后备策略
 		c.logger().Debug(fmt.Sprintf("Consumer %s: applying COMMITTED strategy (fallback to LATEST) for partition %v", c.id, partition))
-		latestOffset, err := dal.GetLatestOffset(ctx, c.db, partition.Topic, partition.Partition)
+		latestOffset, err := c.dao.GetTopicLatestOffsetByPartition(ctx, partition.Topic, partition.Partition)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get latest offset for committed strategy fallback: %w", err)
 		}
