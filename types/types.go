@@ -92,19 +92,14 @@ func NewMessage(topic string, partition uint, messageKey []byte, headers map[str
 }
 
 func (m *Message) Fix() {
-	headers := m.Headers
-	if headers == nil {
-		headers = []byte("null") // 确保不为nil
+	if m.Headers == nil {
+		m.Headers = []byte("null") // 确保不为nil
 	}
-
-	body := m.Body
-	if body == nil {
-		body = []byte{} // 确保不为nil
+	if m.Body == nil {
+		m.Body = []byte{} // 确保不为nil
 	}
-
-	createdAt := m.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now()
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now()
 	}
 }
 
