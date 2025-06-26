@@ -15,6 +15,8 @@ import (
 
 type DB interface {
 	WithContext(ctx context.Context) *gorm.DB
+	Exec(sql string, values ...any) (tx *gorm.DB)
+	Model(value any) *gorm.DB
 }
 type MqDao struct {
 	db DB
@@ -163,133 +165,34 @@ func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint,
 }
 
 // CreateMessage 向数据库插入新消息
-// 使用优化的 INSERT ... SELECT 语句，直接从表中获取下一个偏移量并插入
-// 这种方式减少了数据库往返次数，提高了性能
+// 使用简单的INSERT语句，依赖AUTO_INCREMENT自动生成ID
+// 消除了复杂的offset计算，避免死锁问题
 func CreateMessage(ctx context.Context, db DB, msg types.Message) error {
-	return insertMessagesForPartitionOptimized(db.WithContext(ctx), msg.Topic, msg.Partition, []*types.Message{&msg})
+	msg.Fix()
+	result := db.WithContext(ctx).Create(&msg)
+	return result.Error
 }
 
 // CreateMessagesBatch 批量插入消息，显著提升高吞吐量场景的性能
-// 使用优化的 INSERT ... SELECT 语句，在单个语句中计算 offset 并插入所有消息
-// 注意：批量插入是原子性的，要么全部成功，要么全部失败
+// 使用简单的批量INSERT，依赖AUTO_INCREMENT自动生成ID
+// 消除了复杂的offset计算和死锁问题
 func CreateMessagesBatch(ctx context.Context, db DB, messages []*types.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-	type tmpKey struct {
-		topic     string
-		partition uint
-	}
 
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 按分区分组消息，因为每个分区需要独立计算offset
-		partitionGroups := make(map[tmpKey][]*types.Message)
-		for _, msg := range messages {
-			key := tmpKey{topic: msg.Topic, partition: msg.Partition}
-			partitionGroups[key] = append(partitionGroups[key], msg)
-		}
-
-		// 为每个分区批量处理消息
-		for partitionKey, partitionMessages := range partitionGroups {
-			if err := insertMessagesForPartitionOptimized(tx, partitionKey.topic, partitionKey.partition, partitionMessages); err != nil {
-				return fmt.Errorf("failed to batch insert messages for partition %v: %w", partitionKey, err)
-			}
-			fmt.Printf("✅ [CreateMessagesBatch] 分区 %v 批量插入成功 - %d 条消息\n",
-				partitionKey, len(partitionMessages))
-		}
-		fmt.Printf("✅ [CreateMessagesBatch] 全部批量插入成功 - 总计 %d 条消息\n", len(messages))
-		return nil
-	})
-}
-
-// insertMessagesForPartitionOptimized 为单个分区优化批量插入消息
-// 使用单个 INSERT ... SELECT 语句，直接在 SQL 中计算连续的 offset 值
-func insertMessagesForPartitionOptimized(tx *gorm.DB, topic string, partition uint, messages []*types.Message) error {
-	if len(messages) == 0 {
-		return nil
-	}
-	if len(messages) == 1 {
-		msg := messages[0]
+	// 预处理所有消息
+	for _, msg := range messages {
 		msg.Fix()
-
-		// 使用INSERT ... SELECT优化的SQL语句
-		// 这个语句会原子性地获取下一个offset并插入消息
-		sql := `
-INSERT INTO mq_messages (topic, ` + "`partition`" + `, per_partition_offset, message_key, headers, body, created_at)
-SELECT ?, ?, 
-       COALESCE(MAX(per_partition_offset), -1) + 1 as next_offset,
-       ?, ?, ?, ?
-FROM mq_messages 
-WHERE topic = ? AND ` + "`partition`" + ` = ?
-FOR UPDATE`
-
-		// 执行插入操作
-		result := tx.Exec(sql,
-			msg.Topic, msg.Partition, // INSERT部分的topic, partition
-			msg.MessageKey, msg.Headers, msg.Body, msg.CreatedAt, // INSERT部分的其他字段
-			msg.Topic, msg.Partition, // SELECT部分的WHERE条件
-		)
-		return result.Error
 	}
 
-	// 构建批量 INSERT ... SELECT 语句
-	// 使用 ROW_NUMBER() 窗口函数为每条消息分配连续的 offset
-	var valueStrings []string
-	var args []interface{}
-
-	// 先添加基础参数（用于子查询获取基准 offset）
-	args = append(args, topic, partition)
-
-	// 构建 VALUES 子句，每条消息一行
-	for i, msg := range messages {
-		msg.Fix()
-
-		// 构建 VALUES 子句：(topic, partition, message_key, headers, body, created_at, row_index)
-		// row_index 从 1 开始，因为 offset 应该是 base_offset + row_index
-		valueStrings = append(valueStrings, fmt.Sprintf("(?, ?, ?, ?, ?, ?, %d)", i+1))
-		args = append(args, topic, partition, msg.MessageKey, msg.Headers, msg.Body, msg.CreatedAt)
-	}
-
-	// 构建完整的 INSERT ... SELECT 语句
-	// 这个语句会：
-	// 1. 使用 CTE 只查询一次当前分区的最大 offset（避免重复查询）
-	// 2. 为每条新消息分配连续的 offset
-	// 3. 在单个语句中插入所有消息
-	sql := fmt.Sprintf(`
-WITH max_offset AS (
-    SELECT COALESCE(MAX(per_partition_offset), -1) as current_max_offset 
-    FROM mq_messages 
-    WHERE topic = ? AND `+"`partition`"+` = ? 
-    FOR UPDATE
-)
-INSERT INTO mq_messages (topic, `+"`partition`"+`, per_partition_offset, message_key, headers, body, created_at)
-SELECT 
-    batch_data.topic,
-    batch_data.partition,
-    max_offset.current_max_offset + batch_data.row_num as per_partition_offset,
-    batch_data.message_key,
-    batch_data.headers,
-    batch_data.body,
-    batch_data.created_at
-FROM (
-    VALUES %s
-) AS batch_data(topic, partition, message_key, headers, body, created_at, row_num)
-CROSS JOIN max_offset
-ORDER BY batch_data.row_num`, strings.Join(valueStrings, ", "))
-
-	// 执行批量插入
-	result := tx.Exec(sql, args...)
+	// 使用GORM的批量创建功能
+	result := db.WithContext(ctx).CreateInBatches(messages, 100) // 每批100条
 	if result.Error != nil {
-		fmt.Printf("❌ [insertMessagesForPartitionOptimized] 批量插入失败: %v\n", result.Error)
-		return result.Error
+		return fmt.Errorf("批量插入失败: %w", result.Error)
 	}
 
-	// 检查插入行数
-	expectedRows := int64(len(messages))
-	if result.RowsAffected != expectedRows {
-		return fmt.Errorf("expected to insert %d rows, but inserted %d", expectedRows, result.RowsAffected)
-	}
-
+	fmt.Printf("✅ [CreateMessagesBatch] 批量插入成功 - %d 条消息\n", len(messages))
 	return nil
 }
 

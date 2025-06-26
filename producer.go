@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/samber/lo"
 	"hash/fnv"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/samber/lo"
 
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
@@ -45,6 +46,7 @@ type ProducerMessage struct {
 type SendResult struct {
 	Topic     string // 消息所在的Topic
 	Partition uint   // 消息所在的分区
+	Offset    int64  // 消息的全局ID（用作偏移量）
 }
 
 const (
@@ -145,6 +147,7 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	return &SendResult{
 		Topic:     msg.Topic,
 		Partition: partition,
+		Offset:    dbMsg.ID, // 使用数据库自动生成的ID作为offset
 	}, nil
 }
 
@@ -223,6 +226,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages []*ProducerMessage) (
 		return SendResult{
 			Topic:     dbMsg.Topic,
 			Partition: dbMsg.Partition,
+			Offset:    dbMsg.ID, // 使用数据库自动生成的ID作为offset
 		}
 	})
 

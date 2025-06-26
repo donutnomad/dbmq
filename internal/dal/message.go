@@ -2,21 +2,23 @@ package dal
 
 import (
 	"context"
-	"github.com/donutnomad/dbmq/types"
 	"strings"
 	"time"
+
+	"github.com/donutnomad/dbmq/types"
 )
 
 // FetchMessages 从特定分区在给定偏移量之后获取消息
 // 这是消费者Poll操作的核心数据库查询
+// offset现在是全局ID，而不是分区内偏移量
 func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint, offset int64, limit int) ([]types.Message, error) {
 	var messages []types.Message
 	err := d.db.WithContext(ctx).
 		Model(&types.Message{}).
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
-		Where("`per_partition_offset` > ?", offset).
-		Order("`per_partition_offset` ASC").
+		Where("`id` > ?", offset).
+		Order("`id` ASC").
 		Limit(limit).
 		Scan(&messages).Error
 	return messages, err
@@ -32,6 +34,7 @@ type PartitionRequest struct {
 
 // FetchMessagesBatch 批量从多个分区获取消息
 // 使用UNION ALL查询一次性获取多个分区的消息，提高数据库查询效率
+// offset现在是全局ID，而不是分区内偏移量
 func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]types.Message, error) {
 	if len(requests) == 0 {
 		return nil, nil
@@ -42,12 +45,12 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	var args []any
 
 	for _, req := range requests {
-		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `per_partition_offset` > ? ORDER BY `per_partition_offset` ASC LIMIT ?)")
+		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
 		args = append(args, req.Topic, req.Partition, req.Offset, req.Limit)
 	}
 
-	// 组合所有UNION查询，最后按创建时间排序以保证消息的时间顺序
-	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `created_at` ASC, `per_partition_offset` ASC"
+	// 组合所有UNION查询，最后按ID排序以保证消息的顺序
+	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `id` ASC"
 
 	var messages []types.Message
 	err := d.db.WithContext(ctx).
@@ -57,13 +60,13 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	return messages, err
 }
 
-// GetTopicLatestOffsetByPartition 获取指定分区的最新偏移量（最大per_partition_offset）
-// 如果分区没有消息，返回-1（表示下一条消息从0开始）
+// GetTopicLatestOffsetByPartition 获取指定分区的最新偏移量（最大ID）
+// 如果分区没有消息，返回-1（表示从头开始消费）
 func (d *MqDao) GetTopicLatestOffsetByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
 	var offset int64
 	err := d.db.WithContext(ctx).
 		Model(&types.Message{}).
-		Select("COALESCE(MAX(`per_partition_offset`), -1)").
+		Select("COALESCE(MAX(`id`), -1)").
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
 		Scan(&offset).Error
@@ -74,11 +77,12 @@ func (d *MqDao) GetTopicLatestOffsetByPartition(ctx context.Context, topic strin
 }
 
 // DeleteMessagesByPartition 删除分区中比某个偏移量和某个时间都更早的消息。
+// maxOffset现在是全局ID，而不是分区内偏移量
 func (d *MqDao) DeleteMessagesByPartition(ctx context.Context, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
 	result := d.db.WithContext(ctx).
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
-		Where("`per_partition_offset` < ?", maxOffset).
+		Where("`id` < ?", maxOffset).
 		Where("`created_at` < ?", retentionDate).
 		Limit(limit).
 		Delete(&types.Message{})

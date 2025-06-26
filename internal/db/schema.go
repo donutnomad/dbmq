@@ -3,6 +3,8 @@ package db
 import (
 	"fmt"
 
+	"github.com/donutnomad/dbmq/internal/dal"
+
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -23,19 +25,17 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_topics`" + ` (
 	// mq_messages 表定义
 	// 系统中最重要的表，存储所有消息数据
 	// 使用复合索引优化消费查询性能
-	// 修复：添加per_partition_offset字段解决不同topic的offset混淆问题
+	// 使用全局ID作为主键，消除per_partition_offset带来的死锁问题
 	mqMessagesSchema = `
 CREATE TABLE IF NOT EXISTS ` + "`mq_messages`" + ` (
-  ` + "`id`" + ` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局唯一ID，用于数据库行标识',
+  ` + "`id`" + ` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局唯一ID，用于消息排序和消费',
   ` + "`topic`" + ` VARCHAR(255) NOT NULL,
   ` + "`partition`" + ` INT UNSIGNED NOT NULL,
-  ` + "`per_partition_offset`" + ` BIGINT NOT NULL COMMENT '分区内的偏移量，从0开始，每个分区独立计数',
   ` + "`message_key`" + ` VARCHAR(255) NULL COMMENT '消息的业务Key, 用于分区策略',
   ` + "`headers`" + ` JSON NULL,
   ` + "`body`" + ` LONGBLOB NOT NULL,
   ` + "`created_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  UNIQUE KEY ` + "`uk_topic_partition_offset`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`per_partition_offset`" + `),
-  INDEX ` + "`idx_consume_pull`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`per_partition_offset`" + `),
+  INDEX ` + "`idx_consume_pull`" + ` (` + "`topic`" + `, ` + "`partition`" + `, ` + "`id`" + `),
   INDEX ` + "`idx_created_at`" + ` (` + "`created_at`" + `)
 ) ENGINE=InnoDB COMMENT='消息持久化日志表';`
 
@@ -71,12 +71,13 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_heartbeats`" + ` (
 	// 存储消费组的偏移量提交记录
 	// 实现"至少一次"消费语义的关键表
 	// 使用代际隔离防止旧代际消费者覆盖新代际的偏移量
+	// committed_offset现在存储的是全局消息ID
 	mqConsumerGroupOffsetsSchema = `
 CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_group_offsets`" + ` (
   ` + "`group_id`" + ` VARCHAR(255) NOT NULL,
   ` + "`topic`" + ` VARCHAR(255) NOT NULL,
   ` + "`partition`" + ` INT UNSIGNED NOT NULL,
-  ` + "`committed_offset`" + ` BIGINT NOT NULL,
+  ` + "`committed_offset`" + ` BIGINT NOT NULL COMMENT '已提交的最大消息ID',
   ` + "`generation_id`" + ` INT UNSIGNED NOT NULL COMMENT '提交该偏移量时所属的代际ID',
   ` + "`metadata`" + ` VARCHAR(255) NULL,
   ` + "`updated_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -128,7 +129,7 @@ func CreateDatabaseIfNotExists(config MySQLConfig) error {
 
 // ApplySchemas 在给定的数据库连接上创建表
 // 按照预定义的顺序执行所有表创建语句
-func ApplySchemas(db *gorm.DB) error {
+func ApplySchemas(db dal.DB) error {
 	for _, schema := range schemas {
 		if err := db.Exec(schema).Error; err != nil {
 			return fmt.Errorf("failed to apply schema: %w", err)

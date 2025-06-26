@@ -702,7 +702,7 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 			"id":        msg.ID,
 			"topic":     msg.Topic,
 			"partition": msg.Partition,
-			"offset":    msg.PerPartitionOffset,
+			"offset":    msg.ID,
 			"key":       messageKey,
 			"value":     messageValue,
 			"timestamp": msg.CreatedAt.Format(time.RFC3339),

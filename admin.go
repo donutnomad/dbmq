@@ -6,25 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/types"
 	"time"
 
 	"gorm.io/gorm"
 )
 
-// AdminConfig 管理客户端配置
-type AdminConfig struct {
-	DB *gorm.DB // 数据库连接
-}
-
 // AdminClient 管理客户端，用于Topic和分区的管理操作
 // 模仿Kafka AdminClient的设计模式
 type AdminClient struct {
-	db *gorm.DB
+	db dal.DB
 }
 
 // NewAdminClient 创建新的管理客户端实例
-func NewAdminClient(db *gorm.DB) *AdminClient {
+func NewAdminClient(db dal.DB) *AdminClient {
 	return &AdminClient{
 		db: db,
 	}
@@ -54,6 +51,10 @@ type TopicResult struct {
 // CreateTopicsResult 批量创建Topic的结果
 type CreateTopicsResult struct {
 	Results []TopicResult // 每个Topic的创建结果
+}
+
+func (ac *AdminClient) InitDB() error {
+	return db.ApplySchemas(ac.db)
 }
 
 func (ac *AdminClient) CreateTopicIfNotExist(ctx context.Context, req NewTopicRequest) error {

@@ -300,11 +300,11 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		if !ok {
 			continue
 		}
-		c.setPolledOffset(partition, lastMessage.PerPartitionOffset)
+		c.setPolledOffset(partition, lastMessage.ID)
 
 		// 添加调试日志
 		c.logger().Debug(fmt.Sprintf("🔍 [Poll] 更新分区 %v 的polledOffset为 %d (消息ID: %d)",
-			partition, lastMessage.PerPartitionOffset, lastMessage.ID))
+			partition, lastMessage.ID, lastMessage.ID))
 
 		// "重新装填"该分区的通知触发器
 		c.tryResetNotificationState(context.Background(), partition)
@@ -1060,7 +1060,7 @@ func (c *Consumer) getOffset(p types.PartitionInfo) int64 {
 
 // setPolledOffset 设置分区的已拉取偏移量
 // 这个方法确保偏移量是单调递增的，避免回退
-// 参数offset现在是per_partition_offset（分区内偏移量），而不是全局ID
+// 参数offset现在是全局ID，用作消费偏移量
 func (c *Consumer) setPolledOffset(p types.PartitionInfo, offset int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1111,7 +1111,7 @@ func toConsumerMessages(msgs []types.Message) []ConsumerMessage {
 		res[i] = ConsumerMessage{
 			Topic:     m.Topic,
 			Partition: m.Partition,
-			Offset:    m.PerPartitionOffset,
+			Offset:    m.ID,
 			Key:       key,
 			Value:     m.Body,
 			Headers:   headers,
