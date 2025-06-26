@@ -2,6 +2,7 @@ package dbmq
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -155,6 +156,9 @@ func (ras *RestAPIServer) registerRoutes() {
 	// 扩展的DBMQ专用接口
 	api.GET("/dbmq/stats", ras.getDBMQStatsHandler)
 	api.GET("/dbmq/topics/:topicName/messages", ras.getTopicMessagesHandler)
+
+	// 新增：扩展的消费组详情API
+	api.GET("/dbmq/consumer-groups/:groupId/extended", ras.getConsumerGroupExtendedHandler)
 }
 
 // 健康检查处理器
@@ -346,6 +350,163 @@ func (ras *RestAPIServer) getConsumerGroupMetricsHandler(c *gin.Context) {
 	ras.writeSuccessResponse(c, metrics)
 }
 
+// 获取消费组扩展信息处理器
+func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
+	groupId := c.Param("groupId")
+
+	// 获取基本消费组信息
+	group, err := ras.metricsClient.GetConsumerGroupMetrics(c, groupId)
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusNotFound, "Consumer group not found", err)
+		return
+	}
+
+	// 查询消费组代际信息
+	var generationInfo struct {
+		GenerationID int       `json:"generationId"`
+		LeaderID     string    `json:"leaderId"`
+		UpdatedAt    time.Time `json:"updatedAt"`
+	}
+	err = ras.config.DB.Table("mq_consumer_group_generations").
+		Select("generation_id, leader_id, updated_at").
+		Where("group_id = ?", groupId).
+		First(&generationInfo).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get generation info", err)
+		return
+	}
+
+	// 查询消费组成员详细信息
+	var members []struct {
+		ConsumerID         string    `json:"consumerId"`
+		GenerationID       int       `json:"generationId"`
+		SubscribedTopics   string    `json:"subscribedTopics"`
+		AssignedPartitions string    `json:"assignedPartitions"`
+		LastHeartbeat      time.Time `json:"lastHeartbeat"`
+	}
+	err = ras.config.DB.Table("mq_consumer_heartbeats").
+		Select("consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat").
+		Where("group_id = ?", groupId).
+		Find(&members).Error
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get member info", err)
+		return
+	}
+
+	// 查询消费组偏移量提交信息
+	var offsets []struct {
+		Topic           string    `json:"topic"`
+		Partition       int       `json:"partition"`
+		CommittedOffset int64     `json:"committedOffset"`
+		GenerationID    int       `json:"generationId"`
+		Metadata        string    `json:"metadata"`
+		UpdatedAt       time.Time `json:"updatedAt"`
+	}
+	err = ras.config.DB.Table("mq_consumer_group_offsets").
+		Select("topic, `partition`, committed_offset, generation_id, metadata, updated_at").
+		Where("group_id = ?", groupId).
+		Find(&offsets).Error
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get offset info", err)
+		return
+	}
+
+	// 处理成员信息
+	enhancedMembers := make([]map[string]interface{}, 0, len(group.Members))
+	for _, m := range group.Members {
+		memberMap := make(map[string]interface{})
+		memberMap["memberId"] = m.ConsumerID
+		memberMap["clientId"] = m.ClientID
+		memberMap["host"] = m.Host
+		memberMap["assignment"] = m.Assignment
+
+		// 查找匹配的详细信息
+		for _, detail := range members {
+			if detail.ConsumerID == m.ConsumerID {
+				var subscribedTopics []string
+				if detail.SubscribedTopics != "" {
+					if err := json.Unmarshal([]byte(detail.SubscribedTopics), &subscribedTopics); err == nil {
+						memberMap["subscribedTopics"] = subscribedTopics
+					}
+				}
+				memberMap["lastHeartbeat"] = detail.LastHeartbeat.Format(time.RFC3339)
+				memberMap["generationId"] = detail.GenerationID
+				break
+			}
+		}
+		enhancedMembers = append(enhancedMembers, memberMap)
+	}
+
+	// 处理分区延迟信息
+	enhancedLags := make([]map[string]interface{}, 0, len(group.PartitionLags))
+	for _, lag := range group.PartitionLags {
+		lagMap := map[string]interface{}{
+			"topic":         lag.Topic,
+			"partition":     lag.Partition,
+			"currentOffset": lag.CurrentOffset,
+			"latestOffset":  lag.LatestOffset,
+			"lag":           lag.Lag,
+		}
+
+		// 查找匹配的偏移量提交信息
+		for _, offset := range offsets {
+			if offset.Topic == lag.Topic && offset.Partition == lag.Partition {
+				lagMap["metadata"] = offset.Metadata
+				lagMap["updatedAt"] = offset.UpdatedAt.Format(time.RFC3339)
+				lagMap["generationId"] = offset.GenerationID
+				break
+			}
+		}
+		enhancedLags = append(enhancedLags, lagMap)
+	}
+
+	// 确定消费模式
+	commitMode := "unknown"
+	if len(offsets) > 0 {
+		// 检查最近提交的偏移量时间间隔
+		var commitIntervals []time.Duration
+		for i := 1; i < len(offsets); i++ {
+			if offsets[i].Topic == offsets[i-1].Topic && offsets[i].Partition == offsets[i-1].Partition {
+				interval := offsets[i].UpdatedAt.Sub(offsets[i-1].UpdatedAt)
+				commitIntervals = append(commitIntervals, interval)
+			}
+		}
+
+		// 如果存在多个提交记录，根据提交间隔判断模式
+		if len(commitIntervals) > 0 {
+			// 计算平均提交间隔
+			var totalInterval time.Duration
+			for _, interval := range commitIntervals {
+				totalInterval += interval
+			}
+			avgInterval := totalInterval / time.Duration(len(commitIntervals))
+
+			// 如果平均间隔在5-15秒范围内，可能是自动提交
+			if avgInterval >= 5*time.Second && avgInterval <= 15*time.Second {
+				commitMode = "auto"
+			} else {
+				commitMode = "manual"
+			}
+		} else {
+			// 默认假设为手动提交
+			commitMode = "manual"
+		}
+	}
+
+	// 构建扩展信息
+	extendedInfo := map[string]interface{}{
+		"members":            enhancedMembers,
+		"partitionLags":      enhancedLags,
+		"generationId":       generationInfo.GenerationID,
+		"lastActivity":       generationInfo.UpdatedAt.Format(time.RFC3339),
+		"coordinator":        "dbmq-coordinator",
+		"commitMode":         commitMode,
+		"assignmentStrategy": "range", // 默认分配策略
+	}
+
+	ras.writeSuccessResponse(c, extendedInfo)
+}
+
 // 兼容Kafka REST Proxy的Topic列表处理器
 func (ras *RestAPIServer) listTopicsHandler(c *gin.Context) {
 	topicNames, err := ras.adminClient.ListTopics(c)
@@ -468,7 +629,7 @@ func (ras *RestAPIServer) getTopicMessagesHandler(c *gin.Context) {
 		}
 	}
 
-	messages, err := ras.getMessages(c, topicName, partitionInt, offsetInt, limitInt, searchKey, fromTime, toTime)
+	messages, total, err := ras.getMessages(c, topicName, partitionInt, offsetInt, limitInt, searchKey, fromTime, toTime)
 	if err != nil {
 		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get messages", err)
 		return
@@ -481,25 +642,20 @@ func (ras *RestAPIServer) getTopicMessagesHandler(c *gin.Context) {
 		"limit":     limitInt,
 		"search":    searchKey,
 		"messages":  messages,
-		"total":     len(messages),
+		"total":     total,
 	}
 
 	ras.writeSuccessResponse(c, result)
 }
 
 // getMessages 获取消息列表
-func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, partition *uint, offset int64, limit int, searchKey, fromTime, toTime string) ([]map[string]any, error) {
+func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, partition *uint, offset int64, limit int, searchKey, fromTime, toTime string) ([]map[string]any, int64, error) {
 	var messages []types.Message
 	query := ras.config.DB.WithContext(ctx).Where("topic = ?", topicName)
 
 	// 分区过滤
 	if partition != nil {
 		query = query.Where("`partition` = ?", *partition)
-	}
-
-	// 偏移量过滤
-	if offset > 0 {
-		query = query.Where("offset >= ?", offset)
 	}
 
 	// 时间范围过滤
@@ -519,10 +675,13 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 		query = query.Where("(message_key LIKE ? OR body LIKE ?)", "%"+searchKey+"%", "%"+searchKey+"%")
 	}
 
+	var total int64
+	query.Model(&types.Message{}).Count(&total)
+
 	// 排序和限制
-	err := query.Order("created_at DESC").Limit(limit).Find(&messages).Error
+	err := query.Order("created_at DESC").Offset(int(offset)).Limit(limit).Find(&messages).Error
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// 转换为响应格式
@@ -552,7 +711,7 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 		}
 	}
 
-	return result, nil
+	return result, total, nil
 }
 
 // 写入成功响应

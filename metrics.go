@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samber/lo"
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
@@ -283,6 +284,14 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		metrics.State = "Dead"
 	}
 
+	var slices []types.ConsumerGroupOffset
+	mc.db.Model(&types.ConsumerGroupOffset{}).
+		Where("group_id = ?", groupID).Find(&slices)
+
+	allTopicsForGroupID := lo.Map(slices, func(item types.ConsumerGroupOffset, index int) string {
+		return item.Topic
+	})
+
 	// 获取消费者成员信息
 	for _, hb := range heartbeats {
 		var assignment = hb.AssignedPartitions
@@ -297,19 +306,21 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		metrics.Members = append(metrics.Members, member)
 
 		// 收集分配的Topic
-		for _, partition := range assignment {
-			found := false
-			for _, topic := range metrics.AssignedTopics {
-				if topic == partition.Topic {
-					found = true
-					break
-				}
-			}
-			if !found {
-				metrics.AssignedTopics = append(metrics.AssignedTopics, partition.Topic)
-			}
-		}
+		//for _, partition := range assignment {
+		//	found := false
+		//	for _, topic := range metrics.AssignedTopics {
+		//		if topic == partition.Topic {
+		//			found = true
+		//			break
+		//		}
+		//	}
+		//	if !found {
+		//		metrics.AssignedTopics = append(metrics.AssignedTopics, partition.Topic)
+		//	}
+		//}
 	}
+
+	metrics.AssignedTopics = allTopicsForGroupID
 
 	// 计算消费延迟
 	var totalLag int64
