@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
-import { TopicMetrics, Message } from '@/lib/types';
+import { TopicMetrics, Message, PartitionStats } from '@/lib/types';
 import { formatNumber, formatBytes, formatTimestamp } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, StatCard } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -36,6 +36,7 @@ export default function TopicDetailPage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [showLoading, setShowLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partitionStats, setPartitionStats] = useState<PartitionStats[]>([]);
   const [listHeight, setListHeight] = useState<number>(400);
   const listRef = useRef<HTMLDivElement>(null);
   
@@ -81,6 +82,22 @@ export default function TopicDetailPage() {
       const topicData = await DBMQAPIClient.getTopic(topicName);
       setTopic(topicData);
       setError(null);
+      
+      // 加载分区统计信息
+      if (topicData.partitionCount) {
+        const statsPromises: Promise<PartitionStats>[] = [];
+        for (let i = 0; i < topicData.partitionCount; i++) {
+          statsPromises.push(DBMQAPIClient.getPartitionStats(topicName, i));
+        }
+        
+        try {
+          const stats = await Promise.all(statsPromises);
+          setPartitionStats(stats);
+        } catch (err) {
+          console.warn('Failed to load partition stats:', err);
+          // 分区统计信息加载失败不影响主要功能
+        }
+      }
     } catch (err) {
       console.error('Failed to load topic detail:', err);
       setError(err instanceof Error ? err.message : '加载Topic详情失败');
@@ -411,32 +428,105 @@ export default function TopicDetailPage() {
               <thead>
                 <tr className="bg-gray-50">
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">分区ID</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">消息数</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">最新偏移量</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">大小</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">消息ID范围</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">消息总数</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">存储大小</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">时间范围</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {topic?.partitions && topic.partitions.length > 0 ? (
-                  topic.partitions.map((partition, index) => (
-                    <tr key={index}>
-                      <td className="px-4 py-2 text-sm text-gray-900">
-                        分区 {partition.partition || index}
+                {partitionStats.length > 0 ? (
+                  partitionStats.map((stats) => (
+                    <tr key={stats.partition} className="hover:bg-gray-50">
+                      <td className="px-4 py-2">
+                        <div className="flex items-center">
+                          <Database className="h-4 w-4 mr-2 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-900">分区 {stats.partition}</span>
+                        </div>
                       </td>
-                      <td className="px-4 py-2 text-sm text-gray-500">
-                        {formatNumber((partition as unknown as { messageCount?: number }).messageCount || 0)}
+                      <td className="px-4 py-2">
+                        <div className="text-sm space-y-1">
+                          <div>
+                            <span className="text-gray-500">首个:</span>
+                            <span className="ml-1 font-mono text-gray-700">
+                              {stats.firstMessageId === -1 ? '无' : formatNumber(stats.firstMessageId)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">最新:</span>
+                            <span className="ml-1 font-mono text-gray-700">
+                              {stats.lastMessageId === -1 ? '无' : formatNumber(stats.lastMessageId)}
+                            </span>
+                          </div>
+                        </div>
                       </td>
-                      <td className="px-4 py-2 text-sm text-gray-500">
-                        {formatNumber((partition as unknown as { latestOffset?: number }).latestOffset || 0)}
+                      <td className="px-4 py-2">
+                        <div className="flex items-center">
+                          <Hash className="h-4 w-4 mr-1 text-purple-500" />
+                          <span className="text-sm font-medium text-gray-900">
+                            {formatNumber(stats.messageCount)}
+                          </span>
+                        </div>
                       </td>
-                      <td className="px-4 py-2 text-sm text-gray-500">
-                        {formatBytes((partition as unknown as { sizeBytes?: number }).sizeBytes || 0)}
+                      <td className="px-4 py-2">
+                        <div className="flex items-center">
+                          <HardDrive className="h-4 w-4 mr-1 text-orange-500" />
+                          <span className="text-sm font-medium text-gray-900">
+                            {formatBytes(stats.sizeBytes)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="text-xs space-y-1 text-gray-500">
+                          {stats.createdAt && (
+                            <div>
+                              <span>首条:</span>
+                              <span className="ml-1">{formatTimestamp(stats.createdAt)}</span>
+                            </div>
+                          )}
+                          {stats.updatedAt && (
+                            <div>
+                              <span>最新:</span>
+                              <span className="ml-1">{formatTimestamp(stats.updatedAt)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : topic?.partitionCount ? (
+                  // 如果分区统计信息还在加载中，显示骨架屏
+                  Array.from({ length: topic.partitionCount }, (_, index) => (
+                    <tr key={index} className="animate-pulse">
+                      <td className="px-4 py-2">
+                        <div className="flex items-center">
+                          <div className="h-4 w-4 bg-gray-200 rounded mr-2"></div>
+                          <div className="h-4 w-16 bg-gray-200 rounded"></div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="space-y-1">
+                          <div className="h-3 w-20 bg-gray-200 rounded"></div>
+                          <div className="h-3 w-20 bg-gray-200 rounded"></div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="h-4 w-12 bg-gray-200 rounded"></div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="h-4 w-16 bg-gray-200 rounded"></div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="space-y-1">
+                          <div className="h-3 w-24 bg-gray-200 rounded"></div>
+                          <div className="h-3 w-24 bg-gray-200 rounded"></div>
+                        </div>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4} className="px-4 py-4 text-sm text-gray-500 text-center">
+                    <td colSpan={5} className="px-4 py-4 text-sm text-gray-500 text-center">
                       暂无分区数据
                     </td>
                   </tr>
@@ -580,7 +670,7 @@ export default function TopicDetailPage() {
                                 分区: {message.partition}
                               </span>
                               <span className="text-xs text-gray-500">
-                                偏移量: {message.offset}
+                                ID: {message.offset}
                               </span>
                               <span className="text-xs text-gray-500">
                                 {formatTimestamp(message.timestamp)}

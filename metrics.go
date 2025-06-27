@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/samber/lo"
 	"time"
+
+	"github.com/samber/lo"
 
 	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/types"
@@ -92,11 +93,12 @@ type ConsumerMemberInfo struct {
 
 // PartitionLag 分区延迟信息
 type PartitionLag struct {
-	Topic         string `json:"topic"`         // Topic名称
-	Partition     int    `json:"partition"`     // 分区ID
-	CurrentOffset int64  `json:"currentOffset"` // 当前偏移量
-	LatestOffset  int64  `json:"latestOffset"`  // 最新偏移量
-	Lag           int64  `json:"lag"`           // 延迟数量
+	Topic                 string `json:"topic"`                 // Topic名称
+	Partition             int    `json:"partition"`             // 分区ID
+	CurrentOffset         int64  `json:"currentOffset"`         // 当前偏移量
+	LatestOffset          int64  `json:"latestOffset"`          // 最新偏移量
+	Lag                   int64  `json:"lag"`                   // 延迟数量
+	InitialTopicWatermark *int64 `json:"initialTopicWatermark"` // 消费组首次加入topic时的最新消息ID
 }
 
 // BrokerMetrics Broker监控指标（DBMQ为单实例，模拟Kafka Broker）
@@ -357,12 +359,24 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				lag = 0
 			}
 
+			// 获取初始水位线信息
+			var initialWatermark *int64
+			var offsetRecord types.ConsumerGroupOffset
+			err = mc.db.WithContext(ctx).
+				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
+				First(&offsetRecord).Error
+			if err == nil && offsetRecord.InitialTopicWatermark.Valid {
+				watermark := offsetRecord.InitialTopicWatermark.Int64
+				initialWatermark = &watermark
+			}
+
 			partitionLag := PartitionLag{
-				Topic:         topic,
-				Partition:     int(i),
-				CurrentOffset: currentOffset,
-				LatestOffset:  latestOffset,
-				Lag:           lag,
+				Topic:                 topic,
+				Partition:             int(i),
+				CurrentOffset:         currentOffset,
+				LatestOffset:          latestOffset,
+				Lag:                   lag,
+				InitialTopicWatermark: initialWatermark,
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
 			totalLag += lag

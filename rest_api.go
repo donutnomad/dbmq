@@ -2,6 +2,7 @@ package dbmq
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -156,6 +157,7 @@ func (ras *RestAPIServer) registerRoutes() {
 	// 扩展的DBMQ专用接口
 	api.GET("/dbmq/stats", ras.getDBMQStatsHandler)
 	api.GET("/dbmq/topics/:topicName/messages", ras.getTopicMessagesHandler)
+	api.GET("/dbmq/topics/:topicName/partitions/:partitionId/stats", ras.getPartitionStatsHandler)
 
 	// 新增：扩展的消费组详情API
 	api.GET("/dbmq/consumer-groups/:groupId/extended", ras.getConsumerGroupExtendedHandler)
@@ -244,13 +246,62 @@ func (ras *RestAPIServer) getBrokersHandler(c *gin.Context) {
 
 // 获取Topic列表处理器
 func (ras *RestAPIServer) getTopicsHandler(c *gin.Context) {
+	// 检查是否需要详细的分区信息
+	includePartitionStats := c.Query("includePartitionStats") == "true"
+
 	topics, err := ras.metricsClient.GetAllTopicsMetrics(c)
 	if err != nil {
 		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get topics", err)
 		return
 	}
 
-	ras.writeSuccessResponse(c, topics)
+	// 如果需要分区统计信息，则为每个topic获取详细信息
+	if includePartitionStats {
+		enhancedTopics := make([]map[string]any, len(topics))
+		for i, topic := range topics {
+			topicMap := map[string]any{
+				"name":           topic.TopicName,
+				"partitionCount": topic.PartitionCount,
+				"messageCount":   topic.MessageCount,
+				"sizeBytes":      topic.SizeBytes,
+				"createdAt":      topic.CreatedAt,
+			}
+
+			// 获取每个分区的统计信息
+			if topic.PartitionCount > 0 {
+				partitionStats := make([]map[string]any, topic.PartitionCount)
+				for p := uint(0); p < uint(topic.PartitionCount); p++ {
+					stats, err := ras.getPartitionStats(c, topic.TopicName, p)
+					if err != nil {
+						// 如果获取分区统计失败，设置默认值
+						partitionStats[p] = map[string]any{
+							"partition":      p,
+							"firstMessageId": -1,
+							"lastMessageId":  -1,
+							"messageCount":   0,
+							"sizeBytes":      0,
+						}
+					} else {
+						partitionStats[p] = map[string]any{
+							"partition":      stats.Partition,
+							"firstMessageId": stats.FirstMessageID,
+							"lastMessageId":  stats.LastMessageID,
+							"messageCount":   stats.MessageCount,
+							"sizeBytes":      stats.SizeBytes,
+							"createdAt":      stats.CreatedAt,
+							"updatedAt":      stats.UpdatedAt,
+						}
+					}
+				}
+				topicMap["partitionStats"] = partitionStats
+			}
+
+			enhancedTopics[i] = topicMap
+		}
+		ras.writeSuccessResponse(c, enhancedTopics)
+	} else {
+		ras.writeSuccessResponse(c, topics)
+	}
 }
 
 // 创建Topic处理器
@@ -376,17 +427,20 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 		return
 	}
 
-	// 查询消费组成员详细信息
+	// 查询消费组成员详细信息（包括离线消费者）
 	var members []struct {
-		ConsumerID         string    `json:"consumerId"`
-		GenerationID       int       `json:"generationId"`
-		SubscribedTopics   string    `json:"subscribedTopics"`
-		AssignedPartitions string    `json:"assignedPartitions"`
-		LastHeartbeat      time.Time `json:"lastHeartbeat"`
+		ConsumerID         string     `json:"consumerId"`
+		GenerationID       int        `json:"generationId"`
+		SubscribedTopics   string     `json:"subscribedTopics"`
+		AssignedPartitions string     `json:"assignedPartitions"`
+		Offline            bool       `json:"offline"`
+		LastHeartbeat      time.Time  `json:"lastHeartbeat"`
+		OfflineAt          *time.Time `json:"offlineAt"`
 	}
 	err = ras.config.DB.Table("mq_consumer_heartbeats").
-		Select("consumer_id, generation_id, subscribed_topics, assigned_partitions, last_heartbeat").
+		Select("consumer_id, generation_id, subscribed_topics, assigned_partitions, offline, last_heartbeat, offline_at").
 		Where("group_id = ?", groupId).
+		Order("offline ASC, last_heartbeat DESC"). // 在线的排在前面，然后按最后心跳时间排序
 		Find(&members).Error
 	if err != nil {
 		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get member info", err)
@@ -395,15 +449,16 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 
 	// 查询消费组偏移量提交信息
 	var offsets []struct {
-		Topic           string    `json:"topic"`
-		Partition       int       `json:"partition"`
-		CommittedOffset int64     `json:"committedOffset"`
-		GenerationID    int       `json:"generationId"`
-		Metadata        string    `json:"metadata"`
-		UpdatedAt       time.Time `json:"updatedAt"`
+		Topic                 string        `json:"topic"`
+		Partition             int           `json:"partition"`
+		CommittedOffset       int64         `json:"committedOffset"`
+		GenerationID          int           `json:"generationId"`
+		Metadata              string        `json:"metadata"`
+		UpdatedAt             time.Time     `json:"updatedAt"`
+		InitialTopicWatermark sql.NullInt64 `json:"initialTopicWatermark"`
 	}
 	err = ras.config.DB.Table("mq_consumer_group_offsets").
-		Select("topic, `partition`, committed_offset, generation_id, metadata, updated_at").
+		Select("topic, `partition`, committed_offset, generation_id, metadata, updated_at, initial_topic_watermark").
 		Where("group_id = ?", groupId).
 		Find(&offsets).Error
 	if err != nil {
@@ -411,35 +466,73 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 		return
 	}
 
-	// 处理成员信息
-	enhancedMembers := make([]map[string]interface{}, 0, len(group.Members))
-	for _, m := range group.Members {
-		memberMap := make(map[string]interface{})
-		memberMap["memberId"] = m.ConsumerID
-		memberMap["clientId"] = m.ClientID
-		memberMap["host"] = m.Host
-		memberMap["assignment"] = m.Assignment
+	// 处理成员信息（包括所有历史消费者）
+	enhancedMembers := make([]map[string]interface{}, 0, len(members))
 
-		// 查找匹配的详细信息
-		for _, detail := range members {
-			if detail.ConsumerID == m.ConsumerID {
-				var subscribedTopics []string
-				if detail.SubscribedTopics != "" {
-					if err := json.Unmarshal([]byte(detail.SubscribedTopics), &subscribedTopics); err == nil {
-						memberMap["subscribedTopics"] = subscribedTopics
-					}
-				}
-				memberMap["lastHeartbeat"] = detail.LastHeartbeat.Format(time.RFC3339)
-				memberMap["generationId"] = detail.GenerationID
-				break
+	// 首先处理所有数据库中的消费者记录
+	for _, detail := range members {
+		memberMap := make(map[string]interface{})
+		memberMap["memberId"] = detail.ConsumerID
+		memberMap["clientId"] = detail.ConsumerID // 使用ConsumerID作为ClientID
+		memberMap["host"] = "unknown"             // 暂时设为unknown，后续可扩展
+		memberMap["generationId"] = detail.GenerationID
+		memberMap["offline"] = detail.Offline
+		memberMap["lastHeartbeat"] = detail.LastHeartbeat.Format(time.RFC3339)
+
+		if detail.OfflineAt != nil {
+			memberMap["offlineAt"] = detail.OfflineAt.Format(time.RFC3339)
+		}
+
+		// 解析订阅的Topic
+		var subscribedTopics []string
+		if detail.SubscribedTopics != "" {
+			if err := json.Unmarshal([]byte(detail.SubscribedTopics), &subscribedTopics); err == nil {
+				memberMap["subscribedTopics"] = subscribedTopics
 			}
 		}
+
+		// 解析分区分配
+		memberMap["assignment"] = map[string]interface{}{}
+		if detail.AssignedPartitions != "" {
+			// 先解析为数组格式
+			var partitionInfoArray []map[string]interface{}
+			if err := json.Unmarshal([]byte(detail.AssignedPartitions), &partitionInfoArray); err == nil {
+				// 转换为按topic分组的map格式
+				assignmentMap := make(map[string][]int)
+				for _, partitionInfo := range partitionInfoArray {
+					if topic, ok := partitionInfo["Topic"].(string); ok {
+						if partition, ok := partitionInfo["Partition"].(float64); ok {
+							assignmentMap[topic] = append(assignmentMap[topic], int(partition))
+						}
+					}
+				}
+				if len(assignmentMap) > 0 {
+					memberMap["assignment"] = assignmentMap
+				}
+			}
+		}
+
+		// 判断消费者状态
+		heartbeatTimeout := 30 * time.Second // 可以从配置中获取
+		isTimeout := time.Since(detail.LastHeartbeat) > heartbeatTimeout
+
+		if detail.Offline {
+			memberMap["status"] = "offline"
+		} else if isTimeout {
+			memberMap["status"] = "timeout"
+		} else {
+			memberMap["status"] = "online"
+		}
+
 		enhancedMembers = append(enhancedMembers, memberMap)
 	}
 
-	// 处理分区延迟信息
+	// 处理分区延迟信息，增强分区级别的消费信息
 	enhancedLags := make([]map[string]interface{}, 0, len(group.PartitionLags))
 	for _, lag := range group.PartitionLags {
+		// 获取分区统计信息
+		partitionStats, err := ras.getPartitionStats(c, lag.Topic, uint(lag.Partition))
+
 		lagMap := map[string]interface{}{
 			"topic":         lag.Topic,
 			"partition":     lag.Partition,
@@ -448,12 +541,56 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 			"lag":           lag.Lag,
 		}
 
+		// 添加分区级别的详细信息
+		if err == nil && partitionStats != nil {
+			lagMap["firstMessageId"] = partitionStats.FirstMessageID
+			lagMap["lastMessageId"] = partitionStats.LastMessageID
+			lagMap["totalMessageCount"] = partitionStats.MessageCount
+			lagMap["partitionSizeBytes"] = partitionStats.SizeBytes
+
+			// 计算消费进度
+			if partitionStats.MessageCount > 0 && lag.CurrentOffset >= partitionStats.FirstMessageID {
+				// 计算已消费消息数量（基于ID范围）
+				consumedMessages := lag.CurrentOffset - partitionStats.FirstMessageID + 1
+				if consumedMessages > partitionStats.MessageCount {
+					consumedMessages = partitionStats.MessageCount
+				}
+
+				// 计算消费进度百分比
+				consumedPercentage := float64(consumedMessages) / float64(partitionStats.MessageCount) * 100
+
+				lagMap["consumedMessages"] = consumedMessages
+				lagMap["remainingMessages"] = partitionStats.MessageCount - consumedMessages
+				lagMap["consumedPercentage"] = consumedPercentage
+			} else {
+				// 如果还没开始消费或数据异常
+				lagMap["consumedMessages"] = 0
+				lagMap["remainingMessages"] = partitionStats.MessageCount
+				lagMap["consumedPercentage"] = 0.0
+			}
+		} else {
+			// 如果无法获取分区统计信息，设置默认值
+			lagMap["firstMessageId"] = -1
+			lagMap["lastMessageId"] = -1
+			lagMap["totalMessageCount"] = 0
+			lagMap["partitionSizeBytes"] = 0
+			lagMap["consumedMessages"] = 0
+			lagMap["remainingMessages"] = 0
+			lagMap["consumedPercentage"] = 0.0
+		}
+
 		// 查找匹配的偏移量提交信息
 		for _, offset := range offsets {
 			if offset.Topic == lag.Topic && offset.Partition == lag.Partition {
 				lagMap["metadata"] = offset.Metadata
 				lagMap["updatedAt"] = offset.UpdatedAt.Format(time.RFC3339)
 				lagMap["generationId"] = offset.GenerationID
+				// 添加初始水位线信息
+				if offset.InitialTopicWatermark.Valid {
+					lagMap["initialTopicWatermark"] = offset.InitialTopicWatermark.Int64
+				} else {
+					lagMap["initialTopicWatermark"] = nil
+				}
 				break
 			}
 		}
@@ -499,7 +636,7 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 		"partitionLags":      enhancedLags,
 		"generationId":       generationInfo.GenerationID,
 		"lastActivity":       generationInfo.UpdatedAt.Format(time.RFC3339),
-		"coordinator":        "dbmq-coordinator",
+		"coordinator":        "coordinator",
 		"commitMode":         commitMode,
 		"assignmentStrategy": "range", // 默认分配策略
 	}
@@ -712,6 +849,81 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 	}
 
 	return result, total, nil
+}
+
+// PartitionStats 分区统计信息
+type PartitionStats struct {
+	Topic          string `json:"topic"`
+	Partition      uint   `json:"partition"`
+	FirstMessageID int64  `json:"firstMessageId"`
+	LastMessageID  int64  `json:"lastMessageId"`
+	MessageCount   int64  `json:"messageCount"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+	UpdatedAt      string `json:"updatedAt,omitempty"`
+}
+
+// 获取分区统计信息处理器
+func (ras *RestAPIServer) getPartitionStatsHandler(c *gin.Context) {
+	topicName := c.Param("topicName")
+	partitionIdStr := c.Param("partitionId")
+
+	partitionId, err := strconv.ParseUint(partitionIdStr, 10, 32)
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusBadRequest, "Invalid partition ID", err)
+		return
+	}
+
+	partition := uint(partitionId)
+
+	// 获取分区统计信息
+	stats, err := ras.getPartitionStats(c, topicName, partition)
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to get partition stats", err)
+		return
+	}
+
+	ras.writeSuccessResponse(c, stats)
+}
+
+// getPartitionStats 获取分区统计信息
+func (ras *RestAPIServer) getPartitionStats(ctx context.Context, topicName string, partition uint) (*PartitionStats, error) {
+	var stats struct {
+		FirstMessageID int64  `gorm:"column:first_message_id"`
+		LastMessageID  int64  `gorm:"column:last_message_id"`
+		MessageCount   int64  `gorm:"column:message_count"`
+		SizeBytes      int64  `gorm:"column:size_bytes"`
+		CreatedAt      string `gorm:"column:created_at"`
+		UpdatedAt      string `gorm:"column:updated_at"`
+	}
+
+	// 使用一个查询获取所有统计信息
+	sql := `
+		SELECT 
+			COALESCE(MIN(id), -1) AS first_message_id,
+			COALESCE(MAX(id), -1) AS last_message_id,
+			COUNT(*) AS message_count,
+			COALESCE(SUM(LENGTH(body)), 0) AS size_bytes,
+			COALESCE(MIN(created_at), '') AS created_at,
+			COALESCE(MAX(created_at), '') AS updated_at
+		FROM mq_messages 
+		WHERE topic = ? AND ` + "`partition`" + ` = ?`
+
+	err := ras.config.DB.WithContext(ctx).Raw(sql, topicName, partition).Scan(&stats).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &PartitionStats{
+		Topic:          topicName,
+		Partition:      partition,
+		FirstMessageID: stats.FirstMessageID,
+		LastMessageID:  stats.LastMessageID,
+		MessageCount:   stats.MessageCount,
+		SizeBytes:      stats.SizeBytes,
+		CreatedAt:      stats.CreatedAt,
+		UpdatedAt:      stats.UpdatedAt,
+	}, nil
 }
 
 // 写入成功响应

@@ -4,10 +4,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
 import { ConsumerGroupMetrics, PartitionLag } from '@/lib/types';
-import { formatNumber, formatTimestamp } from '@/lib/utils';
+import { formatNumber, formatTimestamp, formatBytes } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, StatCard } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import { 
   ArrowLeft, 
   RefreshCw, 
@@ -39,7 +40,13 @@ export default function ConsumerGroupDetailPage() {
 
   // 派生状态：计算总分区数
   const totalAssignedPartitions = group?.members?.reduce(
-    (sum, member) => sum + (member.assignment?.length || 0),
+    (sum, member) => {
+      if (!member.assignment || typeof member.assignment !== 'object') return sum;
+      // assignment现在是对象格式 {"topic": [partitions...]}
+      return sum + Object.values(member.assignment).reduce((total: number, partitions: any) => {
+        return total + (Array.isArray(partitions) ? partitions.length : 0);
+      }, 0);
+    },
     0
   ) ?? 0;
 
@@ -100,6 +107,22 @@ export default function ConsumerGroupDetailPage() {
     if (lag > 1000) return 'bg-red-100 text-red-800';
     if (lag > 100) return 'bg-yellow-100 text-yellow-800';
     return 'bg-green-100 text-green-800';
+  };
+
+  // 判断消费者是否在线
+  const isConsumerOnline = (lastHeartbeat: string | number | Date | undefined): boolean => {
+    if (!lastHeartbeat) return false;
+    const heartbeatTime = new Date(lastHeartbeat).getTime();
+    const now = Date.now();
+    const heartbeatTimeout = 30000; // 30秒超时
+    return (now - heartbeatTime) < heartbeatTimeout;
+  };
+
+  // 获取消费者状态的行样式
+  const getConsumerRowStyle = (lastHeartbeat: string | number | Date | undefined): string => {
+    return isConsumerOnline(lastHeartbeat) 
+      ? 'hover:bg-gray-50 transition-colors' 
+      : 'bg-red-50 hover:bg-red-100 transition-colors';
   };
 
   // 计算消费进度百分比
@@ -278,7 +301,7 @@ export default function ConsumerGroupDetailPage() {
                     <thead>
                       <tr className="bg-gray-50">
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          消费者ID
+                          消费者ID / 状态
                         </th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           客户端ID
@@ -307,10 +330,20 @@ export default function ConsumerGroupDetailPage() {
                       ) : (
                         group.members.map((member, index) => (
                           <>
-                            <tr key={member.memberId || index} className="hover:bg-gray-50 transition-colors">
+                            <tr key={member.memberId || index} className={getConsumerRowStyle(member.lastHeartbeat)}>
                               <td className="px-3 py-2 whitespace-nowrap">
                                 <div className="flex items-center">
+                                  <div className={`w-2 h-2 rounded-full mr-2 ${
+                                    isConsumerOnline(member.lastHeartbeat) 
+                                      ? 'bg-green-500' 
+                                      : 'bg-red-500'
+                                  }`}></div>
                                   <span className="text-gray-900">{member.memberId || '--'}</span>
+                                  {!isConsumerOnline(member.lastHeartbeat) && (
+                                    <Badge variant="error" className="ml-2 text-xs bg-red-100 text-red-700 border-red-200">
+                                      离线
+                                    </Badge>
+                                  )}
                                 </div>
                               </td>
                               <td className="px-3 py-2 whitespace-nowrap text-gray-600">
@@ -326,7 +359,12 @@ export default function ConsumerGroupDetailPage() {
                               </td>
                               <td className="px-3 py-2 whitespace-nowrap">
                                 <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                                  {member.assignment?.length || 0}
+                                  {(() => {
+                                    if (!member.assignment || typeof member.assignment !== 'object') return 0;
+                                    return Object.values(member.assignment).reduce((total: number, partitions: any) => {
+                                      return total + (Array.isArray(partitions) ? partitions.length : 0);
+                                    }, 0);
+                                  })()}
                                 </Badge>
                               </td>
                               <td className="px-3 py-2 whitespace-nowrap">
@@ -363,11 +401,20 @@ export default function ConsumerGroupDetailPage() {
                                     {/* 分区分配 */}
                                     <div>
                                       <h4 className="text-xs font-semibold text-gray-700 mb-1">分区分配</h4>
-                                      {member.assignment && member.assignment.length > 0 ? (
-                                        <div className="bg-white rounded shadow-sm p-2 overflow-x-auto">
-                                          <pre className="text-xs text-gray-700">
-                                            {JSON.stringify(member.assignment, null, 2)}
-                                          </pre>
+                                      {member.assignment && typeof member.assignment === 'object' && Object.keys(member.assignment).length > 0 ? (
+                                        <div className="space-y-2">
+                                          {Object.entries(member.assignment).map(([topic, partitions]) => (
+                                            <div key={topic} className="bg-white rounded shadow-sm p-2">
+                                              <div className="flex items-center justify-between">
+                                                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                                                  {topic}
+                                                </Badge>
+                                                <span className="text-xs text-gray-500">
+                                                  分区: {Array.isArray(partitions) ? partitions.join(', ') : '无'}
+                                                </span>
+                                              </div>
+                                            </div>
+                                          ))}
                                         </div>
                                       ) : (
                                         <span className="text-xs text-gray-500">无分区分配</span>
@@ -382,6 +429,19 @@ export default function ConsumerGroupDetailPage() {
                       )}
                     </tbody>
                   </table>
+                </div>
+                {/* 状态图例 */}
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="flex items-center space-x-4 text-xs text-gray-600">
+                    <div className="flex items-center">
+                      <div className="w-2 h-2 rounded-full bg-green-500 mr-1"></div>
+                      <span>在线</span>
+                    </div>
+                    <div className="flex items-center">
+                      <div className="w-2 h-2 rounded-full bg-red-500 mr-1"></div>
+                      <span>离线 (超过30秒未发送心跳)</span>
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -398,29 +458,6 @@ export default function ConsumerGroupDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <h3 className="text-xs font-medium text-gray-700 mb-2">消费模式</h3>
-                    <Badge variant="outline" className={`${
-                      group?.commitMode === 'auto' ? 'bg-green-50 text-green-700 border-green-200' :
-                      group?.commitMode === 'manual' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                      'bg-gray-50 text-gray-700 border-gray-200'
-                    }`}>
-                      {group?.commitMode === 'auto' ? (
-                        <span className="flex items-center">
-                          <Zap className="h-3 w-3 mr-1" />
-                          自动提交
-                        </span>
-                      ) : group?.commitMode === 'manual' ? (
-                        <span className="flex items-center">
-                          <CheckCircle className="h-3 w-3 mr-1" />
-                          手动提交
-                        </span>
-                      ) : (
-                        '未知'
-                      )}
-                    </Badge>
-                  </div>
-
                   <div className="bg-gray-50 rounded-lg p-3">
                     <h3 className="text-xs font-medium text-gray-700 mb-2">时间信息</h3>
                     <div className="space-y-2">
@@ -480,83 +517,149 @@ export default function ConsumerGroupDetailPage() {
                   <thead>
                     <tr className="bg-gray-50">
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Topic
+                        Topic/分区
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        分区
+                        ID范围
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        已提交偏移量
+                        消费进度
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        最新偏移量
+                        消息统计
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        延迟
+                        延迟状态
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        提交时间
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        进度
+                        大小/更新时间
                       </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {!group?.partitionLags || group.partitionLags.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="px-3 py-4 text-center text-gray-500">
+                        <td colSpan={6} className="px-3 py-4 text-center text-gray-500">
                           暂无延迟数据
                         </td>
                       </tr>
                     ) : (
                       group.partitionLags.map((lag, index) => {
-                        const progressPercentage = calculateProgressPercentage(lag);
+                        const progressPercentage = lag.consumedPercentage || calculateProgressPercentage(lag);
                         return (
                           <tr key={index} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              <Link 
-                                href={`/topics/${encodeURIComponent(lag.topic || '')}`}
-                                className="text-blue-600 hover:text-blue-800"
-                              >
-                                {lag.topic || '--'}
-                              </Link>
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                              {lag.partition !== undefined ? lag.partition : '--'}
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                              {formatNumber(lag.currentOffset || 0)}
-                              {lag.metadata && (
-                                <span className="ml-1 text-gray-400 text-xs" title={lag.metadata}>
-                                  ({lag.metadata})
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                              {formatNumber(lag.latestOffset || 0)}
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              <Badge className={`${getLagSeverity(lag.lag)} font-medium`}>
-                                {formatNumber(lag.lag || 0)}
-                              </Badge>
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                              {lag.updatedAt ? formatTimestamp(lag.updatedAt) : '--'}
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              <div className="flex items-center space-x-2">
-                                <div className="w-24 bg-gray-200 rounded-full h-1.5">
-                                  <div 
-                                    className={`h-1.5 rounded-full transition-all ${
-                                      progressPercentage > 90 ? 'bg-green-500' :
-                                      progressPercentage > 60 ? 'bg-blue-500' :
-                                      progressPercentage > 30 ? 'bg-yellow-500' : 'bg-red-500'
-                                    }`}
-                                    style={{ width: `${progressPercentage}%` }}
-                                  ></div>
+                            {/* Topic/分区 */}
+                            <td className="px-3 py-2">
+                              <div>
+                                <Link 
+                                  href={`/topics/${encodeURIComponent(lag.topic || '')}`}
+                                  className="text-blue-600 hover:text-blue-800 font-medium text-sm"
+                                >
+                                  {lag.topic || '--'}
+                                </Link>
+                                <div className="text-xs text-gray-500">
+                                  分区 {lag.partition !== undefined ? lag.partition : '--'}
                                 </div>
-                                <span className="text-xs text-gray-600">{progressPercentage}%</span>
+                              </div>
+                            </td>
+                            
+                            {/* ID范围 */}
+                            <td className="px-3 py-2">
+                              <div className="text-xs space-y-1">
+                                <div>
+                                  <span className="text-gray-500">首个:</span>
+                                  <span className="ml-1 font-mono text-gray-700">
+                                    {lag.firstMessageId !== undefined && lag.firstMessageId !== -1 
+                                      ? formatNumber(lag.firstMessageId) 
+                                      : '无'}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">最新:</span>
+                                  <span className="ml-1 font-mono text-gray-700">
+                                    {lag.lastMessageId !== undefined && lag.lastMessageId !== -1 
+                                      ? formatNumber(lag.lastMessageId) 
+                                      : '无'}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">当前:</span>
+                                  <span className="ml-1 font-mono text-blue-600 font-medium">
+                                    {formatNumber(lag.currentOffset || 0)}
+                                  </span>
+                                </div>
+                                {lag.initialTopicWatermark !== undefined && lag.initialTopicWatermark !== null && (
+                                  <div>
+                                    <span className="text-gray-500">初始水位:</span>
+                                    <span className="ml-1 font-mono text-orange-600 font-medium" title="消费组首次加入topic时的topic最新消息ID">
+                                      {formatNumber(lag.initialTopicWatermark)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                            
+                            {/* 消费进度 */}
+                            <td className="px-3 py-2">
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-gray-500">进度</span>
+                                  <span className="font-medium">{progressPercentage.toFixed(1)}%</span>
+                                </div>
+                                <Progress value={progressPercentage} className="h-1.5" />
+                                <div className="flex justify-between text-xs text-gray-500">
+                                  <span>已消费: {formatNumber(lag.consumedMessages || 0)}</span>
+                                  <span>剩余: {formatNumber(lag.remainingMessages || 0)}</span>
+                                </div>
+                              </div>
+                            </td>
+                            
+                            {/* 消息统计 */}
+                            <td className="px-3 py-2">
+                              <div className="text-xs space-y-1">
+                                <div>
+                                  <span className="text-gray-500">总数:</span>
+                                  <span className="ml-1 font-medium text-gray-700">
+                                    {formatNumber(lag.totalMessageCount || 0)}
+                                  </span>
+                                </div>
+                                {lag.partitionSizeBytes !== undefined && (
+                                  <div>
+                                    <span className="text-gray-500">大小:</span>
+                                    <span className="ml-1 font-medium text-gray-700">
+                                      {formatBytes(lag.partitionSizeBytes)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                            
+                            {/* 延迟状态 */}
+                            <td className="px-3 py-2">
+                              <div className="space-y-1">
+                                <Badge className={`${getLagSeverity(lag.lag)} font-medium text-xs`}>
+                                  延迟 {formatNumber(lag.lag || 0)}
+                                </Badge>
+                                {lag.metadata && (
+                                  <div className="text-xs text-gray-400" title={lag.metadata}>
+                                    {lag.metadata}
+                                  </div>
+                                )}
+                                <div className="text-xs text-gray-500">
+                                  代际: {lag.generationId || '--'}
+                                </div>
+                              </div>
+                            </td>
+                            
+                            {/* 大小/更新时间 */}
+                            <td className="px-3 py-2">
+                              <div className="text-xs space-y-1">
+                                {lag.updatedAt && (
+                                  <div>
+                                    <span className="text-gray-500">更新:</span>
+                                    <div className="text-gray-700">{formatTimestamp(lag.updatedAt)}</div>
+                                  </div>
+                                )}
                               </div>
                             </td>
                           </tr>

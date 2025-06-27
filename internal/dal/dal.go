@@ -142,6 +142,28 @@ func BatchCommitOffsets(ctx context.Context, db DB, groupID string, generationID
 	})
 }
 
+// BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批偏移量，同时设置初始水位线
+// 这个方法用于首次消费分区时，记录初始水位线以区分消费策略
+func BatchCommitOffsetsWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, offsetsWithWatermarks map[types.PartitionInfo]OffsetWithWatermark) error {
+	if len(offsetsWithWatermarks) == 0 {
+		return nil
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for p, offsetData := range offsetsWithWatermarks {
+			if err := CommitOffsetWithInitialWatermark(ctx, tx, groupID, generationID, p, offsetData.Offset, offsetData.InitialWatermark); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// OffsetWithWatermark 包含偏移量和初始水位线的结构
+type OffsetWithWatermark struct {
+	Offset           int64  // 要提交的偏移量
+	InitialWatermark *int64 // 初始水位线，可为nil表示不设置
+}
+
 // CommitOffset 为单个分区提交偏移量
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
 func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, offset int64) error {
@@ -159,6 +181,51 @@ func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint,
 		fmt.Printf("❌ [CommitOffset] 提交失败: %v\n", err)
 	} else {
 		fmt.Printf("✅ [CommitOffset] 提交成功\n")
+	}
+
+	return err
+}
+
+// CommitOffsetWithInitialWatermark 为单个分区提交偏移量，同时设置初始水位线
+// 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
+// initialWatermark 参数为nil时不设置水位线
+func CommitOffsetWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, offset int64, initialWatermark *int64) error {
+	// 添加调试日志
+	fmt.Printf("🔍 [CommitOffsetWithInitialWatermark] GroupID: %s, Topic: %s, Partition: %d, Offset: %d, GenerationID: %d, InitialWatermark: %v\n",
+		groupID, p.Topic, p.Partition, offset, generationID, initialWatermark)
+
+	var sql string
+	var args []interface{}
+
+	now := time.Now()
+
+	if initialWatermark != nil {
+		// 包含初始水位线的SQL
+		sql = `INSERT INTO ` + "`mq_consumer_group_offsets`" + ` (` + "`group_id`, `topic`, `partition`, `committed_offset`, `initial_topic_watermark`, `generation_id`, `updated_at`" + `) 
+		VALUES (?, ?, ?, ?, ?, ?, ?) 
+		ON DUPLICATE KEY UPDATE 
+		` + "`committed_offset`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`committed_offset`" + `), ` + "`committed_offset`" + `), 
+		` + "`initial_topic_watermark`" + ` = IF(` + "`initial_topic_watermark`" + ` IS NULL AND VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`initial_topic_watermark`" + `), ` + "`initial_topic_watermark`" + `),
+		` + "`generation_id`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`generation_id`" + `), ` + "`generation_id`" + `), 
+		` + "`updated_at`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`updated_at`" + `), ` + "`updated_at`" + `)`
+		args = []interface{}{groupID, p.Topic, p.Partition, offset, *initialWatermark, generationID, now}
+	} else {
+		// 不设置初始水位线，使用原来的SQL
+		sql = `INSERT INTO ` + "`mq_consumer_group_offsets`" + ` (` + "`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`" + `) 
+		VALUES (?, ?, ?, ?, ?, ?) 
+		ON DUPLICATE KEY UPDATE 
+		` + "`committed_offset`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`committed_offset`" + `), ` + "`committed_offset`" + `), 
+		` + "`generation_id`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`generation_id`" + `), ` + "`generation_id`" + `), 
+		` + "`updated_at`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`updated_at`" + `), ` + "`updated_at`" + `)`
+		args = []interface{}{groupID, p.Topic, p.Partition, offset, generationID, now}
+	}
+
+	err := db.WithContext(ctx).Exec(sql, args...).Error
+
+	if err != nil {
+		fmt.Printf("❌ [CommitOffsetWithInitialWatermark] 提交失败: %v\n", err)
+	} else {
+		fmt.Printf("✅ [CommitOffsetWithInitialWatermark] 提交成功\n")
 	}
 
 	return err

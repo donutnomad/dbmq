@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message } from './types';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats } from './types';
 
 // 获取API基础URL
 const getAPIBaseURL = () => {
@@ -34,8 +34,11 @@ export class DBMQAPIClient {
   }
 
   // 获取所有Topics
-  static async getTopics(): Promise<TopicMetrics[]> {
-    const response = await apiClient.get<APIResponse<TopicMetrics[]>>('/clusters/dbmq-cluster/topics');
+  static async getTopics(includePartitionStats = false): Promise<TopicMetrics[]> {
+    const url = includePartitionStats 
+      ? '/clusters/dbmq-cluster/topics?includePartitionStats=true'
+      : '/clusters/dbmq-cluster/topics';
+    const response = await apiClient.get<APIResponse<TopicMetrics[]>>(url);
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -156,6 +159,17 @@ export class DBMQAPIClient {
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to send message');
     }
+  }
+
+  // 获取分区统计信息
+  static async getPartitionStats(topicName: string, partitionId: number): Promise<PartitionStats> {
+    const response = await apiClient.get<APIResponse<PartitionStats>>(
+      `/dbmq/topics/${topicName}/partitions/${partitionId}/stats`
+    );
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch partition stats');
   }
 
   // 健康检查

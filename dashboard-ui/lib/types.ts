@@ -21,6 +21,8 @@ export interface TopicMetrics {
   description?: string;
   createdAt?: string;
   sizeBytes?: number;
+  // 新增：分区级别的统计信息
+  partitionStats?: PartitionStats[];
 }
 
 // 分区信息类型
@@ -29,6 +31,18 @@ export interface PartitionInfo {
   leader?: number;
   replicas?: number[];
   isr?: number[];
+}
+
+// 分区统计信息
+export interface PartitionStats {
+  topic: string;
+  partition: number;
+  firstMessageId: number;
+  lastMessageId: number;
+  messageCount: number;
+  sizeBytes: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // 分区延迟信息
@@ -41,6 +55,16 @@ export interface PartitionLag {
   updatedAt?: string;
   metadata?: string;
   generationId?: number;
+  // 新增：分区级别的详细信息
+  firstMessageId?: number;
+  lastMessageId?: number;
+  totalMessageCount?: number;
+  partitionSizeBytes?: number;
+  consumedMessages?: number;
+  remainingMessages?: number;
+  consumedPercentage?: number;
+  // 新增：初始水位线信息
+  initialTopicWatermark?: number | null;
 }
 
 // 分区分配信息
@@ -74,9 +98,13 @@ export interface GroupMember {
   memberId: string;
   clientId?: string;
   host?: string;
-  assignment?: PartitionAssignmentInfo[];
+  assignment?: Record<string, number[]>; // 更新为对象格式：{"topic": [partitions...]}
   lastHeartbeat?: string;
   subscribedTopics?: string[];
+  offline?: boolean;
+  offlineAt?: string;
+  status?: 'online' | 'offline' | 'timeout';
+  generationId?: number;
 }
 
 // 仪表板数据类型

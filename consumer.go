@@ -224,11 +224,11 @@ func (c *Consumer) Close() {
 		c.logger().Debug(fmt.Sprintf("Consumer %s: 手动提交模式，跳过Close时的自动提交。用户应确保所有消息都已手动提交。", c.id))
 	}
 
-	// 通过删除心跳记录优雅离开消费组
+	// 通过标记消费者为离线状态优雅离开消费组，保留历史记录
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.dao.DeleteConsumerHeartbeat(ctx, c.config.GroupID, c.id); err != nil {
-		c.logger().Error(fmt.Sprintf("ERROR: failed to leave group gracefully for consumer %s: %v", c.id, err))
+	if err := c.dao.MarkConsumerOffline(ctx, c.config.GroupID, c.id); err != nil {
+		c.logger().Error(fmt.Sprintf("ERROR: failed to mark consumer offline gracefully for consumer %s: %v", c.id, err))
 	}
 
 	c.logger().Debug("Shutdown", "consumer-id", c.id)
@@ -981,25 +981,59 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(newAssignment map[string
 	if len(newPartitionOffsets) > 0 {
 		c.logger().Debug(fmt.Sprintf("Consumer %s: recording initial offsets for new partitions: %v", c.id, newPartitionOffsets))
 
-		// 将下一个要消费的偏移量转换为committed_offset
-		initialCommittedOffsets := make(map[types.PartitionInfo]int64)
+		// 将下一个要消费的偏移量转换为committed_offset，并设置初始水位线
+		initialOffsetsWithWatermarks := make(map[types.PartitionInfo]dal.OffsetWithWatermark)
 		for partition, nextOffset := range newPartitionOffsets {
+			var committedOffset int64
+			var initialWatermark int64
+
 			// nextOffset是下一个要消费的偏移量，需要转换为committed_offset
 			if nextOffset == -1 {
 				// -1是特殊值，表示从头开始消费，committed_offset也应该是-1
-				initialCommittedOffsets[partition] = -1
+				committedOffset = -1
+				// 对于从头开始消费的策略，获取当前topic的最新偏移量作为水位线
+				if latestOffset, err := c.dao.GetTopicLatestOffsetByPartition(ctx, partition.Topic, partition.Partition); err == nil && latestOffset >= 0 {
+					initialWatermark = latestOffset
+					c.logger().Debug(fmt.Sprintf("Consumer %s: partition %v 从头开始消费，设置初始水位线为 %d", c.id, partition, latestOffset))
+				} else {
+					initialWatermark = -1
+				}
 			} else {
 				// nextOffset >= 0时，committed_offset是已消费的最后一个偏移量
 				// 所以 committed_offset = nextOffset - 1
-				initialCommittedOffsets[partition] = nextOffset - 1
+				committedOffset = nextOffset - 1
+				// 对于从最新开始消费的策略，设置水位线为当前的最新偏移量
+				if c.config.ConsumeStrategy == ConsumeFromLatest || c.config.ConsumeStrategy == ConsumeFromCommitted {
+					// nextOffset - 1 就是当时的最新偏移量
+					watermark := nextOffset - 1
+					initialWatermark = watermark
+					c.logger().Debug(fmt.Sprintf("Consumer %s: partition %v 从最新开始消费，设置初始水位线为 %d", c.id, partition, watermark))
+				} else if c.config.ConsumeStrategy == ConsumeFromEarliest { // 否则是从头开始消费
+					committedOffset = -1
+					// 对于从头开始消费的策略，获取当前topic的最新偏移量作为水位线
+					if latestOffset, err := c.dao.GetTopicLatestOffsetByPartition(ctx, partition.Topic, partition.Partition); err == nil && latestOffset >= 0 {
+						initialWatermark = latestOffset
+						c.logger().Debug(fmt.Sprintf("Consumer %s: partition %v 从头开始消费，设置初始水位线为 %d", c.id, partition, latestOffset))
+					} else {
+						initialWatermark = -1
+					}
+				} else {
+					panic("unreachable")
+				}
 			}
+
+			initialOffsetsWithWatermarks[partition] = dal.OffsetWithWatermark{
+				Offset:           committedOffset,
+				InitialWatermark: &initialWatermark,
+			}
+			fmt.Println("初始需要消费的起始位置:", committedOffset, "多久加入的:", initialWatermark)
 		}
 
-		if err := dal.BatchCommitOffsets(ctx, c.db, c.config.GroupID, c.generationID, initialCommittedOffsets); err != nil {
-			c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to record initial offsets: %v", c.id, err))
+		if err := dal.BatchCommitOffsetsWithInitialWatermark(ctx, c.db, c.config.GroupID, c.generationID, initialOffsetsWithWatermarks); err != nil {
+			c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to record initial offsets with watermark: %v", c.id, err))
 			// 继续执行，但记录错误。这不是致命错误，因为重新注册时会重新应用策略
 		} else {
-			c.logger().Debug(fmt.Sprintf("Consumer %s: successfully recorded initial offsets", c.id))
+			c.logger().Debug(fmt.Sprintf("Consumer %s: successfully recorded initial offsets with watermark", c.id))
 		}
 	}
 

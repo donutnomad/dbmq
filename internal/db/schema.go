@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_group_generations`" + ` (
 	// 存储消费者心跳、分区分配和订阅信息
 	// 协调器通过此表判断消费者存活状态和进行分区分配
 	// last_heartbeat索引是性能关键，用于快速找到超时的消费者
+	// offline字段用于标识消费者是否已主动下线，避免删除历史记录
 	mqConsumerHeartbeatsSchema = `
 CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_heartbeats`" + ` (
   ` + "`group_id`" + ` VARCHAR(255) NOT NULL,
@@ -62,9 +63,12 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_heartbeats`" + ` (
   ` + "`generation_id`" + ` INT UNSIGNED NOT NULL COMMENT '消费者当前所属的代际ID',
   ` + "`subscribed_topics`" + ` JSON NOT NULL COMMENT '订阅的Topic列表, e.g. ["topic-A", "topic-B"]',
   ` + "`assigned_partitions`" + ` JSON NOT NULL COMMENT '被分配的分区, e.g. {"topic-A": [0, 2]}',
+  ` + "`offline`" + ` BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否已下线：true=主动下线，false=在线或超时',
   ` + "`last_heartbeat`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  ` + "`offline_at`" + ` TIMESTAMP(3) NULL COMMENT '下线时间，仅当offline=true时有效',
   PRIMARY KEY (` + "`group_id`" + `, ` + "`consumer_id`" + `),
-  INDEX ` + "`idx_last_heartbeat`" + ` (` + "`last_heartbeat`" + `)
+  INDEX ` + "`idx_last_heartbeat`" + ` (` + "`last_heartbeat`" + `),
+  INDEX ` + "`idx_offline_status`" + ` (` + "`offline`" + `, ` + "`last_heartbeat`" + `)
 ) ENGINE=InnoDB COMMENT='消费者心跳与分区分配表';`
 
 	// mq_consumer_group_offsets 表定义
@@ -78,6 +82,7 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_group_offsets`" + ` (
   ` + "`topic`" + ` VARCHAR(255) NOT NULL,
   ` + "`partition`" + ` INT UNSIGNED NOT NULL,
   ` + "`committed_offset`" + ` BIGINT NOT NULL COMMENT '已提交的最大消息ID',
+  ` + "`initial_topic_watermark`" + ` BIGINT NULL COMMENT '消费组首次加入topic时的topic最新消息ID，用于区分消费策略',
   ` + "`generation_id`" + ` INT UNSIGNED NOT NULL COMMENT '提交该偏移量时所属的代际ID',
   ` + "`metadata`" + ` VARCHAR(255) NULL,
   ` + "`updated_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
