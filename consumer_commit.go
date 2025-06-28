@@ -25,9 +25,50 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 		msg.PartitionInfo(): msg.ID,
 	}
 
+	return c.commitMessageIDs(nil, c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
+}
+
+func (c *Consumer) commitSync(parent context.Context, generationID uint, partitions []types.PartitionInfo) error {
+	c.mu.RLock()
+	messageIDsToCommit := make(map[types.PartitionInfo]int64)
+	for _, p := range partitions {
+		if polledMessageID, exists := c.lastPolledMessageIDs[p]; exists {
+			messageIDsToCommit[p] = polledMessageID
+		} else if messageID, exists := c.alreadyConsumeMessageIDs[p]; exists {
+			messageIDsToCommit[p] = messageID
+		}
+	}
+	c.mu.RUnlock()
+
+	return c.commitMessageIDs(parent, c.config.GroupID, generationID, messageIDsToCommit)
+}
+
+// commitMessageIDs 提交消息ID的核心逻辑
+func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, generationID uint, messageIDsToCommit map[types.PartitionInfo]int64) error {
+	if len(messageIDsToCommit) == 0 {
+		return nil
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	err := dal.BatchCommitLastConsumeMessageID(ctx, c.db, groupID, generationID, messageIDsToCommit)
+	if err != nil {
+		return fmt.Errorf("failed to commit message IDs: %w", err)
+	}
+
+	// 提交成功后，更新内存状态
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.commitMessageIDsLocked(nil, c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
+	for partition, messageID := range messageIDsToCommit {
+		c.alreadyConsumeMessageIDs[partition] = messageID
+		delete(c.lastPolledMessageIDs, partition)
+	}
+	c.mu.Unlock()
+
+	return nil
 }
 
 // autoCommitLoop 自动提交偏移量的后台进程
@@ -58,46 +99,4 @@ func (c *Consumer) autoCommitLoop() {
 			return
 		}
 	}
-}
-
-func (c *Consumer) commitSync(parent context.Context, generationID uint, partitions []types.PartitionInfo) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	messageIDsToCommit := make(map[types.PartitionInfo]int64)
-	for _, p := range partitions {
-		if polledMessageID, exists := c.lastPolledMessageIDs[p]; exists {
-			messageIDsToCommit[p] = polledMessageID
-		} else if messageID, exists := c.alreadyConsumeMessageIDs[p]; exists {
-			messageIDsToCommit[p] = messageID
-		}
-	}
-
-	return c.commitMessageIDsLocked(parent, c.config.GroupID, generationID, messageIDsToCommit)
-}
-
-// commitMessageIDsLocked 提交消息ID的核心逻辑
-func (c *Consumer) commitMessageIDsLocked(parent context.Context, groupID string, generationID uint, messageIDsToCommit map[types.PartitionInfo]int64) error {
-	if len(messageIDsToCommit) == 0 {
-		return nil
-	}
-	if parent == nil {
-		parent = context.Background()
-	}
-
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-	defer cancel()
-
-	err := dal.BatchCommitLastConsumeMessageID(ctx, c.db, groupID, generationID, messageIDsToCommit)
-	if err != nil {
-		return fmt.Errorf("failed to commit message IDs: %w", err)
-	}
-
-	// 提交成功后，更新内存状态
-	for partition, messageID := range messageIDsToCommit {
-		c.alreadyConsumeMessageIDs[partition] = messageID
-		delete(c.lastPolledMessageIDs, partition)
-	}
-
-	return nil
 }

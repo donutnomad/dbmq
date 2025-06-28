@@ -187,9 +187,3 @@ func (c *Consumer) waitPoll(ctx context.Context, useRedis bool, timeout time.Dur
 	}
 	return nil
 }
-
-func (c *Consumer) getAlreadyConsumeMessageIDByPartition(p types.PartitionInfo) int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.alreadyConsumeMessageIDs[p]
-}

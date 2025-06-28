@@ -148,7 +148,7 @@ func SuperDemo() {
 	}
 	defer consumer001.Close()
 
-	fmt.Println("》》》》》》》》》》》》》》》》》》》》》》》我是组1:", consumer001.Id())
+	fmt.Println("》》》》》》》》》》》》》》》》》》》》》》》我是组1:", consumer001.ID())
 
 	consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
 		DB:                  dbClient,

@@ -1,6 +1,7 @@
 package dbmq
 
 import (
+	"github.com/samber/lo"
 	"sort"
 
 	"github.com/donutnomad/dbmq/types"
@@ -13,6 +14,12 @@ func mapToPartition(assignment map[string][]uint) (ret []types.PartitionInfo) {
 		}
 	}
 	return
+}
+
+func partitionToMap(ps []types.PartitionInfo) map[string][]uint {
+	return lo.GroupByMap(ps, func(item types.PartitionInfo) (string, uint) {
+		return item.Topic, item.Partition
+	})
 }
 
 func CloneMap[K comparable, V any](m map[K]V) map[K]V {
