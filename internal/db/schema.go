@@ -3,8 +3,6 @@ package db
 import (
 	"fmt"
 
-	"github.com/donutnomad/dbmq/internal/dal"
-
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -71,23 +69,24 @@ CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_heartbeats`" + ` (
   INDEX ` + "`idx_offline_status`" + ` (` + "`offline`" + `, ` + "`last_heartbeat`" + `)
 ) ENGINE=InnoDB COMMENT='消费者心跳与分区分配表';`
 
-	// mq_consumer_group_offsets 表定义
-	// 存储消费组的偏移量提交记录
+	// mq_consumer_group_consumption_progress 表定义
+	// 存储消费组对每个分区的消费进度和状态
 	// 实现"至少一次"消费语义的关键表
-	// 使用代际隔离防止旧代际消费者覆盖新代际的偏移量
-	// committed_offset现在存储的是全局消息ID
-	mqConsumerGroupOffsetsSchema = `
-CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_group_offsets`" + ` (
+	// 使用代际隔离防止旧代际消费者覆盖新代际的进度
+	// 新设计解决了offset命名混乱和手动提交模式下的注册问题
+	mqConsumerGroupConsumptionProgressSchema = `
+CREATE TABLE IF NOT EXISTS ` + "`mq_consumer_group_consumption_progress`" + ` (
   ` + "`group_id`" + ` VARCHAR(255) NOT NULL,
   ` + "`topic`" + ` VARCHAR(255) NOT NULL,
   ` + "`partition`" + ` INT UNSIGNED NOT NULL,
-  ` + "`committed_offset`" + ` BIGINT NOT NULL COMMENT '已提交的最大消息ID',
-  ` + "`initial_topic_watermark`" + ` BIGINT NULL COMMENT '消费组首次加入topic时的topic最新消息ID，用于区分消费策略',
-  ` + "`generation_id`" + ` INT UNSIGNED NOT NULL COMMENT '提交该偏移量时所属的代际ID',
-  ` + "`metadata`" + ` VARCHAR(255) NULL,
+  ` + "`last_consumed_message_id`" + ` BIGINT NOT NULL DEFAULT -1 COMMENT '最后成功消费的消息ID，-1表示还未消费任何消息',
+  ` + "`subscription_registered_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '消费组首次订阅此分区的时间',
+  ` + "`subscription_start_watermark`" + ` BIGINT NULL COMMENT '订阅时topic的最新消息ID，用于区分消费策略(从头开始/从最新开始)',
+  ` + "`generation_id`" + ` INT UNSIGNED NOT NULL COMMENT '最后更新此记录时的代际ID，用于并发控制',
+  ` + "`metadata`" + ` VARCHAR(255) NULL COMMENT '可选的元数据信息',
   ` + "`updated_at`" + ` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (` + "`group_id`" + `, ` + "`topic`" + `, ` + "`partition`" + `)
-) ENGINE=InnoDB COMMENT='消费组偏移量提交表';`
+) ENGINE=InnoDB COMMENT='消费组消费进度跟踪表';`
 )
 
 // schemas 包含所有需要创建的表定义
@@ -97,7 +96,7 @@ var schemas = []string{
 	mqMessagesSchema,
 	mqConsumerGroupGenerationsSchema,
 	mqConsumerHeartbeatsSchema,
-	mqConsumerGroupOffsetsSchema,
+	mqConsumerGroupConsumptionProgressSchema,
 }
 
 // CreateDatabaseIfNotExists 创建数据库（如果不存在）
@@ -134,11 +133,42 @@ func CreateDatabaseIfNotExists(config MySQLConfig) error {
 
 // ApplySchemas 在给定的数据库连接上创建表
 // 按照预定义的顺序执行所有表创建语句
-func ApplySchemas(db dal.DB) error {
-	for _, schema := range schemas {
+func ApplySchemas(db *gorm.DB) error {
+	for i, schema := range schemas {
+		fmt.Printf("Applying schema %d: %s\n", i+1, schema)
 		if err := db.Exec(schema).Error; err != nil {
 			return fmt.Errorf("failed to apply schema: %w", err)
 		}
 	}
+	return nil
+}
+
+// DropAllTables 删除所有mq_开头的表
+func DropAllTables(db *gorm.DB) error {
+	// 获取所有以 mq_ 开头的表名
+	var tableNames []string
+	if err := db.Raw("SHOW TABLES LIKE 'mq_%%'").Scan(&tableNames).Error; err != nil {
+		return fmt.Errorf("failed to list mq_ tables: %w", err)
+	}
+
+	// 禁用外键检查，以便可以删除有依赖的表
+	if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
+		return fmt.Errorf("failed to disable foreign key checks: %w", err)
+	}
+
+	// 遍历并删除每个表
+	for _, tableName := range tableNames {
+		if err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)).Error; err != nil {
+			// 重新启用外键检查，并返回错误
+			_ = db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error
+			return fmt.Errorf("failed to drop table %s: %w", tableName, err)
+		}
+	}
+
+	// 重新启用外键检查
+	if err := db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error; err != nil {
+		return fmt.Errorf("failed to enable foreign key checks: %w", err)
+	}
+
 	return nil
 }

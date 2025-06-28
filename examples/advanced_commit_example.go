@@ -147,7 +147,7 @@ func demonstrateBatchCommit(consumer *dbmq.Consumer) {
 	// 批量提交所有偏移量
 	if len(offsetsToCommit) > 0 {
 		fmt.Printf("   📊 批量提交 %d 个分区的偏移量...\n", len(offsetsToCommit))
-		if err := consumer.CommitOffsets(offsetsToCommit); err != nil {
+		if err := consumer.commitIDToPartition(offsetsToCommit); err != nil {
 			fmt.Printf("   ❌ 批量提交失败: %v\n", err)
 		} else {
 			fmt.Printf("   ✅ 成功批量提交偏移量: %v\n", offsetsToCommit)
@@ -208,7 +208,7 @@ func demonstrateConditionalCommit(consumer *dbmq.Consumer) {
 	// 只提交处理成功的消息偏移量
 	if len(successfulOffsets) > 0 {
 		fmt.Printf("   📊 提交 %d 个成功处理的消息偏移量...\n", len(successfulOffsets))
-		if err := consumer.CommitOffsets(successfulOffsets); err != nil {
+		if err := consumer.commitIDToPartition(successfulOffsets); err != nil {
 			fmt.Printf("   ❌ 条件性提交失败: %v\n", err)
 		} else {
 			fmt.Printf("   ✅ 成功提交处理成功的偏移量: %v\n", successfulOffsets)

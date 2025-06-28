@@ -93,12 +93,12 @@ type ConsumerMemberInfo struct {
 
 // PartitionLag 分区延迟信息
 type PartitionLag struct {
-	Topic                 string `json:"topic"`                 // Topic名称
-	Partition             int    `json:"partition"`             // 分区ID
-	CurrentOffset         int64  `json:"currentOffset"`         // 当前偏移量
-	LatestOffset          int64  `json:"latestOffset"`          // 最新偏移量
-	Lag                   int64  `json:"lag"`                   // 延迟数量
-	InitialTopicWatermark *int64 `json:"initialTopicWatermark"` // 消费组首次加入topic时的最新消息ID
+	Topic                      string `json:"topic"`                      // Topic名称
+	Partition                  int    `json:"partition"`                  // 分区ID
+	CurrentOffset              int64  `json:"currentOffset"`              // 当前偏移量
+	LatestOffset               int64  `json:"latestOffset"`               // 最新偏移量
+	Lag                        int64  `json:"lag"`                        // 延迟数量
+	SubscriptionStartWatermark *int64 `json:"subscriptionStartWatermark"` // 消费组首次加入topic时的最新消息ID
 }
 
 // BrokerMetrics Broker监控指标（DBMQ为单实例，模拟Kafka Broker）
@@ -184,7 +184,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 	// 解析Topic配置
 	if topic.Configs.Valid {
-		var config map[string]interface{}
+		var config map[string]any
 		if err := json.Unmarshal([]byte(topic.Configs.String), &config); err == nil {
 			for k, v := range config {
 				metrics.Config[k] = fmt.Sprintf("%v", v)
@@ -199,7 +199,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 	for i := uint(0); i < topic.PartitionCount; i++ {
 		// 获取分区最新偏移量
-		latestOffset, err := mc.dao.GetTopicLatestOffsetByPartition(ctx, topicName, i)
+		latestOffset, err := mc.dao.GetTopicLatestIDByPartition(ctx, topicName, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get latest offset for partition %d: %w", i, err)
 		}
@@ -344,7 +344,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			}
 
 			// 获取最新偏移量
-			latestOffset, err := mc.dao.GetTopicLatestOffsetByPartition(ctx, topic, i)
+			latestOffset, err := mc.dao.GetTopicLatestIDByPartition(ctx, topic, i)
 			if err != nil {
 				continue
 			}
@@ -365,18 +365,18 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			err = mc.db.WithContext(ctx).
 				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
 				First(&offsetRecord).Error
-			if err == nil && offsetRecord.InitialTopicWatermark.Valid {
-				watermark := offsetRecord.InitialTopicWatermark.Int64
+			if err == nil && offsetRecord.SubscriptionStartWatermark.Valid {
+				watermark := offsetRecord.SubscriptionStartWatermark.Int64
 				initialWatermark = &watermark
 			}
 
 			partitionLag := PartitionLag{
-				Topic:                 topic,
-				Partition:             int(i),
-				CurrentOffset:         currentOffset,
-				LatestOffset:          latestOffset,
-				Lag:                   lag,
-				InitialTopicWatermark: initialWatermark,
+				Topic:                      topic,
+				Partition:                  int(i),
+				CurrentOffset:              currentOffset,
+				LatestOffset:               latestOffset,
+				Lag:                        lag,
+				SubscriptionStartWatermark: initialWatermark,
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
 			totalLag += lag

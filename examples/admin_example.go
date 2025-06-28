@@ -255,7 +255,7 @@ func KafkaStyleExample() {
 
 	// 模仿Kafka的Properties配置方式
 	// 在实际使用中，这些配置可以从配置文件或环境变量读取
-	configs := map[string]interface{}{
+	configs := map[string]any{
 		"retention.ms":    604800000, // 7天
 		"cleanup.policy":  "delete",
 		"partition.count": 3,

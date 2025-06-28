@@ -50,6 +50,8 @@ func setupIntegrationTest(t *testing.T) (*gorm.DB, *redis.Client) {
 	require.NoError(t, err, "Failed to connect to test database")
 
 	// Apply schemas
+	err = db.DropAllTables(dbClient)
+	require.NoError(t, err, "Failed to drop old tables")
 	err = db.ApplySchemas(dbClient)
 	require.NoError(t, err, "Failed to apply schemas to test database")
 

@@ -150,47 +150,46 @@ func SuperDemo() {
 
 	fmt.Println("》》》》》》》》》》》》》》》》》》》》》》》我是组1:", consumer001.Id())
 
-	//// 消费组002 - 数据分析服务（自动提交模式）
-	//consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
-	//	DB:                  dbClient,
-	//	Redis:               redisClient,
-	//	GroupID:             "消费组001",
-	//	NotificationEnabled: redisClient != nil, // 重新启用Redis通知
-	//	HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
-	//	Topics:              []string{topicName},
-	//	PollFetchLimit:      10,
-	//	PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
-	//	EnableAutoCommit:    true,            // 启用自动提交
-	//	AutoCommitInterval:  3 * time.Second, // 每3秒自动提交一次
-	//})
-	//if err != nil {
-	//	log.Fatalf("❌ 创建消费者002失败: %v", err)
-	//}
-	//defer consumer002.Close()
-	//
-	//// 消费组003 - 从最新消息开始消费（自动提交模式）
-	//consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
-	//	DB:                  dbClient,
-	//	Redis:               redisClient,
-	//	GroupID:             "消费组001",
-	//	NotificationEnabled: redisClient != nil, // 重新启用Redis通知
-	//	HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
-	//	Topics:              []string{topicName},
-	//	PollFetchLimit:      10,
-	//	PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
-	//	ConsumeStrategy:     dbmq.ConsumeFromLatest,
-	//	EnableAutoCommit:    true,            // 启用自动提交
-	//	AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
-	//})
-	//if err != nil {
-	//	log.Fatalf("❌ 创建消费者003失败: %v", err)
-	//}
-	//defer consumer003.Close()
+	consumer002, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
+		DB:                  dbClient,
+		Redis:               redisClient,
+		GroupID:             "消费组002",
+		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
+		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
+		Topics:              []string{topicName},
+		PollFetchLimit:      10,
+		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+		EnableAutoCommit:    true,            // 启用自动提交
+		AutoCommitInterval:  3 * time.Second, // 每3秒自动提交一次
+	})
+	if err != nil {
+		log.Fatalf("❌ 创建消费者002失败: %v", err)
+	}
+	defer consumer002.Close()
+
+	// 消费组003 - 从最新消息开始消费（自动提交模式）
+	consumer003, err := dbmq.NewConsumer(dbmq.ConsumerConfig{
+		DB:                  dbClient,
+		Redis:               redisClient,
+		GroupID:             "消费组003",
+		NotificationEnabled: redisClient != nil, // 重新启用Redis通知
+		HeartbeatInterval:   5 * time.Second,    // 增加心跳间隔到5秒
+		Topics:              []string{topicName},
+		PollFetchLimit:      10,
+		PollFetchTimeout:    5 * time.Second, // 增加拉取超时到5秒
+		ConsumeStrategy:     dbmq.ConsumeFromLatest,
+		EnableAutoCommit:    true,            // 启用自动提交
+		AutoCommitInterval:  4 * time.Second, // 每4秒自动提交一次
+	})
+	if err != nil {
+		log.Fatalf("❌ 创建消费者003失败: %v", err)
+	}
+	defer consumer003.Close()
 
 	fmt.Println("✅ 消费者创建成功")
 	fmt.Println("   - 消费组001: 订单处理服务（手动提交模式）")
-	fmt.Println("   - 消费组001: 数据分析服务（自动提交模式，间隔: 3秒）")
-	fmt.Println("   - 消费组001: 从最新消息开始消费（自动提交模式，间隔: 4秒）")
+	fmt.Println("   - 消费组002: 数据分析服务（自动提交模式，间隔: 3秒）")
+	fmt.Println("   - 消费组003: 从最新消息开始消费（自动提交模式，间隔: 4秒）")
 	fmt.Println()
 
 	// 6. 启动消费者订阅
@@ -199,16 +198,15 @@ func SuperDemo() {
 	if err != nil {
 		log.Fatalf("❌ 消费者001订阅失败: %v", err)
 	}
-	//
-	//err = consumer002.SubscribeTopics(topicName)
-	//if err != nil {
-	//	log.Fatalf("❌ 消费者002订阅失败: %v", err)
-	//}
-	//
-	//err = consumer003.SubscribeTopics(topicName)
-	//if err != nil {
-	//	log.Fatalf("❌ 消费者003订阅失败: %v", err)
-	//}
+	err = consumer002.SubscribeTopics(topicName)
+	if err != nil {
+		log.Fatalf("❌ 消费者002订阅失败: %v", err)
+	}
+
+	err = consumer003.SubscribeTopics(topicName)
+	if err != nil {
+		log.Fatalf("❌ 消费者003订阅失败: %v", err)
+	}
 
 	fmt.Println("✅ 消费者订阅启动成功")
 
@@ -216,12 +214,12 @@ func SuperDemo() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	//// 清除演示用消费组的历史偏移量，确保从最新消息开始消费
-	//fmt.Println("🧹 清除演示用消费组的历史偏移量...")
-	//clearConsumerGroupOffsets(dbClient, "消费组001")
-	//clearConsumerGroupOffsets(dbClient, "消费组002")
-	//fmt.Println("✅ 历史偏移量清除完成，消费者将从最新消息开始消费")
-	//fmt.Println()
+	// 清除演示用消费组的历史偏移量，确保从最新消息开始消费
+	fmt.Println("🧹 清除演示用消费组的历史偏移量...")
+	clearConsumerGroupOffsets(dbClient, "消费组001")
+	clearConsumerGroupOffsets(dbClient, "消费组002")
+	fmt.Println("✅ 历史偏移量清除完成，消费者将从最新消息开始消费")
+	fmt.Println()
 
 	var wg sync.WaitGroup
 

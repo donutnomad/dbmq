@@ -50,7 +50,7 @@ func (d *MqDao) MarkConsumerOffline(ctx context.Context, groupID, consumerID str
 		Model(&types.ConsumerHeartbeat{}).
 		Where("`group_id` = ?", groupID).
 		Where("`consumer_id` = ?", consumerID).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"offline":    true,
 			"offline_at": now,
 		}).Error

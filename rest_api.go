@@ -467,11 +467,11 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 	}
 
 	// 处理成员信息（包括所有历史消费者）
-	enhancedMembers := make([]map[string]interface{}, 0, len(members))
+	enhancedMembers := make([]map[string]any, 0, len(members))
 
 	// 首先处理所有数据库中的消费者记录
 	for _, detail := range members {
-		memberMap := make(map[string]interface{})
+		memberMap := make(map[string]any)
 		memberMap["memberId"] = detail.ConsumerID
 		memberMap["clientId"] = detail.ConsumerID // 使用ConsumerID作为ClientID
 		memberMap["host"] = "unknown"             // 暂时设为unknown，后续可扩展
@@ -492,10 +492,10 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 		}
 
 		// 解析分区分配
-		memberMap["assignment"] = map[string]interface{}{}
+		memberMap["assignment"] = map[string]any{}
 		if detail.AssignedPartitions != "" {
 			// 先解析为数组格式
-			var partitionInfoArray []map[string]interface{}
+			var partitionInfoArray []map[string]any
 			if err := json.Unmarshal([]byte(detail.AssignedPartitions), &partitionInfoArray); err == nil {
 				// 转换为按topic分组的map格式
 				assignmentMap := make(map[string][]int)
@@ -528,12 +528,12 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 	}
 
 	// 处理分区延迟信息，增强分区级别的消费信息
-	enhancedLags := make([]map[string]interface{}, 0, len(group.PartitionLags))
+	enhancedLags := make([]map[string]any, 0, len(group.PartitionLags))
 	for _, lag := range group.PartitionLags {
 		// 获取分区统计信息
 		partitionStats, err := ras.getPartitionStats(c, lag.Topic, uint(lag.Partition))
 
-		lagMap := map[string]interface{}{
+		lagMap := map[string]any{
 			"topic":         lag.Topic,
 			"partition":     lag.Partition,
 			"currentOffset": lag.CurrentOffset,
@@ -631,7 +631,7 @@ func (ras *RestAPIServer) getConsumerGroupExtendedHandler(c *gin.Context) {
 	}
 
 	// 构建扩展信息
-	extendedInfo := map[string]interface{}{
+	extendedInfo := map[string]any{
 		"members":            enhancedMembers,
 		"partitionLags":      enhancedLags,
 		"generationId":       generationInfo.GenerationID,
@@ -995,12 +995,12 @@ func (ras *RestAPIServer) dashboardDataHandler(c *gin.Context) {
 
 	// 获取系统信息
 	uptime := time.Since(ras.startTime).Seconds()
-	systemInfo := map[string]interface{}{
+	systemInfo := map[string]any{
 		"uptime":  uptime,
 		"version": "1.0.0",
 	}
 
-	dashboardData := map[string]interface{}{
+	dashboardData := map[string]any{
 		"topics":         topics,
 		"consumerGroups": consumerGroups,
 		"system":         systemInfo,

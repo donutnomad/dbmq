@@ -28,13 +28,13 @@ func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint,
 type PartitionRequest struct {
 	Topic     string // Topic名称
 	Partition uint   // 分区号
-	Offset    int64  // 起始偏移量
+	ID        int64  // 已消费的最新ID
 	Limit     int    // 获取限制
 }
 
 // FetchMessagesBatch 批量从多个分区获取消息
-// 使用UNION ALL查询一次性获取多个分区的消息，提高数据库查询效率
-// offset现在是全局ID，而不是分区内偏移量
+// 每个分区有一个ID，会查询返回大于这个ID的消息，所以这个ID是已消费的最新ID
+// 如果从未消费，那么值是0，而数据库的ID都是从1开始的，所以也是满足要求的
 func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]types.Message, error) {
 	if len(requests) == 0 {
 		return nil, nil
@@ -46,7 +46,7 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 
 	for _, req := range requests {
 		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
-		args = append(args, req.Topic, req.Partition, req.Offset, req.Limit)
+		args = append(args, req.Topic, req.Partition, req.ID, req.Limit)
 	}
 
 	// 组合所有UNION查询，最后按ID排序以保证消息的顺序
@@ -60,13 +60,12 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	return messages, err
 }
 
-// GetTopicLatestOffsetByPartition 获取指定分区的最新偏移量（最大ID）
-// 如果分区没有消息，返回-1（表示从头开始消费）
-func (d *MqDao) GetTopicLatestOffsetByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
+// GetTopicLatestIDByPartition 获取指定分区的最后一个消息的ID
+func (d *MqDao) GetTopicLatestIDByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
 	var offset int64
 	err := d.db.WithContext(ctx).
 		Model(&types.Message{}).
-		Select("COALESCE(MAX(`id`), -1)").
+		Select("COALESCE(MAX(`id`), 0)").
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
 		Scan(&offset).Error

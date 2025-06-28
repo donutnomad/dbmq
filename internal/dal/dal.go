@@ -70,7 +70,7 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		updateSQL := "UPDATE `mq_consumer_heartbeats` SET `generation_id` = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
+		updateSQL := "UPDATE `mq_consumer_heartbeats` SET generation_id = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
 		for consumerID, partitions := range assignments {
 			result := tx.Exec(updateSQL, generationID, datatypes.NewJSONSlice(partitions), groupID, consumerID)
 			if result.Error != nil {
@@ -86,15 +86,16 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 	})
 }
 
-// GetCommittedOffsets 获取消费组对一组分区的已提交偏移量
-// 返回PartitionInfo到已提交偏移量的映射。没有已提交偏移量的分区将不在映射中
+// GetCommittedOffsets 获取消费组对一组分区的消费进度
+// 返回PartitionInfo到下一个要消费的消息ID的映射
+// 如果返回的消息ID为N，是最后一次消费的消息ID
 func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
 	results := make(map[types.PartitionInfo]int64)
 	if len(partitions) == 0 {
 		return results, nil
 	}
 
-	var offsets []types.ConsumerGroupOffset
+	var progressRecords []types.ConsumerGroupConsumptionProgress
 
 	// 为每个分区构建OR子句，因为GORM在复杂IN查询上有问题
 	var conditions []string
@@ -109,31 +110,28 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 	whereClause := "`group_id` = ? AND (" + strings.Join(conditions, " OR ") + ")"
 
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerGroupOffset{}).
+		Model(&types.ConsumerGroupConsumptionProgress{}).
 		Where(whereClause, args...).
-		Find(&offsets).Error
+		Find(&progressRecords).Error
 
 	if err != nil {
 		return nil, err
 	}
-
-	// 将结果转换为map
-	for _, offset := range offsets {
-		p := types.PartitionInfo{Topic: offset.Topic, Partition: offset.Partition}
-		results[p] = offset.CommittedOffset
+	for _, progress := range progressRecords {
+		results[types.PartitionInfo{Topic: progress.Topic, Partition: progress.Partition}] = progress.LastConsumedMessageID
 	}
-
 	return results, nil
 }
 
-// BatchCommitOffsets 在单个事务中为消费组提交一批偏移量
-// 这确保了偏移量提交的原子性，要么全部成功要么全部失败
-func BatchCommitOffsets(ctx context.Context, db DB, groupID string, generationID uint, offsets map[types.PartitionInfo]int64) error {
-	if len(offsets) == 0 {
+// BatchCommitLastConsumeMessageID 在单个事务中为消费组提交一批消息消费进度
+// 这确保了消费进度提交的原子性，要么全部成功要么全部失败
+// offsets参数中的值表示最后成功消费的消息ID
+func BatchCommitLastConsumeMessageID(ctx context.Context, db DB, groupID string, generationID uint, consumedIds map[types.PartitionInfo]int64) error {
+	if len(consumedIds) == 0 {
 		return nil
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for p, offset := range offsets {
+		for p, offset := range consumedIds {
 			if err := CommitOffset(ctx, tx, groupID, generationID, p, offset); err != nil {
 				return err
 			}
@@ -142,15 +140,15 @@ func BatchCommitOffsets(ctx context.Context, db DB, groupID string, generationID
 	})
 }
 
-// BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批偏移量，同时设置初始水位线
-// 这个方法用于首次消费分区时，记录初始水位线以区分消费策略
-func BatchCommitOffsetsWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, offsetsWithWatermarks map[types.PartitionInfo]OffsetWithWatermark) error {
-	if len(offsetsWithWatermarks) == 0 {
+// BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批消费进度，同时设置初始水位线
+// 这个方法用于首次消费分区时，记录初始水位线以区分消费策略，解决手动提交模式下的注册问题
+func BatchCommitOffsetsWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, progressWithWatermarks map[types.PartitionInfo]ConsumptionProgressWithWatermark) error {
+	if len(progressWithWatermarks) == 0 {
 		return nil
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for p, offsetData := range offsetsWithWatermarks {
-			if err := CommitOffsetWithInitialWatermark(ctx, tx, groupID, generationID, p, offsetData.Offset, offsetData.InitialWatermark); err != nil {
+		for p, progressData := range progressWithWatermarks {
+			if err := CommitConsumptionProgressWithSubscriptionRegistration(ctx, tx, groupID, generationID, p, progressData.LastConsumedMessageID, progressData.SubscriptionStartWatermark); err != nil {
 				return err
 			}
 		}
@@ -158,77 +156,62 @@ func BatchCommitOffsetsWithInitialWatermark(ctx context.Context, db DB, groupID 
 	})
 }
 
-// OffsetWithWatermark 包含偏移量和初始水位线的结构
-type OffsetWithWatermark struct {
-	Offset           int64  // 要提交的偏移量
-	InitialWatermark *int64 // 初始水位线，可为nil表示不设置
+// ConsumptionProgressWithWatermark 包含消费进度和初始水位线的结构
+type ConsumptionProgressWithWatermark struct {
+	LastConsumedMessageID      int64 // 最后成功消费的消息ID
+	SubscriptionStartWatermark int64 // 订阅时的水位线，可为nil表示不设置
 }
 
-// CommitOffset 为单个分区提交偏移量
-// 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
-func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, offset int64) error {
-	// 添加调试日志
-	fmt.Printf("🔍 [CommitOffset] GroupID: %s, Topic: %s, Partition: %d, Offset: %d, GenerationID: %d\n",
-		groupID, p.Topic, p.Partition, offset, generationID)
-
+// CommitOffset 为单个分区提交消费进度
+// 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
+// offset参数表示最后成功消费的消息ID
+func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID int64) error {
 	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
 	// 它防止来自先前代际（具有较小generation_id）的消费者
-	// 覆盖来自当前或未来代际的消费者的偏移量
-	sql := "INSERT INTO `mq_consumer_group_offsets` (`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `committed_offset` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`committed_offset`), `committed_offset`), `generation_id` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`generation_id`), `generation_id`), `updated_at` = IF(VALUES(`generation_id`) >= `generation_id`, VALUES(`updated_at`), `updated_at`)"
-	err := db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, offset, generationID, time.Now()).Error
-
-	if err != nil {
-		fmt.Printf("❌ [CommitOffset] 提交失败: %v\n", err)
-	} else {
-		fmt.Printf("✅ [CommitOffset] 提交成功\n")
-	}
-
-	return err
-}
-
-// CommitOffsetWithInitialWatermark 为单个分区提交偏移量，同时设置初始水位线
-// 使用代际隔离机制防止旧代际的消费者覆盖新代际的偏移量
-// initialWatermark 参数为nil时不设置水位线
-func CommitOffsetWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, offset int64, initialWatermark *int64) error {
-	// 添加调试日志
-	fmt.Printf("🔍 [CommitOffsetWithInitialWatermark] GroupID: %s, Topic: %s, Partition: %d, Offset: %d, GenerationID: %d, InitialWatermark: %v\n",
-		groupID, p.Topic, p.Partition, offset, generationID, initialWatermark)
-
-	var sql string
-	var args []interface{}
-
-	now := time.Now()
-
-	if initialWatermark != nil {
-		// 包含初始水位线的SQL
-		sql = `INSERT INTO ` + "`mq_consumer_group_offsets`" + ` (` + "`group_id`, `topic`, `partition`, `committed_offset`, `initial_topic_watermark`, `generation_id`, `updated_at`" + `) 
-		VALUES (?, ?, ?, ?, ?, ?, ?) 
-		ON DUPLICATE KEY UPDATE 
-		` + "`committed_offset`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`committed_offset`" + `), ` + "`committed_offset`" + `), 
-		` + "`initial_topic_watermark`" + ` = IF(` + "`initial_topic_watermark`" + ` IS NULL AND VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`initial_topic_watermark`" + `), ` + "`initial_topic_watermark`" + `),
-		` + "`generation_id`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`generation_id`" + `), ` + "`generation_id`" + `), 
-		` + "`updated_at`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`updated_at`" + `), ` + "`updated_at`" + `)`
-		args = []interface{}{groupID, p.Topic, p.Partition, offset, *initialWatermark, generationID, now}
-	} else {
-		// 不设置初始水位线，使用原来的SQL
-		sql = `INSERT INTO ` + "`mq_consumer_group_offsets`" + ` (` + "`group_id`, `topic`, `partition`, `committed_offset`, `generation_id`, `updated_at`" + `) 
+	// 覆盖来自当前或未来代际的消费者的进度
+	sql := `INSERT INTO ` + "`mq_consumer_group_consumption_progress`" + ` (` + "`group_id`, `topic`, `partition`, last_consumed_message_id, generation_id, updated_at" + `) 
 		VALUES (?, ?, ?, ?, ?, ?) 
 		ON DUPLICATE KEY UPDATE 
-		` + "`committed_offset`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`committed_offset`" + `), ` + "`committed_offset`" + `), 
-		` + "`generation_id`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`generation_id`" + `), ` + "`generation_id`" + `), 
-		` + "`updated_at`" + ` = IF(VALUES(` + "`generation_id`" + `) >= ` + "`generation_id`" + `, VALUES(` + "`updated_at`" + `), ` + "`updated_at`" + `)`
-		args = []interface{}{groupID, p.Topic, p.Partition, offset, generationID, now}
-	}
+		` + "last_consumed_message_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "last_consumed_message_id" + `), ` + "last_consumed_message_id" + `), 
+		` + "generation_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "generation_id" + `), ` + "generation_id" + `), 
+		` + "updated_at" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "updated_at" + `), ` + "updated_at" + `)`
 
-	err := db.WithContext(ctx).Exec(sql, args...).Error
+	return db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, lastConsumedMessageID, generationID, time.Now()).Error
+}
 
-	if err != nil {
-		fmt.Printf("❌ [CommitOffsetWithInitialWatermark] 提交失败: %v\n", err)
-	} else {
-		fmt.Printf("✅ [CommitOffsetWithInitialWatermark] 提交成功\n")
-	}
+// CommitConsumptionProgressWithSubscriptionRegistration 为单个分区提交消费进度，同时设置订阅注册信息
+// 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
+// 这个函数专门用于首次订阅分区时，同时设置消费进度和订阅水位线
+func CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
+	var sql string
+	var args []any
 
-	return err
+	now := time.Now()
+	// 包含订阅水位线的SQL - 用于首次订阅分区
+	sql = `INSERT INTO mq_consumer_group_consumption_progress (
+	group_id,
+	topic,
+	` + "`partition`" + `,
+	last_consumed_message_id,
+	subscription_registered_at,
+	subscription_start_watermark,
+	generation_id,
+	updated_at
+	VALUES
+	(?, ?, ?, ?, ?, ?, ?, ?)
+	ON DUPLICATE KEY UPDATE last_consumed_message_id =
+	IF(VALUES (generation_id) >= generation_id, VALUES (last_consumed_message_id), last_consumed_message_id),
+	subscription_start_watermark =
+	IF(subscription_start_watermark IS NULL AND VALUES (generation_id) >= generation_id, VALUES (subscription_start_watermark), subscription_start_watermark),
+	generation_id =
+	IF(VALUES (generation_id) >= generation_id, VALUES (generation_id), generation_id),
+	updated_at =
+	IF(VALUES (generation_id) >= generation_id, VALUES (updated_at), updated_at)
+`
+
+	args = []any{groupID, p.Topic, p.Partition, lastConsumedMessageID, now, subscriptionStartWatermark, generationID, now}
+
+	return db.WithContext(ctx).Exec(sql, args...).Error
 }
 
 // CreateMessage 向数据库插入新消息
@@ -259,7 +242,6 @@ func CreateMessagesBatch(ctx context.Context, db DB, messages []*types.Message) 
 		return fmt.Errorf("批量插入失败: %w", result.Error)
 	}
 
-	fmt.Printf("✅ [CreateMessagesBatch] 批量插入成功 - %d 条消息\n", len(messages))
 	return nil
 }
 

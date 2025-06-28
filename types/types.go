@@ -27,7 +27,7 @@ func (t *Topic) GetConfig(key string) (float64, bool) {
 	}
 
 	// 解析JSON配置
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal([]byte(t.Configs.String), &config); err != nil {
 		return 0, false // JSON格式无效
 	}
@@ -141,23 +141,28 @@ func (c *ConsumerHeartbeat) TableName() string {
 	return "mq_consumer_heartbeats"
 }
 
-// ConsumerGroupOffset 对应 mq_consumer_group_offsets 表
-// 存储消费组对每个分区的已提交偏移量
+// ConsumerGroupConsumptionProgress 对应 mq_consumer_group_consumption_progress 表
+// 存储消费组对每个分区的消费进度和订阅状态
 // 这是实现"至少一次"消费语义的关键，确保消息不会丢失
-type ConsumerGroupOffset struct {
-	GroupID               string         `gorm:"primaryKey"` // 消费组ID，复合主键之一
-	Topic                 string         `gorm:"primaryKey"` // Topic名称，复合主键之一
-	Partition             uint           `gorm:"primaryKey"` // 分区号，复合主键之一
-	CommittedOffset       int64          `gorm:"not null"`   // 已提交的偏移量，指向下一条要消费的消息
-	InitialTopicWatermark sql.NullInt64  // 消费组首次加入topic时的topic最新消息ID，用于区分消费策略
-	GenerationID          uint           `gorm:"not null"` // 提交该偏移量时的代际ID，防止旧代际覆盖新代际的偏移量
-	Metadata              sql.NullString // 可选的元数据信息
-	UpdatedAt             time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"` // 最后更新时间
+// 新设计解决了offset命名混乱和手动提交模式下的注册问题
+type ConsumerGroupConsumptionProgress struct {
+	GroupID                    string         `gorm:"primaryKey"`                                              // 消费组ID，复合主键之一
+	Topic                      string         `gorm:"primaryKey"`                                              // Topic名称，复合主键之一
+	Partition                  uint           `gorm:"primaryKey"`                                              // 分区号，复合主键之一
+	LastConsumedMessageID      int64          `gorm:"not null;default:-1"`                                     // 最后成功消费的消息ID，-1表示还未消费任何消息
+	SubscriptionRegisteredAt   time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3)"` // 消费组首次订阅此分区的时间
+	SubscriptionStartWatermark sql.NullInt64  // 订阅时topic的最新消息ID，用于区分消费策略(从头开始/从最新开始)
+	GenerationID               uint           `gorm:"not null"` // 最后更新此记录时的代际ID，用于并发控制
+	Metadata                   sql.NullString // 可选的元数据信息
+	UpdatedAt                  time.Time      `gorm:"type:timestamp(3);not null;default:CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"` // 最后更新时间
 }
 
-func (c *ConsumerGroupOffset) TableName() string {
-	return "mq_consumer_group_offsets"
+func (c *ConsumerGroupConsumptionProgress) TableName() string {
+	return "mq_consumer_group_consumption_progress"
 }
+
+// 为了保持向后兼容性，保留旧的类型别名
+type ConsumerGroupOffset = ConsumerGroupConsumptionProgress
 
 // PartitionInfo 唯一标识一个Topic-分区对
 // 在内存中用作Map的键，用于管理偏移量和分区分配

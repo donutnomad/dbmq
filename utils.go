@@ -6,6 +6,15 @@ import (
 	"github.com/donutnomad/dbmq/types"
 )
 
+func mapToPartition(assignment map[string][]uint) (ret []types.PartitionInfo) {
+	for topic, parts := range assignment {
+		for _, pNum := range parts {
+			ret = append(ret, types.PartitionInfo{Topic: topic, Partition: pNum})
+		}
+	}
+	return
+}
+
 func CloneMap[K comparable, V any](m map[K]V) map[K]V {
 	clone := make(map[K]V)
 	for k, v := range m {
