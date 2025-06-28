@@ -91,16 +91,16 @@ func demonstrateSingleMessageCommit(consumer *dbmq.Consumer) {
 
 	// 逐个处理和提交消息
 	for _, msg := range messages {
-		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.Offset)
+		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.ID)
 
 		// 模拟消息处理
 		time.Sleep(100 * time.Millisecond)
 
 		// 提交单个消息的偏移量
 		if err := consumer.CommitMessage(msg); err != nil {
-			fmt.Printf("   ❌ 提交消息 %d 失败: %v\n", msg.Offset, err)
+			fmt.Printf("   ❌ 提交消息 %d 失败: %v\n", msg.ID, err)
 		} else {
-			fmt.Printf("   ✅ 成功提交消息 %d 的偏移量\n", msg.Offset)
+			fmt.Printf("   ✅ 成功提交消息 %d 的偏移量\n", msg.ID)
 		}
 	}
 	fmt.Println()
@@ -128,7 +128,7 @@ func demonstrateBatchCommit(consumer *dbmq.Consumer) {
 
 	fmt.Printf("   📦 处理 %d 条消息...\n", len(messages))
 	for _, msg := range messages {
-		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.Offset)
+		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.ID)
 
 		// 模拟消息处理
 		time.Sleep(50 * time.Millisecond)
@@ -139,8 +139,8 @@ func demonstrateBatchCommit(consumer *dbmq.Consumer) {
 			Partition: msg.Partition,
 		}
 		// 保存最大的偏移量（因为偏移量是递增的）
-		if existingOffset, exists := offsetsToCommit[partition]; !exists || msg.Offset > existingOffset {
-			offsetsToCommit[partition] = msg.Offset
+		if existingOffset, exists := offsetsToCommit[partition]; !exists || msg.ID > existingOffset {
+			offsetsToCommit[partition] = msg.ID
 		}
 	}
 
@@ -176,30 +176,30 @@ func demonstrateConditionalCommit(consumer *dbmq.Consumer) {
 	successfulOffsets := make(map[types.PartitionInfo]int64)
 
 	for _, msg := range messages {
-		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.Offset)
+		fmt.Printf("   🔄 处理消息 ID: %d\n", msg.ID)
 
 		// 解析消息内容来决定是否处理成功
 		var order OrderMessage
 		err := json.Unmarshal(msg.Value, &order)
 		if err != nil {
-			fmt.Printf("   ❌ 消息 %d 解析失败，跳过提交: %v\n", msg.Offset, err)
+			fmt.Printf("   ❌ 消息 %d 解析失败，跳过提交: %v\n", msg.ID, err)
 			continue
 		}
 
 		// 模拟业务逻辑：金额大于100的订单才算处理成功
 		if order.Amount > 100 {
 			fmt.Printf("   ✅ 消息 %d 处理成功 (订单: %s, 金额: %.2f)\n",
-				msg.Offset, order.OrderID, order.Amount)
+				msg.ID, order.OrderID, order.Amount)
 
 			// 记录成功处理的偏移量
 			partition := types.PartitionInfo{
 				Topic:     msg.Topic,
 				Partition: msg.Partition,
 			}
-			successfulOffsets[partition] = msg.Offset
+			successfulOffsets[partition] = msg.ID
 		} else {
 			fmt.Printf("   ⚠️  消息 %d 处理失败 (订单: %s, 金额太小: %.2f)，不提交偏移量\n",
-				msg.Offset, order.OrderID, order.Amount)
+				msg.ID, order.OrderID, order.Amount)
 		}
 
 		time.Sleep(100 * time.Millisecond)

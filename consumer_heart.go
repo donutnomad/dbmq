@@ -56,9 +56,7 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 		return
 	}
 
-	c.mu.RLock()
-	currentGenID := c.generationID
-	c.mu.RUnlock()
+	currentGenID := c.GetGenerationID()
 
 	// 检查是否需要重新均衡
 	if hb.GenerationID == currentGenID {
@@ -85,7 +83,7 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	if len(revokedPartitions) > 0 {
 		if c.config.EnableAutoCommit {
 			c.logger().Debug(fmt.Sprintf("Consumer %s auto-commit mode, committing offsets for revoked partitions: %v", c.id, revokedPartitions))
-			if err := c.commitOffsets(ctx, revokedPartitions, hb.GenerationID); err != nil {
+			if err := c.commitSync(ctx, hb.GenerationID, revokedPartitions); err != nil {
 				c.logger().Error(fmt.Sprintf("ERROR: failed to commit offsets for revoked partitions on consumer %s: %v", c.id, err))
 				// 即使提交失败也继续重新均衡
 			}
@@ -119,24 +117,8 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 	if c.config.NotificationEnabled && c.redis != nil {
 		// 这可以并发进行，但为了简单起见，我们内联执行
 		// 更高级的实现可以更平滑地管理这个过程
-		var oldPartitionsList []types.PartitionInfo
-		c.mu.RLock()
-		for topic, partitions := range c.assignment {
-			for _, pID := range partitions {
-				oldPartitionsList = append(oldPartitionsList, types.PartitionInfo{Topic: topic, Partition: pID})
-			}
-		}
-		c.mu.RUnlock()
-
-		var newPartitionsList []types.PartitionInfo
-		for topic, parts := range newPartitions {
-			for _, p := range parts {
-				newPartitionsList = append(newPartitionsList, types.PartitionInfo{Topic: topic, Partition: p})
-			}
-		}
-
-		c.unsubscribeFromChannels(oldPartitionsList)
-		c.subscribeToChannels(newPartitionsList)
+		c.unsubscribeFromChannels(c.getAssignedPartitions())
+		c.subscribeToChannels(mapToPartition(newPartitions))
 	}
 
 	// 5. 原子性地更新消费者状态
@@ -150,22 +132,12 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 
 // findRevokedPartitions 计算出在旧分配方案中存在而在新分配方案中不存在的分区
 func (c *Consumer) findRevokedPartitions(newPartitions map[string][]uint) []types.PartitionInfo {
-	oldSet := make(map[types.PartitionInfo]struct{})
-	c.mu.RLock()
-	for topic, partitions := range c.assignment {
-		for _, pID := range partitions {
-			oldSet[types.PartitionInfo{Topic: topic, Partition: pID}] = struct{}{}
-		}
-	}
-	c.mu.RUnlock()
-
-	newSet := make(map[types.PartitionInfo]struct{})
-	for topic, partitions := range newPartitions {
-		for _, pID := range partitions {
-			newSet[types.PartitionInfo{Topic: topic, Partition: pID}] = struct{}{}
-		}
-	}
-
+	oldSet := lo.SliceToMap(c.getAssignedPartitions(), func(item types.PartitionInfo) (types.PartitionInfo, struct{}) {
+		return item, struct{}{}
+	})
+	newSet := lo.SliceToMap(mapToPartition(newPartitions), func(item types.PartitionInfo) (types.PartitionInfo, struct{}) {
+		return item, struct{}{}
+	})
 	var revoked []types.PartitionInfo
 	for p := range oldSet {
 		if _, ok := newSet[p]; !ok {

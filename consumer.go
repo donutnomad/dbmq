@@ -82,12 +82,20 @@ func (c ConsumerConfig) GetPollFetchLimit() int {
 type ConsumerMessage struct {
 	Topic     string            // 消息所属的Topic
 	Partition uint              // 消息所属的分区
-	Offset    int64             // 消息在分区中的偏移量
+	ID        int64             // 消息的ID
 	Key       []byte            // 消息Key
 	Value     []byte            // 消息内容
 	Headers   map[string]string // 消息头
 	Timestamp time.Time         // 消息时间戳
 }
+
+func (c ConsumerMessage) PartitionInfo() types.PartitionInfo {
+	return types.PartitionInfo{
+		Topic:     c.Topic,
+		Partition: c.Partition,
+	}
+}
+
 type ConsumerMessages []ConsumerMessage
 
 func (*ConsumerMessages) FromMessages(messages []types.Message) ConsumerMessages {
@@ -95,7 +103,7 @@ func (*ConsumerMessages) FromMessages(messages []types.Message) ConsumerMessages
 		msg := ConsumerMessage{
 			Topic:     m.Topic,
 			Partition: m.Partition,
-			Offset:    m.ID,
+			ID:        m.ID,
 			Value:     m.Body,
 			Timestamp: m.CreatedAt,
 		}
@@ -266,6 +274,16 @@ func (c *Consumer) IsReady() bool {
 		return false
 	}
 	return isNotEmpty(c.getAssignedPartitions())
+}
+
+func (c *Consumer) GetGenerationID() uint {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getGenerationIDLocked()
+}
+
+func (c *Consumer) getGenerationIDLocked() uint {
+	return c.generationID
 }
 
 // IsAutoCommitEnabled 返回是否启用了自动提交

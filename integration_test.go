@@ -105,7 +105,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	assert.Equal(t, topicReq.Name, receivedMsg.Topic)
 	assert.Equal(t, testKey, receivedMsg.Key)
 	assert.Equal(t, testValue, receivedMsg.Value)
-	assert.Equal(t, sendResult.Offset, receivedMsg.Offset)
+	assert.Equal(t, sendResult.Offset, receivedMsg.ID)
 
 	// 6. Commit the offset
 	err = consumer.CommitSync()

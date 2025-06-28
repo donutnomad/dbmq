@@ -368,14 +368,14 @@ func consumeMessagesWithManualCommit(ctx context.Context, consumer *dbmq.Consume
 				if success {
 					// 处理成功，提交这个具体消息的偏移量
 					if err := consumer.CommitMessage(msg); err != nil {
-						log.Printf("❌ [%s] 提交消息偏移量失败 (消息ID: %d): %v\n", consumerName, msg.Offset, err)
+						log.Printf("❌ [%s] 提交消息偏移量失败 (消息ID: %d): %v\n", consumerName, msg.ID, err)
 					} else {
 						fmt.Printf("✅ [%s] 精确提交消息偏移量: %d (第%d/%d条)\n",
-							consumerName, msg.Offset, i+1, len(messages))
+							consumerName, msg.ID, i+1, len(messages))
 					}
 				} else {
 					// 处理失败，不提交偏移量，这条消息会在下次重新消费
-					fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.Offset)
+					fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.ID)
 					fmt.Println("等待下一次再次得到该消息呢")
 					spew.Dump(msg)
 				}
@@ -483,7 +483,7 @@ func processOrderMessageWithResult(msg dbmq.ConsumerMessage, consumerName, servi
 
 	// 显示消息元数据
 	fmt.Printf("   📋 [%s] 消息元数据 - OrderID: %s, 主题: %s | 分区: %d | 偏移量: %d | 时间戳: %s\n",
-		consumerName, order.OrderID, msg.Topic, msg.Partition, msg.Offset, msg.Timestamp.Format("15:04:05"))
+		consumerName, order.OrderID, msg.Topic, msg.Partition, msg.ID, msg.Timestamp.Format("15:04:05"))
 
 	return success
 }

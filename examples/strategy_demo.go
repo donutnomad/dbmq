@@ -187,7 +187,7 @@ func demonstrateStrategy(db *gorm.DB, redis *redis.Client, topicName, strategyNa
 		for _, msg := range messages {
 			messageCount++
 			fmt.Printf("📨 收到消息 #%d - 偏移量: %d, 内容: %s\n",
-				messageCount, msg.Offset, string(msg.Value))
+				messageCount, msg.ID, string(msg.Value))
 
 			if messageCount >= 3 {
 				break
