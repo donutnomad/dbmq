@@ -62,7 +62,7 @@ export interface PartitionLag {
   partitionSizeBytes?: number;
   consumedMessages?: number;
   remainingMessages?: number;
-  consumedPercentage?: number;
+  consumedPercentage: number;
   // 新增：初始水位线信息
   initialTopicWatermark?: number | null;
 }
@@ -93,12 +93,17 @@ export interface ConsumerGroupMetrics {
   createdAt?: number;
 }
 
+export interface Assignment {
+  Topic: string;
+  Partition: number;
+}
+
 // 消费组成员类型
 export interface GroupMember {
   memberId: string;
   clientId?: string;
   host?: string;
-  assignment?: Record<string, number[]>; // 更新为对象格式：{"topic": [partitions...]}
+  assignment?: Assignment[]; // 更新为对象格式：{"topic": [partitions...]}
   lastHeartbeat?: string;
   subscribedTopics?: string[];
   offline?: boolean;

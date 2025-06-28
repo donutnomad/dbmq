@@ -89,8 +89,7 @@ export class DBMQAPIClient {
       }
       
       // 获取详细指标信息
-      const metricsResponse = await apiClient.get<APIResponse<ConsumerGroupMetrics>>(`/clusters/dbmq-cluster/consumer-groups/${groupId}/metrics`);
-      
+      const metricsResponse = response
       // 合并基本信息和详细指标
       const groupData = response.data.data;
       if (metricsResponse.data.success && metricsResponse.data.data) {

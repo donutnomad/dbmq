@@ -93,12 +93,17 @@ type ConsumerMemberInfo struct {
 
 // PartitionLag 分区延迟信息
 type PartitionLag struct {
-	Topic                      string `json:"topic"`                      // Topic名称
-	Partition                  int    `json:"partition"`                  // 分区ID
-	CurrentOffset              int64  `json:"currentOffset"`              // 当前偏移量
-	LatestOffset               int64  `json:"latestOffset"`               // 最新偏移量
-	Lag                        int64  `json:"lag"`                        // 延迟数量
-	SubscriptionStartWatermark *int64 `json:"subscriptionStartWatermark"` // 消费组首次加入topic时的最新消息ID
+	Topic                      string  `json:"topic"`                 // Topic名称
+	Partition                  int     `json:"partition"`             // 分区ID
+	CurrentOffset              int64   `json:"currentOffset"`         // 当前偏移量
+	LatestOffset               int64   `json:"latestOffset"`          // 最新偏移量
+	Lag                        int64   `json:"lag"`                   // 延迟数量
+	SubscriptionStartWatermark int64   `json:"initialTopicWatermark"` // 消费组首次加入topic时的最新消息ID
+	TotalMessageCount          int64   `json:"totalMessageCount"`     // 总消息数
+	LastMessageId              int64   `json:"lastMessageId"`
+	ConsumedMessages           int64   `json:"consumedMessages"`
+	RemainingMessages          int64   `json:"remainingMessages"`
+	ConsumedPercentage         float64 `json:"consumedPercentage"`
 }
 
 // BrokerMetrics Broker监控指标（DBMQ为单实例，模拟Kafka Broker）
@@ -265,104 +270,115 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取活跃消费者
-	cutoff := time.Now().Add(-30 * time.Second)
-	var heartbeats []types.ConsumerHeartbeat
-	err = mc.db.WithContext(ctx).
-		Where("group_id = ? AND last_heartbeat > ?", groupID, cutoff).
-		Find(&heartbeats).Error
+	consumers, err := dal.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get consumer heartbeats: %w", err)
+		return nil, err
 	}
-
-	if len(heartbeats) > 0 {
-		metrics.State = "Active"
-		metrics.LastHeartbeat = heartbeats[0].LastHeartbeat
-		for _, hb := range heartbeats {
-			if hb.LastHeartbeat.After(metrics.LastHeartbeat) {
-				metrics.LastHeartbeat = hb.LastHeartbeat
-			}
-		}
-	} else {
-		metrics.State = "Dead"
-	}
-
-	var slices []types.ConsumerGroupOffset
-	mc.db.Model(&types.ConsumerGroupOffset{}).
-		Where("group_id = ?", groupID).Find(&slices)
-
-	allTopicsForGroupID := lo.Map(slices, func(item types.ConsumerGroupOffset, index int) string {
-		return item.Topic
-	})
-
-	// 获取消费者成员信息
-	for _, hb := range heartbeats {
-		var assignment = hb.AssignedPartitions
-
+	var onlineCount = 0
+	for _, item := range consumers {
 		member := ConsumerMemberInfo{
-			ConsumerID:    hb.ConsumerID,
-			ClientID:      hb.ConsumerID, // DBMQ中ConsumerID就是ClientID
-			Host:          "localhost",   // DBMQ单实例
-			LastHeartbeat: hb.LastHeartbeat,
-			Assignment:    assignment,
+			ConsumerID:    item.ConsumerID,
+			ClientID:      item.ConsumerID, // DBMQ中ConsumerID就是ClientID
+			Host:          "localhost",     // DBMQ单实例
+			LastHeartbeat: item.LastHeartbeat,
+			Assignment:    item.AssignedPartitions,
 		}
 		metrics.Members = append(metrics.Members, member)
+		if item.Offline {
+			continue
+		}
+		onlineCount++
+		metrics.LastHeartbeat = item.LastHeartbeat
+	}
+	if onlineCount == 0 {
+		metrics.State = "Dead"
+	} else {
+		metrics.State = "Active"
 	}
 
-	metrics.AssignedTopics = allTopicsForGroupID
+	var slices []types.ConsumerGroupConsumptionProgress
+	mc.db.Model(&types.ConsumerGroupConsumptionProgress{}).Where("group_id = ?", groupID).Find(&slices)
+
+	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item types.ConsumerGroupConsumptionProgress, index int) string {
+		return item.Topic
+	}))
 
 	// 计算消费延迟
 	var totalLag int64
 	for _, topic := range metrics.AssignedTopics {
-		// 获取Topic分区信息
-		var topicInfo types.Topic
-		err := mc.db.WithContext(ctx).Where("topic_name = ?", topic).First(&topicInfo).Error
-		if err != nil {
+		topicInfo, err := dal.NewMqDao(mc.db).GetTopic(ctx, topic)
+		if err != nil || topicInfo == nil {
 			continue
 		}
 
 		for i := uint(0); i < topicInfo.PartitionCount; i++ {
 			partition := types.PartitionInfo{Topic: topic, Partition: i}
 
-			// 获取已提交偏移量
-			committedOffsets, err := mc.dao.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
+			// 获取已提交ID
+			committedIDs, err := mc.dao.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
+			if err != nil {
+				continue
+			}
+			// 获取该Topic+分区的最新的消息ID
+			latestID, err := mc.dao.GetTopicLatestIDByPartition(ctx, topic, i)
 			if err != nil {
 				continue
 			}
 
-			// 获取最新偏移量
-			latestOffset, err := mc.dao.GetTopicLatestIDByPartition(ctx, topic, i)
-			if err != nil {
-				continue
-			}
+			currentID := committedIDs[partition]
 
-			currentOffset := int64(0)
-			if offset, exists := committedOffsets[partition]; exists {
-				currentOffset = offset
-			}
-
-			lag := latestOffset - currentOffset
-			if lag < 0 {
-				lag = 0
-			}
-
-			// 获取初始水位线信息
-			var initialWatermark *int64
-			var offsetRecord types.ConsumerGroupOffset
+			var offsetRecord types.ConsumerGroupConsumptionProgress
 			err = mc.db.WithContext(ctx).
 				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
-				First(&offsetRecord).Error
-			if err == nil && offsetRecord.SubscriptionStartWatermark.Valid {
-				watermark := offsetRecord.SubscriptionStartWatermark.Int64
-				initialWatermark = &watermark
+				First(&offsetRecord).
+				Error
+			if err != nil {
+				continue
+			}
+			watermark := offsetRecord.SubscriptionStartWatermark.Int64
+			var lag int64
+			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+				Where("`partition` = ?", i).
+				Where("id > ?", currentID).Count(&lag).Error
+			if err != nil {
+				continue
+			}
+			var totalMessageCount int64
+			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+				Where("`partition` = ?", i).
+				Count(&totalMessageCount).Error
+			if err != nil {
+				continue
+			}
+			var consumedMessages int64
+			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+				Where("`partition` = ?", i).
+				Where("id >= ? AND id < ?", watermark, currentID).
+				Count(&consumedMessages).Error
+			if err != nil {
+				continue
+			}
+			var remainingMessages int64
+			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+				Where("`partition` = ?", i).
+				Where("(id > ?)", currentID).
+				Count(&remainingMessages).Error
+			if err != nil {
+				continue
 			}
 
 			partitionLag := PartitionLag{
 				Topic:                      topic,
 				Partition:                  int(i),
-				CurrentOffset:              currentOffset,
-				LatestOffset:               latestOffset,
+				CurrentOffset:              currentID,
+				LatestOffset:               latestID,
 				Lag:                        lag,
-				SubscriptionStartWatermark: initialWatermark,
+				SubscriptionStartWatermark: watermark,
+				TotalMessageCount:          consumedMessages + remainingMessages,
+				LastMessageId:              latestID,
+				ConsumedMessages:           consumedMessages,
+				RemainingMessages:          remainingMessages,
+				ConsumedPercentage:         float64(consumedMessages) / float64(consumedMessages+remainingMessages),
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
 			totalLag += lag

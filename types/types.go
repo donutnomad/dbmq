@@ -161,9 +161,6 @@ func (c *ConsumerGroupConsumptionProgress) TableName() string {
 	return "mq_consumer_group_consumption_progress"
 }
 
-// 为了保持向后兼容性，保留旧的类型别名
-type ConsumerGroupOffset = ConsumerGroupConsumptionProgress
-
 // PartitionInfo 唯一标识一个Topic-分区对
 // 在内存中用作Map的键，用于管理偏移量和分区分配
 type PartitionInfo struct {

@@ -2,6 +2,7 @@ package dal
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -95,7 +96,11 @@ func (d *MqDao) FindAllConsumers(ctx context.Context, groupID string, timeout ti
 		consumer := &allConsumers[i]
 		// 如果没有标记为离线，但心跳超时，认为是超时状态
 		if !consumer.Offline && consumer.LastHeartbeat.Before(cutoffTime) {
-			// 可以在这里添加状态字段，或者在业务层处理
+			allConsumers[i].Offline = true
+			allConsumers[i].OfflineAt = sql.NullTime{
+				Time:  time.Now(),
+				Valid: true,
+			}
 		}
 	}
 

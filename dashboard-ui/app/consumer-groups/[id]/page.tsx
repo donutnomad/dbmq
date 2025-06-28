@@ -361,9 +361,7 @@ export default function ConsumerGroupDetailPage() {
                                 <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
                                   {(() => {
                                     if (!member.assignment || typeof member.assignment !== 'object') return 0;
-                                    return Object.values(member.assignment).reduce((total: number, partitions: any) => {
-                                      return total + (Array.isArray(partitions) ? partitions.length : 0);
-                                    }, 0);
+                                    return member.assignment.length;
                                   })()}
                                 </Badge>
                               </td>
@@ -545,7 +543,7 @@ export default function ConsumerGroupDetailPage() {
                       </tr>
                     ) : (
                       group.partitionLags.map((lag, index) => {
-                        const progressPercentage = lag.consumedPercentage || calculateProgressPercentage(lag);
+                        const progressPercentage = lag.consumedPercentage;
                         return (
                           <tr key={index} className="hover:bg-gray-50 transition-colors">
                             {/* Topic/分区 */}
@@ -566,14 +564,6 @@ export default function ConsumerGroupDetailPage() {
                             {/* ID范围 */}
                             <td className="px-3 py-2">
                               <div className="text-xs space-y-1">
-                                <div>
-                                  <span className="text-gray-500">首个:</span>
-                                  <span className="ml-1 font-mono text-gray-700">
-                                    {lag.firstMessageId !== undefined && lag.firstMessageId !== -1 
-                                      ? formatNumber(lag.firstMessageId) 
-                                      : '无'}
-                                  </span>
-                                </div>
                                 <div>
                                   <span className="text-gray-500">最新:</span>
                                   <span className="ml-1 font-mono text-gray-700">

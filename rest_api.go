@@ -138,7 +138,6 @@ func (ras *RestAPIServer) registerRoutes() {
 	// 消费组管理接口（兼容Kafka UI）
 	api.GET("/clusters/:clusterId/consumer-groups", ras.getConsumerGroupsHandler)
 	api.GET("/clusters/:clusterId/consumer-groups/:groupId", ras.getConsumerGroupHandler)
-	api.GET("/clusters/:clusterId/consumer-groups/:groupId/metrics", ras.getConsumerGroupMetricsHandler)
 
 	// 兼容Kafka REST Proxy的接口
 	api.GET("/topics", ras.listTopicsHandler)
@@ -378,19 +377,6 @@ func (ras *RestAPIServer) getConsumerGroupHandler(c *gin.Context) {
 	}
 
 	ras.writeSuccessResponse(c, group)
-}
-
-// 获取消费组指标处理器
-func (ras *RestAPIServer) getConsumerGroupMetricsHandler(c *gin.Context) {
-	groupId := c.Param("groupId")
-
-	metrics, err := ras.metricsClient.GetConsumerGroupMetrics(c, groupId)
-	if err != nil {
-		ras.writeErrorResponse(c, http.StatusNotFound, "Consumer group not found", err)
-		return
-	}
-
-	ras.writeSuccessResponse(c, metrics)
 }
 
 // 获取消费组扩展信息处理器

@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/types"
-	"time"
 
 	"gorm.io/gorm"
 )
@@ -186,7 +187,7 @@ func (ac *AdminClient) DeleteTopics(ctx context.Context, topicNames []string) er
 			}
 
 			// 2. 删除消费组偏移量
-			if err := tx.Where("topic = ?", topicName).Delete(&types.ConsumerGroupOffset{}).Error; err != nil {
+			if err := tx.Where("topic = ?", topicName).Delete(&types.ConsumerGroupConsumptionProgress{}).Error; err != nil {
 				return fmt.Errorf("failed to delete offsets for topic %s: %w", topicName, err)
 			}
 
