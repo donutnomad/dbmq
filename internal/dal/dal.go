@@ -197,16 +197,16 @@ func CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, 
 	subscription_start_watermark,
 	generation_id,
 	updated_at
-	VALUES
+) VALUES
 	(?, ?, ?, ?, ?, ?, ?, ?)
-	ON DUPLICATE KEY UPDATE last_consumed_message_id =
-	IF(VALUES (generation_id) >= generation_id, VALUES (last_consumed_message_id), last_consumed_message_id),
+ON DUPLICATE KEY UPDATE last_consumed_message_id =
+	IF(VALUES(generation_id) >= generation_id, VALUES(last_consumed_message_id), last_consumed_message_id),
 	subscription_start_watermark =
-	IF(subscription_start_watermark IS NULL AND VALUES (generation_id) >= generation_id, VALUES (subscription_start_watermark), subscription_start_watermark),
+	IF(subscription_start_watermark IS NULL AND VALUES(generation_id) >= generation_id, VALUES(subscription_start_watermark), subscription_start_watermark),
 	generation_id =
-	IF(VALUES (generation_id) >= generation_id, VALUES (generation_id), generation_id),
+	IF(VALUES(generation_id) >= generation_id, VALUES(generation_id), generation_id),
 	updated_at =
-	IF(VALUES (generation_id) >= generation_id, VALUES (updated_at), updated_at)
+	IF(VALUES(generation_id) >= generation_id, VALUES(updated_at), updated_at)
 `
 
 	args = []any{groupID, p.Topic, p.Partition, lastConsumedMessageID, now, subscriptionStartWatermark, generationID, now}

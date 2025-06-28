@@ -159,8 +159,6 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	for _, partition := range addedPartitions {
 		startID := c.determineStartMessageID(ctx, partition)
 
-		c.logger().Debug(fmt.Sprintf("Consumer %s: 正在为新分区注册订阅信息", c.id))
-
 		c.mu.Lock()
 		c.alreadyConsumeMessageIDs[partition] = startID - 1
 		c.mu.Unlock()
