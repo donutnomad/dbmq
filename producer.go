@@ -103,52 +103,21 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 }
 
 // Send 发送消息到指定Topic，这是一个阻塞操作
-// 核心流程：验证 -> 获取Topic元数据 -> 选择分区 -> 持久化 -> 可选通知
+// 内部调用SendBatch方法以复用代码逻辑
 func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult, error) {
-	// 1. 验证消息和Topic名称
+	// 验证消息和Topic名称
 	if msg == nil || msg.Topic == "" {
 		return nil, errors.New("producer message and topic cannot be empty")
 	}
 
-	// 2. 获取Topic元数据（带缓存优化）
-	topicMeta, err := p.getTopicMetadata(ctx, msg.Topic)
+	// 调用批量发送方法处理单条消息
+	results, err := p.SendBatch(ctx, []*ProducerMessage{msg})
 	if err != nil {
 		return nil, err
 	}
-	partitionCount := topicMeta.PartitionCount
 
-	// 3. 选择目标分区
-	var partition uint
-	if msg.Key != nil {
-		// 如果消息设置了Key（包括空key），使用哈希分区确保相同Key的消息总是路由到同一分区
-		// 这确保了即使是空key也会有一致的分区分配
-		partition = hashPartition(msg.Key, partitionCount)
-	} else {
-		// 如果消息没有设置Key（Key为nil），使用轮询分区实现负载均衡
-		partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
-	}
-	// 4. 构造数据库消息对象并持久化
-	dbMsg := types.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, time.Now())
-	if err := dal.CreateMessage(ctx, p.db, dbMsg); err != nil {
-		return nil, fmt.Errorf("failed to create message in db: %w", err)
-	}
-
-	// 添加调试日志显示发送结果
-	p.logger().Debug(fmt.Sprintf("📤 [Producer] 消息发送成功 - Topic: %s, Partition: %d",
-		msg.Topic, partition))
-
-	// 6. 可选的智能通知机制
-	// 在后台goroutine中执行，不影响消息发送的性能和可靠性
-	if p.config.NotificationEnabled && p.redis != nil {
-		go p.sendNotification(context.Background(), msg.Topic, partition)
-	}
-
-	// 7. 返回发送结果，包含消息的精确位置信息
-	return &SendResult{
-		Topic:     msg.Topic,
-		Partition: partition,
-		Offset:    dbMsg.ID, // 使用数据库自动生成的ID作为offset
-	}, nil
+	// 返回第一条消息的发送结果
+	return &results[0], nil
 }
 
 // BatchSendResult 批量发送的结果
@@ -233,10 +202,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages []*ProducerMessage) (
 	// 添加调试日志
 	p.logger().Debug(fmt.Sprintf("📤 [Producer] 批量发送成功 - %d 条消息", len(messages)))
 
-	// 批量发送通知（在后台执行）
-	if p.config.NotificationEnabled && p.redis != nil {
-		go p.sendBatchNotifications(context.Background(), notificationPartitions)
-	}
+	p.sendBatchNotifications(context.Background(), notificationPartitions)
 
 	return results, nil
 }
@@ -246,6 +212,9 @@ func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []stru
 	topic     string
 	partition uint
 }) {
+	if p.config.NotificationEnabled && p.redis != nil {
+		return
+	}
 	// 去重分区
 	uniquePartitions := make(map[string]struct {
 		topic     string

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 func main() {
 	fmt.Println("🚀 启动 DBMQ REST API 服务器和监控仪表板")
-	fmt.Println("=" + string(make([]byte, 50)))
+	fmt.Println(strings.Repeat("=", 50))
 
 	// 初始化数据库连接
 	db, err := initDatabase()
@@ -61,7 +62,7 @@ func main() {
 		fmt.Println("📋 API 接口: http://localhost:8080/api/v1/")
 		fmt.Println("")
 		fmt.Println("按 Ctrl+C 停止服务器")
-		fmt.Println("=" + string(make([]byte, 50)))
+		fmt.Println(strings.Repeat("=", 50))
 
 		if err := server.Start(); err != nil {
 			log.Printf("❌ 服务器启动失败: %v", err)
@@ -89,7 +90,7 @@ func main() {
 // 初始化数据库连接
 func initDatabase() (*gorm.DB, error) {
 	// 简单的数据库连接字符串
-	dsn := "root:password@tcp(localhost:3306)/dbmq_demo?charset=utf8mb4&parseTime=True&loc=Local"
+	dsn := "root:123456@tcp(localhost:3306)/dbmq_demo?charset=utf8mb4&parseTime=True&loc=Local"
 
 	// 连接到数据库
 	gormDB, err := gorm.Open(mysql.Open(dsn), &gorm.Config{

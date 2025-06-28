@@ -408,7 +408,7 @@ export default function TopicDetailPage() {
             className="bg-orange-50 border-none"
           />
           <StatCard
-            title="最新偏移量"
+            title="最新ID"
             value={formatNumber((topic as TopicMetrics & { latestOffset?: number })?.latestOffset || 0)}
             icon={<Hash className="h-5 w-5 text-indigo-500" />}
             className="bg-indigo-50 border-none"

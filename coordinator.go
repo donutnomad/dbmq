@@ -266,7 +266,7 @@ func (c *Coordinator) leaderLoop() {
 
 	// 启动时立即运行一次
 	c.scanAndRebalanceAllGroups()
-	c.runRetentionCleanup()
+	c.runRetentionCleanup(c.ctx)
 
 	for {
 		// 如果协调器已停止或我们不再是领导者，循环应该停止
@@ -288,16 +288,16 @@ func (c *Coordinator) leaderLoop() {
 			c.scanAndRebalanceAllGroups()
 		case <-cleanupTicker.C:
 			c.logger.Debug("Starting message retention cleanup...")
-			c.runRetentionCleanup()
+			c.runRetentionCleanup(c.ctx)
 		}
 	}
 }
 
 // runRetentionCleanup 运行消息保留清理
 // 根据Topic配置删除过期的消息
-func (c *Coordinator) runRetentionCleanup() {
+func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 	// 使用协调器的context作为父context，确保在协调器停止时能够快速退出
-	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Minute) // 清理的慷慨超时时间
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute) // 清理的慷慨超时时间
 	defer cancel()
 
 	// 如果协调器已停止，不执行清理操作
@@ -717,6 +717,6 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 // CleanupExpiredMessages 执行消息清理，删除过期的消息。
 // 它会根据每个主题的保留策略来删除消息。
 func (c *Coordinator) CleanupExpiredMessages(ctx context.Context) error {
-	c.logger.Debug("Coordinator: Calling runRetentionCleanup from CleanupExpiredMessages")
+	c.runRetentionCleanup(ctx)
 	return nil
 }

@@ -306,20 +306,6 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			Assignment:    assignment,
 		}
 		metrics.Members = append(metrics.Members, member)
-
-		// 收集分配的Topic
-		//for _, partition := range assignment {
-		//	found := false
-		//	for _, topic := range metrics.AssignedTopics {
-		//		if topic == partition.Topic {
-		//			found = true
-		//			break
-		//		}
-		//	}
-		//	if !found {
-		//		metrics.AssignedTopics = append(metrics.AssignedTopics, partition.Topic)
-		//	}
-		//}
 	}
 
 	metrics.AssignedTopics = allTopicsForGroupID

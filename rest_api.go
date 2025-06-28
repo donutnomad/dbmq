@@ -122,14 +122,6 @@ func (ras *RestAPIServer) registerRoutes() {
 	// 添加统计页面路由
 	api.GET("/dashboard", ras.dashboardHandler)
 	api.GET("/dashboard/data", ras.dashboardDataHandler)
-	// 添加详情页面路由
-	api.GET("/dashboard/topic/:topicName", ras.topicDetailHandler)
-	api.GET("/dashboard/consumer-group/:groupId", ras.consumerGroupDetailHandler)
-	// 添加Topic管理页面
-	api.GET("/dashboard/topics/create", ras.topicCreatePageHandler)
-	api.GET("/dashboard/topics/manage", ras.topicManagePageHandler)
-	// 添加消息生产页面
-	api.GET("/dashboard/producer", ras.messageProducerPageHandler)
 
 	// 集群信息接口（兼容Kafka UI）
 	api.GET("/clusters", ras.getClustersHandler)
