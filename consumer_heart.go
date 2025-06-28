@@ -144,11 +144,12 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 
 	////////////////////// 为新增的分区应用策略 //////////////////////
 	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, newPartitions))
-	fetchedOffsets, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
+	fetchedOffsets_, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
 	if err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err))
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
+	fetchedOffsets := fetchedOffsets_.ToMap()
 	// 筛选出新增的分区
 	addedPartitions := lo.Filter(newPartitions, func(p types.PartitionInfo, index int) bool {
 		_, exists := fetchedOffsets[p]

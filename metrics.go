@@ -104,6 +104,7 @@ type PartitionLag struct {
 	ConsumedMessages           int64   `json:"consumedMessages"`
 	RemainingMessages          int64   `json:"remainingMessages"`
 	ConsumedPercentage         float64 `json:"consumedPercentage"`
+	UpdatedAt                  int64   `json:"updatedAt"`
 }
 
 // BrokerMetrics Broker监控指标（DBMQ为单实例，模拟Kafka Broker）
@@ -325,7 +326,12 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				continue
 			}
 
-			currentID := committedIDs[partition]
+			var currentID int64
+			var updateAt int64
+			if len(committedIDs) > 0 {
+				currentID = committedIDs[0].LastConsumedMessageID
+				updateAt = committedIDs[0].UpdatedAt.UnixMilli()
+			}
 
 			var offsetRecord types.ConsumerGroupConsumptionProgress
 			err = mc.db.WithContext(ctx).
@@ -374,11 +380,12 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				LatestOffset:               latestID,
 				Lag:                        lag,
 				SubscriptionStartWatermark: watermark,
-				TotalMessageCount:          consumedMessages + remainingMessages,
+				TotalMessageCount:          totalMessageCount,
 				LastMessageId:              latestID,
 				ConsumedMessages:           consumedMessages,
 				RemainingMessages:          remainingMessages,
-				ConsumedPercentage:         float64(consumedMessages) / float64(consumedMessages+remainingMessages),
+				ConsumedPercentage:         (float64(consumedMessages) / float64(consumedMessages+remainingMessages)) * 100,
+				UpdatedAt:                  updateAt,
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
 			totalLag += lag

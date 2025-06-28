@@ -141,6 +141,16 @@ func (c *ConsumerHeartbeat) TableName() string {
 	return "mq_consumer_heartbeats"
 }
 
+type ConsumerGroupConsumptionProgressSlice []ConsumerGroupConsumptionProgress
+
+func (s ConsumerGroupConsumptionProgressSlice) ToMap() map[PartitionInfo]int64 {
+	var results = make(map[PartitionInfo]int64)
+	for _, progress := range s {
+		results[PartitionInfo{Topic: progress.Topic, Partition: progress.Partition}] = progress.LastConsumedMessageID
+	}
+	return results
+}
+
 // ConsumerGroupConsumptionProgress 对应 mq_consumer_group_consumption_progress 表
 // 存储消费组对每个分区的消费进度和订阅状态
 // 这是实现"至少一次"消费语义的关键，确保消息不会丢失

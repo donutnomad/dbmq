@@ -89,13 +89,12 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 // GetCommittedOffsets 获取消费组对一组分区的消费进度
 // 返回PartitionInfo到下一个要消费的消息ID的映射
 // 如果返回的消息ID为N，是最后一次消费的消息ID
-func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
-	results := make(map[types.PartitionInfo]int64)
+func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []types.PartitionInfo) (types.ConsumerGroupConsumptionProgressSlice, error) {
 	if len(partitions) == 0 {
-		return results, nil
+		return nil, nil
 	}
 
-	var progressRecords []types.ConsumerGroupConsumptionProgress
+	var progressRecords types.ConsumerGroupConsumptionProgressSlice
 
 	// 为每个分区构建OR子句，因为GORM在复杂IN查询上有问题
 	var conditions []string
@@ -117,10 +116,7 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 	if err != nil {
 		return nil, err
 	}
-	for _, progress := range progressRecords {
-		results[types.PartitionInfo{Topic: progress.Topic, Partition: progress.Partition}] = progress.LastConsumedMessageID
-	}
-	return results, nil
+	return progressRecords, nil
 }
 
 // BatchCommitLastConsumeMessageID 在单个事务中为消费组提交一批消息消费进度
