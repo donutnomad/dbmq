@@ -273,9 +273,10 @@ type LowWatermark struct {
 // This is the "consumption low watermark".
 func (d *MqDao) GetConsumerGroupLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error) {
 	var results []LowWatermark
-	sql := "SELECT `topic`, `partition`, MIN(`committed_offset`) as low_watermark FROM `mq_consumer_group_offsets` GROUP BY `topic`, `partition`"
-
-	err := d.db.WithContext(ctx).Raw(sql).Scan(&results).Error
+	err := d.db.WithContext(ctx).Model(&types.ConsumerGroupConsumptionProgress{}).
+		Select("topic, `partition`, MIN(last_consumed_message_id) as low_watermark").
+		Group("topic, `partition`").
+		Scan(&results).Error
 	if err != nil {
 		return nil, err
 	}

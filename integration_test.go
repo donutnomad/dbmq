@@ -20,6 +20,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 1. Create a Topic for the test using AdminClient
 	admin := NewAdminClient(dbClient)
+	var err error
 	require.NoError(t, err)
 
 	topicReq := NewTopicRequest{
@@ -112,15 +113,15 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	// 7. Verify the commit in the database
-	var committedOffset types.ConsumerGroupOffset
-	err = dbClient.Where(&types.ConsumerGroupOffset{
+	var committedOffset types.ConsumerGroupConsumptionProgress
+	err = dbClient.Where(&types.ConsumerGroupConsumptionProgress{
 		GroupID:   consumerGroup,
 		Topic:     topicReq.Name,
 		Partition: 0,
 	}).First(&committedOffset).Error
 	require.NoError(t, err, "Failed to find the committed offset in the database")
-	assert.Equal(t, sendResult.Offset, committedOffset.CommittedOffset, "Committed offset in DB does not match sent message offset")
-	log.Printf("Successfully verified committed offset in DB: %d", committedOffset.CommittedOffset)
+	assert.Equal(t, sendResult.Offset, committedOffset.LastConsumedMessageID, "Committed offset in DB does not match sent message offset")
+	log.Printf("Successfully verified committed offset in DB: %d", committedOffset.LastConsumedMessageID)
 }
 
 func TestIntegration_MultiConsumerGroups(t *testing.T) {
@@ -128,6 +129,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	// 1. 创建测试主题（2个分区）使用AdminClient
 	admin := NewAdminClient(dbClient)
+	var err error
 	require.NoError(t, err)
 
 	topicReq := NewTopicRequest{
@@ -252,7 +254,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	// 验证每个消费者组都有提交的偏移量
 	for _, groupID := range []string{group1, group2} {
-		var offsets []types.ConsumerGroupOffset
+		var offsets []types.ConsumerGroupConsumptionProgress
 		err = dbClient.Where("group_id = ?", groupID).Find(&offsets).Error
 		require.NoError(t, err)
 		assert.True(t, len(offsets) > 0, "消费者组 %s 应该有提交的偏移量", groupID)
@@ -264,6 +266,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 
 	// 1. 创建测试主题使用AdminClient
 	admin := NewAdminClient(dbClient)
+	var err error
 	require.NoError(t, err)
 
 	topicReq := NewTopicRequest{
@@ -368,7 +371,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	}
 
 	// 10. 验证偏移量记录
-	var offsets []types.ConsumerGroupOffset
+	var offsets []types.ConsumerGroupConsumptionProgress
 	err = dbClient.Where("group_id = ?", "failover-group").Find(&offsets).Error
 	require.NoError(t, err)
 	assert.True(t, len(offsets) > 0, "应该有提交的偏移量记录")
@@ -377,102 +380,112 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 func TestIntegration_MessageCleanup(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
 
-	// 1. 创建测试主题使用AdminClient
+	// 1. Create a test topic with a short retention period.
 	admin := NewAdminClient(dbClient)
-	require.NoError(t, err)
-
-	retentionHours := 1
+	retentionMs := int64(10 * 1000) // 10s retention for quick testing
 	topicReq := NewTopicRequest{
-		Name:          "cleanup-topic",
+		Name:          "cleanup-topic-correct",
 		NumPartitions: 1,
-		Config: &TopicConfig{
-			RetentionHours: &retentionHours,
-		},
+		Config:        &TopicConfig{RetentionMs: &retentionMs},
 	}
-	err = admin.CreateTopic(context.Background(), topicReq)
+	err := admin.CreateTopic(context.Background(), topicReq)
 	require.NoError(t, err)
 
-	// 2. 启动协调器
+	// 2. Start the Coordinator.
 	coordConf := CoordinatorConfig{
-		DB:                dbClient,
-		HeartbeatTimeout:  5 * time.Second,
-		RebalanceInterval: 1 * time.Second,
+		DB:                     dbClient,
+		HeartbeatTimeout:       5 * time.Second,
+		RebalanceInterval:      1 * time.Second,
+		RetentionCheckInterval: 100 * time.Millisecond, // Check frequently
+		DefaultRetentionAge:    1 * time.Hour,          // Default age is long
 	}
 	coordinator := NewCoordinator(coordConf)
 	coordinator.Start()
 	defer coordinator.Stop()
-
 	require.Eventually(t, coordinator.IsLeader, 10*time.Second, 100*time.Millisecond)
 
-	// 3. 创建生产者
+	// 3. Create a producer.
 	producer, err := NewProducer(ProducerConfig{
-		DB:                  dbClient,
-		Redis:               redisClient,
-		NotificationEnabled: false,
+		DB:    dbClient,
+		Redis: redisClient,
 	})
 	require.NoError(t, err)
 	defer producer.Close()
 
-	// 4. 发送一些消息
-	now := time.Now()
-	oldTime := now.Add(-2 * time.Hour) // 2小时前
-
-	messages := []struct {
-		key       string
-		value     string
-		timestamp time.Time
-	}{
-		{"old-1", "value-1", oldTime},
-		{"old-2", "value-2", oldTime},
-		{"new-1", "value-3", now},
-		{"new-2", "value-4", now},
-	}
-
+	// 4. Send two "old" messages and two "new" messages.
 	var oldMsgIDs []int64
 	var newMsgIDs []int64
+	var lastOldMessage ConsumerMessage
 
-	for _, msg := range messages {
-		result, err := producer.Send(context.Background(), &ProducerMessage{
-			Topic: topicReq.Name,
-			Key:   []byte(msg.key),
-			Value: []byte(msg.value),
-		})
+	// Send old messages
+	for i := 0; i < 2; i++ {
+		result, err := producer.Send(context.Background(), &ProducerMessage{Topic: topicReq.Name, Value: []byte("old")})
 		require.NoError(t, err)
-
-		// 获取消息ID并更新时间戳
-		var message types.Message
-		err = dbClient.Where("topic = ? AND `partition` = ?", result.Topic, result.Partition).
-			Order("id DESC").First(&message).Error
+		// Manually update timestamp to be older than retention period
+		err = dbClient.Model(&types.Message{}).Where("id = ?", result.Offset).Update("created_at", time.Now().Add(-1*time.Hour)).Error
 		require.NoError(t, err)
-
-		// 更新消息的创建时间
-		err = dbClient.Model(&message).Update("created_at", msg.timestamp).Error
-		require.NoError(t, err)
-
-		if msg.timestamp.Before(now) {
-			oldMsgIDs = append(oldMsgIDs, message.ID)
-		} else {
-			newMsgIDs = append(newMsgIDs, message.ID)
-		}
+		oldMsgIDs = append(oldMsgIDs, result.Offset)
 	}
 
-	// 5. 执行消息清理
+	// Send new messages
+	for i := 0; i < 2; i++ {
+		result, err := producer.Send(context.Background(), &ProducerMessage{Topic: topicReq.Name, Value: []byte("new")})
+		require.NoError(t, err)
+		newMsgIDs = append(newMsgIDs, result.Offset)
+	}
+
+	// 5. Create a consumer and consume ONLY the old messages.
+	consumer, err := NewConsumer(ConsumerConfig{
+		DB:              dbClient,
+		GroupID:         "cleanup-group",
+		Topics:          []string{topicReq.Name},
+		ConsumeStrategy: ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	defer consumer.Close()
+	require.NoError(t, consumer.SubscribeTopics(topicReq.Name))
+	require.Eventually(t, consumer.IsReady, 10*time.Second, 200*time.Millisecond)
+
+	// Poll and find the last "old" message
+	msgs, err := consumer.Poll(context.Background(), 2*time.Second)
+	require.NoError(t, err)
+	// 前面手动修改了时间，所以那些都已经过期了，现在消费者消费剩下的两条消息，会按照已消费的逻辑清理
+	require.Len(t, msgs, 2, "Should get all 4 messages initially")
+
+	for _, msg := range msgs {
+		if msg.ID == oldMsgIDs[len(oldMsgIDs)-1] {
+			lastOldMessage = msg
+			break
+		}
+	}
+	require.NotNil(t, lastOldMessage, "Could not find the last old message in the polled messages")
+
+	// Commit the offset of the last old message
+	err = consumer.CommitMessage(lastOldMessage)
+	require.NoError(t, err, "Failed to commit offset for old messages")
+
+	// 6. Wait for the retention period and cleanup cycle.
+	time.Sleep(300 * time.Millisecond) // Wait longer than retention.ms and check interval
+
+	// 7. Manually trigger cleanup for consistent testing.
 	err = coordinator.CleanupExpiredMessages(context.Background())
 	require.NoError(t, err)
 
-	// 6. 验证旧消息已被删除，新消息仍然存在
+	// 8. Verify that ONLY the old, consumed messages were deleted.
+	// Old messages should be gone.
 	for _, msgID := range oldMsgIDs {
 		var count int64
-		err = dbClient.Table("mq_messages").Where("id = ?", msgID).Count(&count).Error
+		err = dbClient.Model(&types.Message{}).Where("id = ?", msgID).Count(&count).Error
 		require.NoError(t, err)
-		assert.Equal(t, int64(0), count, "过期消息应该被删除: %d", msgID)
+		assert.Equal(t, int64(0), count, "Consumed and expired message (ID: %d) should have been deleted", msgID)
 	}
 
+	// New messages should still exist.
 	for _, msgID := range newMsgIDs {
 		var count int64
-		err = dbClient.Table("mq_messages").Where("id = ?", msgID).Count(&count).Error
+		err = dbClient.Model(&types.Message{}).Where("id = ?", msgID).Count(&count).Error
 		require.NoError(t, err)
-		assert.Equal(t, int64(1), count, "未过期消息应该保留: %d", msgID)
+		assert.Equal(t, int64(1), count, "New message (ID: %d) should not have been deleted", msgID)
 	}
 }
 
@@ -481,6 +494,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 
 	// 1. 创建测试主题使用AdminClient
 	admin := NewAdminClient(dbClient)
+	var err error
 	require.NoError(t, err)
 
 	topicReq := NewTopicRequest{
@@ -560,12 +574,12 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	}
 
 	// 7. 验证偏移量已提交
-	var offset types.ConsumerGroupOffset
-	err = dbClient.Where(&types.ConsumerGroupOffset{
+	var offset types.ConsumerGroupConsumptionProgress
+	err = dbClient.Where(&types.ConsumerGroupConsumptionProgress{
 		GroupID:   "notification-group",
 		Topic:     topicReq.Name,
 		Partition: 0,
 	}).First(&offset).Error
 	require.NoError(t, err)
-	assert.True(t, offset.CommittedOffset > 0, "偏移量应该已提交")
+	assert.True(t, offset.LastConsumedMessageID > 0, "偏移量应该已提交")
 }

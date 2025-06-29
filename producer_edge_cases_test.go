@@ -195,7 +195,7 @@ func TestProducerNotificationFailureHandling(t *testing.T) {
 
 	// 验证消息确实被持久化到数据库
 	var dbMessage types.Message
-	err = db.Where("topic = ? AND partition = ? AND id = ?",
+	err = db.Where("topic = ? AND `partition` = ? AND id = ?",
 		result.Topic, result.Partition, result.Offset).First(&dbMessage).Error
 	require.NoError(t, err, "消息应该被持久化到数据库")
 	assert.Equal(t, "test message with notification failure", string(dbMessage.Body))
@@ -298,6 +298,7 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 
+			var msgs []ProducerMessage
 			for j := 0; j < messagesPerWorker; j++ {
 				msg := &ProducerMessage{
 					Topic: "test-concurrent-topic",
@@ -308,17 +309,17 @@ func TestProducerConcurrentSendStability(t *testing.T) {
 						"msg-id":    fmt.Sprintf("%d", j),
 					},
 				}
-
-				result, err := producer.Send(context.Background(), msg)
-				if err != nil {
-					atomic.AddInt64(&errorCount, 1)
-					t.Errorf("Worker %d 发送消息 %d 失败: %v", workerID, j, err)
-				} else {
-					atomic.AddInt64(&successCount, 1)
-					resultsMu.Lock()
-					results = append(results, *result)
-					resultsMu.Unlock()
-				}
+				msgs = append(msgs, *msg)
+			}
+			result, err := producer.SendBatch(context.Background(), msgs...)
+			if err != nil {
+				atomic.AddInt64(&errorCount, int64(len(msgs)))
+				t.Errorf("Worker %d 发送消息 %d 失败: %v", workerID, 0, err)
+			} else {
+				atomic.AddInt64(&successCount, int64(len(msgs)))
+				resultsMu.Lock()
+				results = append(results, result...)
+				resultsMu.Unlock()
 			}
 		}(i)
 	}

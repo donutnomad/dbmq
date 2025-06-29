@@ -134,8 +134,7 @@ func CreateDatabaseIfNotExists(config MySQLConfig) error {
 // ApplySchemas 在给定的数据库连接上创建表
 // 按照预定义的顺序执行所有表创建语句
 func ApplySchemas(db *gorm.DB) error {
-	for i, schema := range schemas {
-		fmt.Printf("Applying schema %d: %s\n", i+1, schema)
+	for _, schema := range schemas {
 		if err := db.Exec(schema).Error; err != nil {
 			return fmt.Errorf("failed to apply schema: %w", err)
 		}

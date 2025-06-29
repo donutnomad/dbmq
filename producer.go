@@ -111,7 +111,7 @@ func (p *Producer) Send(ctx context.Context, msg *ProducerMessage) (*SendResult,
 	}
 
 	// 调用批量发送方法处理单条消息
-	results, err := p.SendBatch(ctx, []*ProducerMessage{msg})
+	results, err := p.SendBatch(ctx, *msg)
 	if err != nil {
 		return nil, err
 	}
@@ -126,20 +126,20 @@ type BatchSendResult []SendResult
 // SendBatch 批量发送消息，显著提升高吞吐量场景的性能
 // 通过减少数据库事务数量和网络往返次数来优化性能
 // 注意：批量发送是原子性的，要么全部成功，要么全部失败
-func (p *Producer) SendBatch(ctx context.Context, messages []*ProducerMessage) (BatchSendResult, error) {
+func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (BatchSendResult, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
 
 	// 验证所有消息
 	for i, msg := range messages {
-		if msg == nil || msg.Topic == "" {
+		if msg.Topic == "" {
 			return nil, fmt.Errorf("message at index %d: producer message and topic cannot be empty", i)
 		}
 	}
 
 	// 按Topic分组消息，以便批量获取元数据
-	topicGroups := lo.GroupBy(messages, func(item *ProducerMessage) string {
+	topicGroups := lo.GroupBy(messages, func(item ProducerMessage) string {
 		return item.Topic
 	})
 
