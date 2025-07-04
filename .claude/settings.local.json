@@ -3,7 +3,8 @@
     "allow": [
       "Bash(rg:*)",
       "Bash(go build:*)",
-      "Bash(go test:*)"
+      "Bash(go test:*)",
+      "Bash(ls -R)"
     ],
     "deny": []
   }

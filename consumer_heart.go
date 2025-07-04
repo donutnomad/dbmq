@@ -18,15 +18,13 @@ import (
 func (c *Consumer) heartbeatLoop() {
 	defer c.wg.Done()
 
-	c.reconcileState(context.Background())
-
 	ticker := time.NewTicker(c.config.HeartbeatInterval)
 	defer ticker.Stop()
 
 	for {
+		c.reconcileState(context.Background())
 		select {
 		case <-ticker.C:
-			c.reconcileState(context.Background())
 		case <-c.stopCh:
 			return
 		}
