@@ -5,29 +5,28 @@ import (
 	"fmt"
 	"github.com/donutnomad/dbmq/types"
 	"github.com/samber/lo"
-	"strings"
 	"time"
 )
 
 // --- Redis Notification Helpers ---
 
+// toChannelNames converts a slice of PartitionInfo into a slice of Redis channel names.
 func toChannelNames(partitions []types.PartitionInfo) []string {
 	if len(partitions) == 0 {
 		return nil
 	}
-	channels := make([]string, 0, len(partitions))
-	for _, p := range partitions {
-		channels = append(channels, fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition))
-	}
-	return channels
+	return lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
+		return fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition)
+	})
 }
 
+// subscribeToChannels subscribes the consumer to Redis channels for new message notifications.
 func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 	if !c.config.NotificationEnabled || c.redis == nil || len(partitions) == 0 {
 		return
 	}
 
-	// 确保PubSub连接健康
+	// Ensure the PubSub connection is healthy before proceeding.
 	c.ensurePubSubConnection()
 
 	c.muSub.Lock()
@@ -39,17 +38,18 @@ func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 		defer cancel()
 
 		if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
-			c.logger().Error(fmt.Sprintf("ERROR: failed to subscribe to redis channels %v: %v", strings.Join(channels, ","), err))
+			c.logger().Error("Failed to subscribe to redis channels", "channels", channels, "error", err)
 			c.pubsubHealthy.Store(false)
 		} else {
-			c.logger().Debug("Subscribed to channels", "consumer-id", c.id, "channels", strings.Join(channels, ","))
+			c.logger().Debug("Subscribed to channels", "channels", channels)
 			c.lastPubsubTime.Store(time.Now().Unix())
 		}
 	} else {
-		c.logger().Warn(fmt.Sprintf("WARN: PubSub connection not available for consumer %s", c.id))
+		c.logger().Warn("PubSub connection not available, cannot subscribe to channels")
 	}
 }
 
+// unsubscribeFromChannels unsubscribes the consumer from Redis channels.
 func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	if !c.config.NotificationEnabled || c.redis == nil || len(partitions) == 0 {
 		return
@@ -59,7 +59,7 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	defer c.muSub.Unlock()
 
 	if c.pubsub == nil || !c.pubsubHealthy.Load() {
-		return // Nothing to unsubscribe from or connection not healthy
+		return // Nothing to unsubscribe from or connection not healthy.
 	}
 
 	channels := toChannelNames(partitions)
@@ -67,15 +67,12 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	defer cancel()
 
 	if err := c.pubsub.Unsubscribe(ctx, channels...); err != nil {
-		c.logger().Error(fmt.Sprintf("ERROR: failed to unsubscribe from redis channels %v: %v", channels, err))
+		c.logger().Error("Failed to unsubscribe from redis channels", "channels", channels, "error", err)
 		c.pubsubHealthy.Store(false)
 	} else {
-		c.logger().Debug(fmt.Sprintf("Consumer %s unsubscribed from channels: %v", c.id, channels))
+		c.logger().Debug("Unsubscribed from channels", "channels", channels)
 		c.lastPubsubTime.Store(time.Now().Unix())
 	}
-
-	// 不要关闭pubsub连接，保持连接以便重用
-	// pubsub连接只在消费者关闭时才关闭
 }
 
 // --- Helper methods ---
@@ -85,11 +82,11 @@ func (c *Consumer) resetNotificationStateBatch(ctx context.Context, partitions [
 	if len(partitions) == 0 || c.redis == nil {
 		return
 	}
-	keys := lo.Map(partitions, func(p types.PartitionInfo, index int) string {
+	keys := lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
 		return fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
 	})
 	if err := c.redis.Del(ctx, keys...).Err(); err != nil {
-		c.logger().Warn(fmt.Sprintf("WARN: failed to batch reset notification state for %d partitions: %v", len(partitions), err))
+		c.logger().Warn("Failed to batch reset notification state", "count", len(partitions), "error", err)
 	}
 }
 
@@ -100,49 +97,60 @@ func (c *Consumer) tryResetNotificationStateBatch(ctx context.Context, partition
 	}
 }
 
-// ensurePubSubConnection 确保PubSub连接健康，如果不健康则尝试重新连接
+// ensurePubSubConnection ensures the PubSub connection is healthy, attempting to reconnect if not.
+// This version is optimized to avoid nested locks and improve logging.
 func (c *Consumer) ensurePubSubConnection() {
+	// 1. Quick, lock-free check for health.
+	now := time.Now().Unix()
+	lastActivity := c.lastPubsubTime.Load()
+	if c.pubsub != nil && c.pubsubHealthy.Load() && (now-lastActivity <= 30) {
+		return // Connection is healthy and active.
+	}
+
+	// 2. Get current assignments *before* locking, to avoid nested locks.
+	assignedPartitions := c.getAssignedPartitions()
+
+	// 3. Acquire lock to perform detailed check and potential refresh.
 	c.muSub.Lock()
 	defer c.muSub.Unlock()
 
-	// 检查连接是否健康
-	now := time.Now().Unix()
-	lastActivity := c.lastPubsubTime.Load()
+	// 4. Double-check lock: another goroutine might have fixed the connection while we waited for the lock.
+	now = time.Now().Unix()
+	lastActivity = c.lastPubsubTime.Load()
+	if c.pubsub != nil && c.pubsubHealthy.Load() && (now-lastActivity <= 30) {
+		return
+	}
 
-	// 如果超过30秒没有活动，或者连接标记为不健康，尝试重新连接
-	if c.pubsub == nil || !c.pubsubHealthy.Load() || (now-lastActivity > 30) {
-		c.logger().Debug(fmt.Sprintf("PubSub connection needs refresh for consumer %s", c.id))
+	c.logger().Debug("PubSub connection needs refresh.")
 
-		// 关闭旧连接
-		if c.pubsub != nil {
-			_ = c.pubsub.Close()
-			c.pubsub = nil
-			c.notifyCh = nil
+	// 5. Close the old connection if it exists.
+	if c.pubsub != nil {
+		if err := c.pubsub.Close(); err != nil {
+			c.logger().Warn("Error closing old pubsub connection", "error", err)
 		}
+		c.pubsub = nil
+		c.notifyCh = nil
+	}
 
-		// 创建新连接
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	// 6. Create a new connection.
+	// The context here is for subsequent operations, not the initial object creation.
+	c.pubsub = c.redis.Subscribe(context.Background())
+	c.notifyCh = c.pubsub.Channel()
+	c.pubsubHealthy.Store(true)
+	c.lastPubsubTime.Store(now)
+	c.logger().Debug("Successfully refreshed PubSub connection.")
 
-		c.pubsub = c.redis.Subscribe(ctx)
-		if c.pubsub != nil {
-			c.notifyCh = c.pubsub.Channel()
-			c.pubsubHealthy.Store(true)
-			c.lastPubsubTime.Store(now)
-
-			// 重新订阅当前分配的分区
-			channels := toChannelNames(c.getAssignedPartitions())
-			if len(channels) > 0 {
-				if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
-					c.logger().Error(fmt.Sprintf("ERROR: failed to resubscribe to channels %v: %v", channels, err))
-					c.pubsubHealthy.Store(false)
-				} else {
-					c.logger().Debug("Resubscribed to channels", "consumer-id", c.id, "channels", strings.Join(channels, ","))
-				}
-			}
-		} else {
-			c.logger().Error(fmt.Sprintf("ERROR: failed to create PubSub connection for consumer %s", c.id))
-			c.pubsubHealthy.Store(false)
-		}
+	// 7. Resubscribe to channels for the previously fetched assignments.
+	channels := toChannelNames(assignedPartitions)
+	if len(channels) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
+		c.logger().Error("Failed to resubscribe to channels after connection refresh", "channels", channels, "error", err)
+		c.pubsubHealthy.Store(false)
+	} else {
+		c.logger().Debug("Resubscribed to channels", "channels", channels)
 	}
 }
