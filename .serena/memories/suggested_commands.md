@@ -7,7 +7,7 @@ go test ./...
 
 # 运行特定包的测试
 go test ./pkg
-go test ./internal/dal
+go test ./internal/dao
 
 # 运行带详细输出的测试
 go test -v ./...

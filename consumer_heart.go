@@ -3,7 +3,7 @@ package dbmq
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/types"
 	"github.com/samber/lo"
 	"slices"
@@ -128,7 +128,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, newPartitions))
 	fetchedOffsets, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
 	if err != nil {
-		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
+		return fmt.Errorf("dao.GetCommittedOffsets failed: %w", err)
 	}
 	fetchedOffsetsMap := fetchedOffsets.ToMap()
 	// 筛选出新增的分区
@@ -136,7 +136,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 		_, exists := fetchedOffsetsMap[p]
 		return !exists
 	})
-	initialProgressWithWatermarks := make(map[types.PartitionInfo]dal.ConsumptionProgressWithWatermark)
+	initialProgressWithWatermarks := make(map[types.PartitionInfo]dao.ConsumptionProgressWithWatermark)
 	// 为没有已提交偏移量的分区应用消费策略并立即记录到数据库
 	for _, partition := range addedPartitions {
 		startID := c.determineStartMessageID(ctx, partition)
@@ -145,12 +145,12 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 		c.alreadyConsumeMessageIDs[partition] = startID - 1
 		c.mu.Unlock()
 
-		initialProgressWithWatermarks[partition] = dal.ConsumptionProgressWithWatermark{
+		initialProgressWithWatermarks[partition] = dao.ConsumptionProgressWithWatermark{
 			LastConsumedMessageID:      startID - 1,
 			SubscriptionStartWatermark: startID,
 		}
 	}
-	if err := dal.BatchCommitOffsetsWithInitialWatermark(ctx, c.db, c.config.GroupID, c.generationID, initialProgressWithWatermarks); err != nil {
+	if err := c.dao.BatchCommitOffsetsWithInitialWatermark(ctx, c.config.GroupID, c.generationID, initialProgressWithWatermarks); err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: 订阅信息注册失败: %v", c.id, err))
 		// 继续执行，但记录错误。这不是致命错误，因为重新注册时会重新应用策略
 	} else {

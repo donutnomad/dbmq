@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/types"
 
@@ -18,11 +18,11 @@ import (
 // AdminClient 管理客户端，用于Topic和分区的管理操作
 // 模仿Kafka AdminClient的设计模式
 type AdminClient struct {
-	db dal.DB
+	db dao.DB
 }
 
 // NewAdminClient 创建新的管理客户端实例
-func NewAdminClient(db dal.DB) *AdminClient {
+func NewAdminClient(db dao.DB) *AdminClient {
 	return &AdminClient{
 		db: db,
 	}

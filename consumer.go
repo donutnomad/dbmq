@@ -3,7 +3,7 @@ package dbmq
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
 	"github.com/google/uuid"
@@ -47,7 +47,7 @@ type Consumer struct {
 
 	stopCh chan struct{}  // 停止信号频道
 	wg     sync.WaitGroup // 等待组，用于优雅关闭
-	dao    *dal.MqDao
+	dao    *dao.MqDao
 }
 
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
@@ -73,7 +73,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		assignment:               make(map[string][]uint),
 		alreadyConsumeMessageIDs: make(map[types.PartitionInfo]int64),
 		offsetsToCommit:          make(map[types.PartitionInfo]int64),
-		dao:                      dal.NewMqDao(config.DB),
+		dao:                      dao.NewMqDao(config.DB),
 	}
 
 	// 初始化原子变量

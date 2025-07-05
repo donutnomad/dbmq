@@ -15,7 +15,7 @@ import (
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
 
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -82,7 +82,7 @@ type Producer struct {
 	redis              *redis.Client  // Redis连接（可选）
 	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*types.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
 	roundRobinCounters sync.Map       // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
-	dao                *dal.MqDao
+	dao                *dao.MqDao
 }
 
 // NewProducer 创建新的生产者实例
@@ -98,7 +98,7 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 		redis:              config.Redis,
 		topicMetadataCache: sync.Map{},
 		roundRobinCounters: sync.Map{},
-		dao:                dal.NewMqDao(config.DB),
+		dao:                dao.NewMqDao(config.DB),
 	}, nil
 }
 
@@ -186,7 +186,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	}
 
 	// 批量插入消息到数据库
-	if err := dal.CreateMessagesBatch(ctx, p.db, dbMessages); err != nil {
+	if err := dao.CreateMessagesBatch(ctx, p.db, dbMessages); err != nil {
 		return nil, fmt.Errorf("failed to create messages batch in db: %w", err)
 	}
 

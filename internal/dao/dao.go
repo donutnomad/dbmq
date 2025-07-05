@@ -1,4 +1,4 @@
-package dal
+package dao
 
 import (
 	"context"
@@ -18,6 +18,7 @@ type DB interface {
 	Exec(sql string, values ...any) (tx *gorm.DB)
 	Model(value any) *gorm.DB
 }
+
 type MqDao struct {
 	db DB
 }
@@ -119,32 +120,16 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 	return progressRecords, nil
 }
 
-// BatchCommitLastConsumeMessageID 在单个事务中为消费组提交一批消息消费进度
-// 这确保了消费进度提交的原子性，要么全部成功要么全部失败
-// offsets参数中的值表示最后成功消费的消息ID
-func BatchCommitLastConsumeMessageID(ctx context.Context, db DB, groupID string, generationID uint, consumedIds map[types.PartitionInfo]int64) error {
-	if len(consumedIds) == 0 {
-		return nil
-	}
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for p, offset := range consumedIds {
-			if err := CommitOffset(ctx, tx, groupID, generationID, p, offset); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批消费进度，同时设置初始水位线
 // 这个方法用于首次消费分区时，记录初始水位线以区分消费策略，解决手动提交模式下的注册问题
-func BatchCommitOffsetsWithInitialWatermark(ctx context.Context, db DB, groupID string, generationID uint, progressWithWatermarks map[types.PartitionInfo]ConsumptionProgressWithWatermark) error {
+func (d *MqDao) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[types.PartitionInfo]ConsumptionProgressWithWatermark) error {
 	if len(progressWithWatermarks) == 0 {
 		return nil
 	}
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dao := NewMqDao(tx)
 		for p, progressData := range progressWithWatermarks {
-			if err := CommitConsumptionProgressWithSubscriptionRegistration(ctx, tx, groupID, generationID, p, progressData.LastConsumedMessageID, progressData.SubscriptionStartWatermark); err != nil {
+			if err := dao.CommitConsumptionProgressWithSubscriptionRegistration(ctx, groupID, generationID, p, progressData.LastConsumedMessageID, progressData.SubscriptionStartWatermark); err != nil {
 				return err
 			}
 		}
@@ -158,27 +143,10 @@ type ConsumptionProgressWithWatermark struct {
 	SubscriptionStartWatermark int64 // 订阅时的水位线，可为nil表示不设置
 }
 
-// CommitOffset 为单个分区提交消费进度
-// 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
-// offset参数表示最后成功消费的消息ID
-func CommitOffset(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID int64) error {
-	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
-	// 它防止来自先前代际（具有较小generation_id）的消费者
-	// 覆盖来自当前或未来代际的消费者的进度
-	sql := `INSERT INTO ` + "`mq_consumer_group_consumption_progress`" + ` (` + "`group_id`, `topic`, `partition`, last_consumed_message_id, generation_id, updated_at" + `) 
-		VALUES (?, ?, ?, ?, ?, ?) 
-		ON DUPLICATE KEY UPDATE 
-		` + "last_consumed_message_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "last_consumed_message_id" + `), ` + "last_consumed_message_id" + `), 
-		` + "generation_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "generation_id" + `), ` + "generation_id" + `), 
-		` + "updated_at" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "updated_at" + `), ` + "updated_at" + `)`
-
-	return db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, lastConsumedMessageID, generationID, time.Now()).Error
-}
-
 // CommitConsumptionProgressWithSubscriptionRegistration 为单个分区提交消费进度，同时设置订阅注册信息
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
 // 这个函数专门用于首次订阅分区时，同时设置消费进度和订阅水位线
-func CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, db DB, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
+func (d *MqDao) CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
 	var sql string
 	var args []any
 
@@ -207,16 +175,7 @@ ON DUPLICATE KEY UPDATE last_consumed_message_id =
 
 	args = []any{groupID, p.Topic, p.Partition, lastConsumedMessageID, now, subscriptionStartWatermark, generationID, now}
 
-	return db.WithContext(ctx).Exec(sql, args...).Error
-}
-
-// CreateMessage 向数据库插入新消息
-// 使用简单的INSERT语句，依赖AUTO_INCREMENT自动生成ID
-// 消除了复杂的offset计算，避免死锁问题
-func CreateMessage(ctx context.Context, db DB, msg types.Message) error {
-	msg.Fix()
-	result := db.WithContext(ctx).Create(&msg)
-	return result.Error
+	return d.db.WithContext(ctx).Exec(sql, args...).Error
 }
 
 // CreateMessagesBatch 批量插入消息，显著提升高吞吐量场景的性能

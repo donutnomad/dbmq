@@ -6,7 +6,6 @@ import (
 	"github.com/samber/lo"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/types"
 )
 
@@ -82,7 +81,7 @@ func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, gene
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	err := dal.BatchCommitLastConsumeMessageID(ctx, c.db, groupID, generationID, messageIDsToCommit)
+	err := c.dao.BatchCommitLastConsumeMessageID(ctx, groupID, generationID, messageIDsToCommit)
 	if err != nil {
 		return fmt.Errorf("failed to commit message IDs: %w", err)
 	}

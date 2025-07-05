@@ -8,7 +8,7 @@ import (
 
 	"github.com/samber/lo"
 
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/types"
 	"gorm.io/gorm"
 )
@@ -22,7 +22,7 @@ type MetricsConfig struct {
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
 	db  *gorm.DB
-	dao *dal.MqDao
+	dao *dao.MqDao
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
@@ -33,7 +33,7 @@ func NewMetricsClient(config MetricsConfig) (*MetricsClient, error) {
 
 	return &MetricsClient{
 		db:  config.DB,
-		dao: dal.NewMqDao(config.DB),
+		dao: dao.NewMqDao(config.DB),
 	}, nil
 }
 
@@ -271,7 +271,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取活跃消费者
-	consumers, err := dal.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
+	consumers, err := dao.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	// 计算消费延迟
 	var totalLag int64
 	for _, topic := range metrics.AssignedTopics {
-		topicInfo, err := dal.NewMqDao(mc.db).GetTopic(ctx, topic)
+		topicInfo, err := dao.NewMqDao(mc.db).GetTopic(ctx, topic)
 		if err != nil || topicInfo == nil {
 			continue
 		}

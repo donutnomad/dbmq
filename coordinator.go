@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dal"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
 
@@ -77,7 +77,7 @@ type Coordinator struct {
 	mu               sync.Mutex                     // 保护members map的互斥锁
 	members          map[string]map[string]struct{} // groupID -> set of consumer IDs，缓存消费组成员信息
 	stopped          atomic.Bool                    // 原子布尔值，标记是否已停止
-	dao              *dal.MqDao
+	dao              *dao.MqDao
 	logger           *slog.Logger
 }
 
@@ -107,7 +107,7 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		cancel:           cancel,
 		members:          make(map[string]map[string]struct{}),
 		rebalancingLocks: newGroupLocks(),
-		dao:              dal.NewMqDao(config.DB),
+		dao:              dao.NewMqDao(config.DB),
 		logger:           logger.GetLogger().With("component", "coordinator"),
 	}
 }
