@@ -1,6 +1,4 @@
-// Package examples 展示DBMQ的完整使用场景
-// 创建订单主题的超级演示：两个消费组同时订阅，生产者发送消息
-package examples
+package main
 
 import (
 	"context"
@@ -28,7 +26,7 @@ type OrderMessage struct {
 
 // SuperDemo 超级演示函数
 // 展示完整的DBMQ使用场景：创建主题、多消费组订阅、生产消息、消费消息
-func SuperDemo() {
+func main() {
 	fmt.Println("🚀 开始DBMQ超级演示...")
 	fmt.Println("📋 场景：创建订单主题，三个消费组同时订阅处理订单消息")
 	fmt.Println("💡 演示特色：同时展示手动提交和自动提交两种偏移量提交模式")
@@ -116,17 +114,17 @@ func SuperDemo() {
 
 	// 4. 创建生产者
 	fmt.Println("📤 创建生产者...")
-	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
-		DB:                   dbClient,
-		Redis:                redisClient,
-		NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
-		NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
-	})
-	if err != nil {
-		log.Fatalf("❌ 创建生产者失败: %v", err)
-	}
-	defer producer.Close()
-	fmt.Println("✅ 生产者创建成功")
+	//producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
+	//	DB:                   dbClient,
+	//	Redis:                redisClient,
+	//	NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
+	//	NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
+	//})
+	//if err != nil {
+	//	log.Fatalf("❌ 创建生产者失败: %v", err)
+	//}
+	//defer producer.Close()
+	//fmt.Println("✅ 生产者创建成功")
 
 	// 5. 创建两个消费组的消费者
 	fmt.Println("📥 创建消费者...")
@@ -245,11 +243,11 @@ func SuperDemo() {
 	}()
 
 	// 11. 启动生产者发送消息
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		produceOrderMessages(ctx, producer, topicName)
-	}()
+	//wg.Add(1)
+	//go func() {
+	//	defer wg.Done()
+	//	produceOrderMessages(ctx, producer, topicName)
+	//}()
 
 	fmt.Println("🎬 演示开始！所有服务已启动...")
 	fmt.Println("📊 实时监控消息流转...")
@@ -422,7 +420,8 @@ func consumeMessagesWithAutoCommit(ctx context.Context, consumer *dbmq.Consumer,
 			// 自动提交模式下不需要手动提交偏移量
 			// 偏移量会由自动提交循环定期提交
 			if len(messages) > 0 {
-				fmt.Printf("📦 [%s] 处理了 %d 条消息，等待自动提交偏移量\n", consumerName, len(messages))
+				fmt.Printf("📦 [%s] 处理了 %d 条消息，提交偏移量\n", consumerName, len(messages))
+				consumer.Acknowledge(messages...)
 			}
 		}
 	}
