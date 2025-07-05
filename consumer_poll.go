@@ -7,6 +7,8 @@ import (
 	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/types"
 	"github.com/samber/lo"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -64,14 +66,12 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		return nil, &ErrFailedFetchMessage{err}
 	}
 
-	// 按照(Topic+分区) 分组
-	// 在数据库中消息都是按照Id递增的，所以分组后，每组的Message顺序是确定的
-	for partition := range lo.GroupBy(allMessages, func(msg types.Message) types.PartitionInfo {
-		return types.PartitionInfo{Topic: msg.Topic, Partition: msg.Partition}
-	}) {
-		// "重新装填"该分区的通知触发器
-		c.tryResetNotificationState(context.Background(), partition)
-	}
+	partitionsToReset := slices.Collect(maps.Keys(lo.GroupBy(allMessages, func(msg types.Message) types.PartitionInfo {
+		return msg.ToPartitionInfo()
+	})))
+	// 批量重置通知状态
+	c.tryResetNotificationStateBatch(context.Background(), partitionsToReset)
+
 	return new(ConsumerMessages).FromMessages(allMessages), nil
 }
 

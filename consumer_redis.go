@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/donutnomad/dbmq/types"
+	"github.com/samber/lo"
 	"strings"
 	"time"
 )
@@ -11,6 +12,9 @@ import (
 // --- Redis Notification Helpers ---
 
 func toChannelNames(partitions []types.PartitionInfo) []string {
+	if len(partitions) == 0 {
+		return nil
+	}
 	channels := make([]string, 0, len(partitions))
 	for _, p := range partitions {
 		channels = append(channels, fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition))
@@ -76,19 +80,23 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 
 // --- Helper methods ---
 
-// resetNotificationState deletes the notification state key in Redis, allowing a subsequent
-// producer to trigger a new notification. This is part of the "Intelligent Notification Coalescing" pattern.
-func (c *Consumer) resetNotificationState(ctx context.Context, p types.PartitionInfo) {
-	key := fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
-	if err := c.redis.Del(ctx, key).Err(); err != nil {
-		c.logger().Warn(fmt.Sprintf("WARN: failed to reset notification state for %v: %v", p, err))
+// resetNotificationStateBatch deletes multiple notification state keys in Redis using a single command.
+func (c *Consumer) resetNotificationStateBatch(ctx context.Context, partitions []types.PartitionInfo) {
+	if len(partitions) == 0 || c.redis == nil {
+		return
+	}
+	keys := lo.Map(partitions, func(p types.PartitionInfo, index int) string {
+		return fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
+	})
+	if err := c.redis.Del(ctx, keys...).Err(); err != nil {
+		c.logger().Warn(fmt.Sprintf("WARN: failed to batch reset notification state for %d partitions: %v", len(partitions), err))
 	}
 }
 
-// 删除该分区的通知状态
-func (c *Consumer) tryResetNotificationState(ctx context.Context, partition types.PartitionInfo) {
+// tryResetNotificationStateBatch asynchronously deletes multiple notification state keys.
+func (c *Consumer) tryResetNotificationStateBatch(ctx context.Context, partitions []types.PartitionInfo) {
 	if c.config.NotificationEnabled && c.redis != nil {
-		go c.resetNotificationState(ctx, partition)
+		go c.resetNotificationStateBatch(ctx, partitions)
 	}
 }
 
@@ -107,7 +115,7 @@ func (c *Consumer) ensurePubSubConnection() {
 
 		// 关闭旧连接
 		if c.pubsub != nil {
-			c.pubsub.Close()
+			_ = c.pubsub.Close()
 			c.pubsub = nil
 			c.notifyCh = nil
 		}
@@ -123,9 +131,8 @@ func (c *Consumer) ensurePubSubConnection() {
 			c.lastPubsubTime.Store(now)
 
 			// 重新订阅当前分配的分区
-			assignedPartitions := c.getAssignedPartitions()
-			if len(assignedPartitions) > 0 {
-				channels := toChannelNames(assignedPartitions)
+			channels := toChannelNames(c.getAssignedPartitions())
+			if len(channels) > 0 {
 				if err := c.pubsub.Subscribe(ctx, channels...); err != nil {
 					c.logger().Error(fmt.Sprintf("ERROR: failed to resubscribe to channels %v: %v", channels, err))
 					c.pubsubHealthy.Store(false)

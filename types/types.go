@@ -104,7 +104,11 @@ func (m *Message) Fix() {
 	}
 }
 
-func (m *Message) TableName() string {
+func (m Message) ToPartitionInfo() PartitionInfo {
+	return PartitionInfo{Topic: m.Topic, Partition: m.Partition}
+}
+
+func (m Message) TableName() string {
 	return "mq_messages"
 }
 
