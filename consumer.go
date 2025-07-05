@@ -37,8 +37,8 @@ type Consumer struct {
 	rebalancing              atomic.Bool                   // 标记是否正在进行重新均衡
 	generationID             uint                          // 当前代际ID，用于版本控制
 	assignment               map[string][]uint             // 分区分配，topic -> partitions
-	alreadyConsumeMessageIDs map[types.PartitionInfo]int64 // 已经消费的消息ID
-	lastPolledMessageIDs     map[types.PartitionInfo]int64 // 拉取到的消息的最后一个ID
+	alreadyConsumeMessageIDs map[types.PartitionInfo]int64 // 已经消费的最大消息ID
+	offsetsToCommit          map[types.PartitionInfo]int64 // 已经处理的最大消息ID(适用于自动提交)
 	heartbeatStarted         atomic.Bool                   // 标记心跳循环是否已启动
 
 	// 自动提交相关
@@ -72,7 +72,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		stopCh:                   make(chan struct{}),
 		assignment:               make(map[string][]uint),
 		alreadyConsumeMessageIDs: make(map[types.PartitionInfo]int64),
-		lastPolledMessageIDs:     make(map[types.PartitionInfo]int64),
+		offsetsToCommit:          make(map[types.PartitionInfo]int64),
 		dao:                      dal.NewMqDao(config.DB),
 	}
 

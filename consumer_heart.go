@@ -97,30 +97,14 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
 
 	// 提交被撤销分区的
-	if len(revokedPartitions) > 0 {
-		if c.config.EnableAutoCommit {
-			c.logger().Debug(fmt.Sprintf("Consumer %s: auto-commit mode, committing offsets for revoked partitions: %v", c.id, revokedPartitions))
-			// 为撤销的分区准备消息ID提交
-			err := c.commitSync(ctx, c.getGenerationIDLocked(), revokedPartitions)
-			if err != nil {
-				c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err))
-				// 继续执行，但记录错误
-			} else {
-				c.logger().Debug(fmt.Sprintf("Consumer %s: successfully committed revoked partitions", c.id))
-			}
+	if len(revokedPartitions) > 0 && c.config.EnableAutoCommit {
+		c.logger().Debug(fmt.Sprintf("Consumer %s: auto-commit mode, committing offsets for revoked partitions: %v", c.id, revokedPartitions))
+		// 为撤销的分区准备消息ID提交
+		err := c.commitSync(ctx, c.getGenerationIDLocked(), revokedPartitions)
+		if err != nil {
+			c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: failed to commit revoked partitions: %v", c.id, err))
 		} else {
-			// 手动提交模式下，不自动提交被撤销分区的消息ID
-			// 记录警告信息，提醒用户可能丢失未提交的消息
-			var uncommittedPartitions []types.PartitionInfo
-			for _, p := range revokedPartitions {
-				if _, exists := c.lastPolledMessageIDs[p]; exists {
-					uncommittedPartitions = append(uncommittedPartitions, p)
-				}
-			}
-			if len(uncommittedPartitions) > 0 {
-				c.logger().Warn(fmt.Sprintf("WARNING: Consumer %s: 手动提交模式下，重新均衡导致分区 %v 被撤销，但这些分区有未提交的消息。这些消息将被重新消费。", c.id, uncommittedPartitions))
-			}
-			c.logger().Debug(fmt.Sprintf("Consumer %s: manual commit mode, not auto-committing revoked partitions: %v", c.id, revokedPartitions))
+			c.logger().Debug(fmt.Sprintf("Consumer %s: successfully committed revoked partitions", c.id))
 		}
 	}
 
@@ -128,7 +112,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	{
 		c.mu.Lock()
 		for _, p := range revokedPartitions {
-			delete(c.lastPolledMessageIDs, p)
+			delete(c.offsetsToCommit, p)
 			delete(c.alreadyConsumeMessageIDs, p)
 		}
 		c.mu.Unlock()
@@ -140,17 +124,16 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 		return nil
 	}
 
-	////////////////////// 为新增的分区应用策略 //////////////////////
+	////////////////////// 为新增的分区应用策略-START //////////////////////
 	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, newPartitions))
-	fetchedOffsets_, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
+	fetchedOffsets, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
 	if err != nil {
-		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: dal.GetCommittedOffsets failed: %v", c.id, err))
 		return fmt.Errorf("dal.GetCommittedOffsets failed: %w", err)
 	}
-	fetchedOffsets := fetchedOffsets_.ToMap()
+	fetchedOffsetsMap := fetchedOffsets.ToMap()
 	// 筛选出新增的分区
 	addedPartitions := lo.Filter(newPartitions, func(p types.PartitionInfo, index int) bool {
-		_, exists := fetchedOffsets[p]
+		_, exists := fetchedOffsetsMap[p]
 		return !exists
 	})
 	initialProgressWithWatermarks := make(map[types.PartitionInfo]dal.ConsumptionProgressWithWatermark)
@@ -173,7 +156,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	} else {
 		c.logger().Debug(fmt.Sprintf("Consumer %s: 订阅信息注册成功", c.id))
 	}
-	////////////////////// 为新增的分区应用策略 //////////////////////
+	////////////////////// 为新增的分区应用策略-END //////////////////////
 
 	return nil
 }

@@ -3,16 +3,47 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"github.com/samber/lo"
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dal"
 	"github.com/donutnomad/dbmq/types"
 )
 
+// Acknowledge 确认一批消息已经成功处理
+// 这会将这批消息中最大的偏移量标记为准备提交
+// 在自动提交模式下，后台循环会提交这些偏移量
+// 在手动提交模式下，您仍需调用 CommitSync 来实际提交
+func (c *Consumer) Acknowledge(messages ...ConsumerMessage) {
+	if len(messages) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 按分区对消息进行分组
+	groupedMessages := lo.GroupBy(messages, func(msg ConsumerMessage) types.PartitionInfo {
+		return msg.PartitionInfo()
+	})
+
+	// 为每个分区找到最大的消息ID并标记为待提交
+	for partition, msgs := range groupedMessages {
+		if len(msgs) == 0 {
+			continue
+		}
+		// 找到这批消息中的最大ID
+		maxID := lo.MaxBy(msgs, func(a, b ConsumerMessage) bool {
+			return a.ID > b.ID
+		}).ID
+		c.offsetsToCommit[partition] = max(maxID, c.offsetsToCommit[partition])
+	}
+}
+
 // CommitSync 同步提交所有当前分配分区的消费进度
 // 这是一个阻塞操作，提交所有已拉取但尚未提交的消息ID
 func (c *Consumer) CommitSync() error {
-	return c.commitSync(nil, c.GetGenerationID(), c.getAssignedPartitions())
+	return c.commitSync(context.Background(), c.GetGenerationID(), c.getAssignedPartitions())
 }
 
 // CommitMessage 提交单个消息ACK
@@ -25,17 +56,16 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 		msg.PartitionInfo(): msg.ID,
 	}
 
-	return c.commitMessageIDs(nil, c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
+	return c.commitMessageIDs(context.Background(), c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
 }
 
 func (c *Consumer) commitSync(parent context.Context, generationID uint, partitions []types.PartitionInfo) error {
 	c.mu.RLock()
+	// 我们只提交那些已经被Acknowledge的偏移量
 	messageIDsToCommit := make(map[types.PartitionInfo]int64)
 	for _, p := range partitions {
-		if polledMessageID, exists := c.lastPolledMessageIDs[p]; exists {
-			messageIDsToCommit[p] = polledMessageID
-		} else if messageID, exists := c.alreadyConsumeMessageIDs[p]; exists {
-			messageIDsToCommit[p] = messageID
+		if ackedOffset, exists := c.offsetsToCommit[p]; exists {
+			messageIDsToCommit[p] = ackedOffset
 		}
 	}
 	c.mu.RUnlock()
@@ -47,9 +77,6 @@ func (c *Consumer) commitSync(parent context.Context, generationID uint, partiti
 func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, generationID uint, messageIDsToCommit map[types.PartitionInfo]int64) error {
 	if len(messageIDsToCommit) == 0 {
 		return nil
-	}
-	if parent == nil {
-		parent = context.Background()
 	}
 
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
@@ -63,8 +90,8 @@ func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, gene
 	// 提交成功后，更新内存状态
 	c.mu.Lock()
 	for partition, messageID := range messageIDsToCommit {
-		c.alreadyConsumeMessageIDs[partition] = messageID
-		delete(c.lastPolledMessageIDs, partition)
+		c.alreadyConsumeMessageIDs[partition] = max(messageID, c.alreadyConsumeMessageIDs[partition])
+		delete(c.offsetsToCommit, partition)
 	}
 	c.mu.Unlock()
 
