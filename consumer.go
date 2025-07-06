@@ -52,11 +52,6 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 3 * time.Second
 	}
-	// 如果没有设置消费策略，默认使用ConsumeFromCommitted
-	// 这与Kafka的默认行为一致：从已提交的偏移量开始，如果没有则从最新开始
-	if config.ConsumeStrategy == 0 {
-		config.ConsumeStrategy = ConsumeFromCommitted
-	}
 	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
 	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
 		config.AutoCommitInterval = 5 * time.Second
@@ -202,7 +197,7 @@ func (c *Consumer) determineStartMessageID(ctx context.Context, partitions []typ
 		switch c.config.ConsumeStrategy {
 		case ConsumeFromEarliest:
 			continue
-		case ConsumeFromLatest, ConsumeFromCommitted:
+		case ConsumeFromLatest:
 			needFetchFromDB = append(needFetchFromDB, partition)
 		default:
 			// unreachable

@@ -118,15 +118,15 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 			delete(c.alreadyConsumeMessageIDs, p)
 		}
 
+		for k, v := range initialProgressWithWatermarks {
+			c.alreadyConsumeMessageIDs[k] = v.LastConsumedMessageID
+		}
+
 		for _, item := range fetchedOffsets {
 			c.alreadyConsumeMessageIDs[types.PartitionInfo{
 				Topic:     item.Topic,
 				Partition: item.Partition,
 			}] = item.LastConsumedMessageID
-		}
-
-		for k, v := range initialProgressWithWatermarks {
-			c.alreadyConsumeMessageIDs[k] = v.LastConsumedMessageID
 		}
 
 		c.generationID = newGenerationID

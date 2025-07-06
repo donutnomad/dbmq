@@ -73,10 +73,8 @@ type BatchSendResult []SendResult
 type ConsumeStrategy int
 
 const (
-	// ConsumeFromCommitted 从已提交的偏移量开始消费，如果没有则使用Latest策略（默认）
-	ConsumeFromCommitted ConsumeStrategy = iota
 	// ConsumeFromEarliest 从最早的消息开始消费（偏移量0）
-	ConsumeFromEarliest
+	ConsumeFromEarliest ConsumeStrategy = iota
 	// ConsumeFromLatest 从最新的消息开始消费（跳过历史消息）
 	ConsumeFromLatest
 )
@@ -84,8 +82,6 @@ const (
 // String 返回消费策略的字符串表示
 func (s ConsumeStrategy) String() string {
 	switch s {
-	case ConsumeFromCommitted:
-		return "committed"
 	case ConsumeFromEarliest:
 		return "earliest"
 	case ConsumeFromLatest:
