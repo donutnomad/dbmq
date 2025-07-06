@@ -33,7 +33,13 @@ func (d *MqDao) GetConsumerHeartbeat(ctx context.Context, groupID, consumerID st
 // 更新最后心跳时间并确保消费者的订阅Topic是最新的
 // 这是消费者心跳循环使用的主要函数
 func (d *MqDao) UpsertConsumerHeartbeat(ctx context.Context, groupID, consumerID string, subscribedTopics []string) error {
-	sql := "INSERT INTO `mq_consumer_heartbeats` (`group_id`, `consumer_id`, `generation_id`, `subscribed_topics`, `assigned_partitions`, `offline`, `last_heartbeat`, `offline_at`) VALUES (?, ?, 0, ?, ?, FALSE, ?, NULL) ON DUPLICATE KEY UPDATE `last_heartbeat` = VALUES(`last_heartbeat`), `offline` = FALSE, `offline_at` = NULL"
+	sql := "INSERT INTO " + db.ConsumerHeartbeat{}.TableName() + ` (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, offline, last_heartbeat, offline_at) 
+	VALUES (?, ?, 0, ?, ?, FALSE, ?, NULL) 
+	ON DUPLICATE KEY UPDATE 
+		last_heartbeat = VALUES(last_heartbeat), 
+		offline = FALSE, 
+		offline_at = NULL
+`
 	return d.db.WithContext(ctx).Exec(sql,
 		groupID,
 		consumerID,
@@ -127,12 +133,13 @@ func (d *MqDao) CommitOffset(ctx context.Context, groupID string, generationID u
 	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
 	// 它防止来自先前代际（具有较小generation_id）的消费者
 	// 覆盖来自当前或未来代际的消费者的进度
-	sql := `INSERT INTO ` + "`mq_consumer_group_consumption_progress`" + ` (` + "`group_id`, `topic`, `partition`, last_consumed_message_id, generation_id, updated_at" + `) 
+	sql := "INSERT INTO " + db.ConsumerGroupConsumptionProgress{}.TableName() + " (group_id, topic, " + "`partition`" + `, last_consumed_message_id, generation_id, updated_at) 
 		VALUES (?, ?, ?, ?, ?, ?) 
 		ON DUPLICATE KEY UPDATE 
-		` + "last_consumed_message_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "last_consumed_message_id" + `), ` + "last_consumed_message_id" + `), 
-		` + "generation_id" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "generation_id" + `), ` + "generation_id" + `), 
-		` + "updated_at" + ` = IF(VALUES(` + "generation_id" + `) >= ` + "generation_id" + `, VALUES(` + "updated_at" + `), ` + "updated_at" + `)`
+			last_consumed_message_id = IF(VALUES(generation_id) >= generation_id, VALUES(last_consumed_message_id), last_consumed_message_id), 
+			generation_id = IF(VALUES(generation_id) >= generation_id, VALUES(generation_id), generation_id), 
+			updated_at = IF(VALUES(generation_id) >= generation_id, VALUES(updated_at), updated_at)
+`
 	return d.db.WithContext(ctx).Exec(sql, groupID, p.Topic, p.Partition, lastConsumedMessageID, generationID, time.Now()).Error
 }
 

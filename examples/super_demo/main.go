@@ -216,12 +216,12 @@ func main() {
 		consumeMessagesWithAutoCommit(ctx, consumer002, "消费者002", "数据分析服务")
 	}()
 
-	// 10. 启动消费者003的消费循环（自动提交模式）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
-	}()
+	////10. 启动消费者003的消费循环（自动提交模式）
+	//wg.Add(1)
+	//go func() {
+	//	defer wg.Done()
+	//	consumeMessagesWithAutoCommit(ctx, consumer003, "消费者003", "从最新的地方开始消费")
+	//}()
 
 	// 11. 启动生产者发送消息
 	wg.Add(1)

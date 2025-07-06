@@ -14,10 +14,10 @@ func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint,
 	var messages []db.Message
 	err := d.db.WithContext(ctx).
 		Model(&db.Message{}).
-		Where("`topic` = ?", topic).
+		Where("topic = ?", topic).
 		Where("`partition` = ?", partition).
-		Where("`id` > ?", offset).
-		Order("`id` ASC").
+		Where("id > ?", offset).
+		Order("id ASC").
 		Limit(limit).
 		Scan(&messages).Error
 	return messages, err
@@ -44,7 +44,7 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	var args []any
 
 	for _, req := range requests {
-		unionParts = append(unionParts, "(SELECT * FROM `mq_messages` WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
+		unionParts = append(unionParts, "(SELECT * FROM "+db.Message{}.TableName()+" WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
 		args = append(args, req.Topic, req.Partition, req.ID, req.Limit)
 	}
 

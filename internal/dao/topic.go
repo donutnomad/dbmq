@@ -30,7 +30,9 @@ func (d *MqDao) GetAllTopics(ctx context.Context) ([]db.Topic, error) {
 
 func (d *MqDao) GetTopic(ctx context.Context, topicName string) (*db.Topic, error) {
 	var topic db.Topic
-	err := d.db.WithContext(ctx).Where("`topic_name` = ?", topicName).First(&topic).Error
+	err := d.db.WithContext(ctx).
+		Where("topic_name = ?", topicName).
+		First(&topic).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			err = nil
