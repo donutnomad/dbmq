@@ -240,7 +240,7 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
                   <tr key={topicName} className="hover:bg-gray-50 transition-colors group">
                     <td className="px-4 py-2 whitespace-nowrap">
                       <Link
-                        href={`/topics/${encodeURIComponent(topicName)}`}
+                        href={`/topics/?name=${encodeURIComponent(topicName)}`}
                         className="block w-full h-full"
                       >
                         <span className="text-sm text-gray-900 group-hover:text-gray-700">
@@ -250,7 +250,7 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
                       <Link
-                        href={`/topics/${encodeURIComponent(topicName)}`}
+                        href={`/topics/?name=${encodeURIComponent(topicName)}`}
                         className="block w-full h-full"
                       >
                         {topic.partitionCount || topic.partitions?.length || '--'}
@@ -258,7 +258,7 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
                       <Link
-                        href={`/topics/${encodeURIComponent(topicName)}`}
+                        href={`/topics/?name=${encodeURIComponent(topicName)}`}
                         className="block w-full h-full"
                       >
                         {formatNumber(topic.messageCount || 0)}
@@ -266,7 +266,7 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap">
                       <Link
-                        href={`/topics/${encodeURIComponent(topicName)}`}
+                        href={`/topics/?name=${encodeURIComponent(topicName)}`}
                         className="block w-full h-full"
                       >
                         <StatusBadge status={topic.status || 'active'} />
@@ -331,7 +331,7 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                   <tr key={groupId} className="hover:bg-gray-50 transition-colors group">
                     <td className="px-4 py-2 whitespace-nowrap">
                       <Link
-                        href={`/consumer-groups/${encodeURIComponent(groupId)}`}
+                        href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
                         <span className="text-sm text-gray-900 group-hover:text-gray-700">
@@ -341,7 +341,7 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap">
                       <Link
-                        href={`/consumer-groups/${encodeURIComponent(groupId)}`}
+                        href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
                         <StatusBadge status={group.state || group.status || 'unknown'} />
@@ -349,7 +349,7 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
                       <Link
-                        href={`/consumer-groups/${encodeURIComponent(groupId)}`}
+                        href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
                         {group.memberCount || group.members?.length || 0}
@@ -357,7 +357,7 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
                       <Link
-                        href={`/consumer-groups/${encodeURIComponent(groupId)}`}
+                        href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
                         {formatNumber(group.lag || 0)}

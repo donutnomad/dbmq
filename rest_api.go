@@ -3,8 +3,10 @@ package dbmq
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,6 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+//go:embed dashboard-ui/out/*
+var embedFS embed.FS
 
 // RestAPIConfig REST API配置
 type RestAPIConfig struct {
@@ -112,6 +117,13 @@ func (ras *RestAPIServer) Stop(ctx context.Context) error {
 
 // registerRoutes 注册所有API路由
 func (ras *RestAPIServer) registerRoutes() {
+	// 例如：访问 /static/index.html 而不是 /static/web/index.html
+	staticFiles, err := fs.Sub(embedFS, "dashboard-ui/out")
+	if err != nil {
+		panic(err)
+	}
+	ras.engine.StaticFS("/static", http.FS(staticFiles))
+
 	api := ras.engine.Group(ras.config.Prefix)
 
 	// 健康检查接口

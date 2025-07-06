@@ -98,7 +98,6 @@ export class DBMQAPIClient {
       
       // 获取扩展信息（如果有）
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const extendedResponse = await apiClient.get<APIResponse<any>>(`/dbmq/consumer-groups/${groupId}/extended`);
         if (extendedResponse.data.success && extendedResponse.data.data) {
           // 合并扩展信息
