@@ -40,15 +40,16 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 			var rebalanceErr *ErrRebalanceInProgress
 			if errors.As(err, &rebalanceErr) { // 正在重平衡
 				timeA.Reset(1 * time.Second)
+				continue
 			}
-			continue
-		}
-		if messages == nil {
-			timeA.Reset(500 * time.Millisecond)
-			continue
-		}
-		if len(messages) > 0 {
-			onMessage(messages)
+		} else {
+			if messages == nil {
+				timeA.Reset(500 * time.Millisecond)
+				continue
+			}
+			if len(messages) > 0 {
+				onMessage(messages)
+			}
 		}
 		timeA.Reset(0)
 	}
