@@ -79,7 +79,6 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		}
 	}
 
-	// 预先获取所有Topic的元数据
 	topicMetadataMap := make(map[string]*db.Topic)
 	for topicName := range lo.GroupBy(messages, func(item ProducerMessage) string {
 		return item.Topic
@@ -91,15 +90,12 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		topicMetadataMap[topicName] = topicMeta
 	}
 
-	// 准备批量插入的数据库消息
 	var dbMessages []*db.Message
 	var notificationPartitions []db.PartitionInfo
 	var currentTime = time.Now()
 
-	// 为每条消息分配分区并构造数据库对象
 	for _, msg := range messages {
 		partitionCount := topicMetadataMap[msg.Topic].PartitionCount
-		// 选择目标分区
 		var partition uint
 		if len(msg.Key) > 0 {
 			partition = hashPartition(msg.Key, partitionCount)
@@ -116,21 +112,15 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		return nil, fmt.Errorf("failed to create messages batch in db: %w", err)
 	}
 
-	// 构造返回结果
-	results := lo.Map(dbMessages, func(dbMsg *db.Message, index int) SendResult {
+	p.sendBatchNotifications(context.Background(), notificationPartitions)
+
+	return lo.Map(dbMessages, func(dbMsg *db.Message, index int) SendResult {
 		return SendResult{
 			Topic:     dbMsg.Topic,
 			Partition: dbMsg.Partition,
 			Offset:    dbMsg.ID, // 使用数据库自动生成的ID作为offset
 		}
-	})
-
-	// 添加调试日志
-	p.logger().Debug(fmt.Sprintf("📤 [Producer] 批量发送成功 - %d 条消息", len(messages)))
-
-	p.sendBatchNotifications(context.Background(), notificationPartitions)
-
-	return results, nil
+	}), nil
 }
 
 // sendBatchNotifications 批量发送通知，去重相同的topic-partition组合
