@@ -60,6 +60,44 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	return messages, err
 }
 
+type TopicPartitionOffset struct {
+	Topic     string `gorm:"column:topic"`
+	Partition uint   `gorm:"column:partition"`
+	MaxID     int64  `gorm:"column:max_id"` // 这里用 Offset 对应 MAX(id)
+}
+
+func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
+	if len(topicPartitions) == 0 {
+		return map[types.PartitionInfo]int64{}, nil // 没有要查询的组合，返回空 map
+	}
+
+	var inArgs []any
+	var placeholders = make([]string, len(topicPartitions))
+	for i, tp := range topicPartitions {
+		placeholders[i] = "(?, ?)"
+		inArgs = append(inArgs, tp.Topic, tp.Partition)
+	}
+
+	var results []TopicPartitionOffset
+	query := d.db.WithContext(ctx).
+		Model(&types.Message{}).
+		Select("topic, `partition`, COALESCE(MAX(`id`), 0) AS max_id").
+		Where("(topic, `partition`) IN ("+strings.Join(placeholders, ", ")+")", inArgs...). // 核心：使用行构造器
+		Group("topic, `partition`").
+		Find(&results)
+
+	if query.Error != nil {
+		return nil, query.Error
+	}
+
+	latestIDs := make(map[types.PartitionInfo]int64)
+	for _, res := range results {
+		latestIDs[types.PartitionInfo{Topic: res.Topic, Partition: res.Partition}] = res.MaxID
+	}
+
+	return latestIDs, nil
+}
+
 // GetTopicLatestIDByPartition 获取指定分区的最后一个消息的ID
 func (d *MqDao) GetTopicLatestIDByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
 	var offset int64

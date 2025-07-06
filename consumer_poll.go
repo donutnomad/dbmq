@@ -32,7 +32,7 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 			timeA.Reset(1 * time.Second)
 			continue
 		}
-		messages, err := c.Poll(ctx, timeout, timeout)
+		messages, err := c.Poll(ctx, timeout)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -50,7 +50,7 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 		if len(messages) > 0 {
 			onMessage(messages)
 		}
-		timeA.Reset(0 * time.Second)
+		timeA.Reset(0)
 	}
 }
 
@@ -61,7 +61,7 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 // ErrRebalanceInProgress
 // context.DeadlineExceeded
 // context.Canceled
-func (c *Consumer) Poll(ctx context.Context, timeout, redisTimeout time.Duration) ([]ConsumerMessage, error) {
+func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
 	// 如果正在进行重新均衡，立即返回并提示用户
 	// 心跳循环负责处理重新均衡过程
 	if c.rebalancing.Load() {

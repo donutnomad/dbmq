@@ -95,7 +95,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	log.Printf("Starting to poll for messages...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	receivedMsgs, err := consumer.Poll(ctx, 5*time.Second, 60*time.Second)
+	receivedMsgs, err := consumer.Poll(ctx, 5*time.Second)
 	log.Printf("Poll completed, received %d messages", len(receivedMsgs))
 	require.NoError(t, err)
 	require.Len(t, receivedMsgs, 1, "Consumer should have received exactly one message")
@@ -236,7 +236,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	var allMessages []ConsumerMessage
 	for _, consumer := range consumers {
-		receivedMsgs, err := consumer.Poll(ctx, 5*time.Second, 60*time.Second)
+		receivedMsgs, err := consumer.Poll(ctx, 5*time.Second)
 		require.NoError(t, err)
 		allMessages = append(allMessages, receivedMsgs...)
 
@@ -442,7 +442,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 200*time.Millisecond)
 
 	// Poll and find the last "old" message
-	msgs, err := consumer.Poll(context.Background(), 5*time.Second, 60*time.Second)
+	msgs, err := consumer.Poll(context.Background(), 5*time.Second)
 	require.NoError(t, err)
 	// 前面手动修改了时间，所以那些都已经过期了，现在消费者消费剩下的两条消息，会按照已消费的逻辑清理
 	require.Len(t, msgs, 2, "Should get all 4 messages initially")
@@ -552,7 +552,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	receivedMsgs, err := consumer.Poll(ctx, 3*time.Second, 60*time.Second)
+	receivedMsgs, err := consumer.Poll(ctx, 3*time.Second)
 	require.NoError(t, err)
 
 	// 验证收到了消息
