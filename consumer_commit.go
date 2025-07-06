@@ -42,7 +42,20 @@ func (c *Consumer) Acknowledge(messages ...ConsumerMessage) {
 // CommitSync 同步提交所有当前分配分区的消费进度
 // 这是一个阻塞操作，提交所有已拉取但尚未提交的消息ID
 func (c *Consumer) CommitSync() error {
-	return c.commitSync(context.Background(), c.GetGenerationID(), c.getAssignedPartitions())
+	partitions := c.getAssignedPartitions()
+	generationID := c.GetGenerationID()
+
+	c.mu.RLock()
+	// 我们只提交那些已经被Acknowledge的偏移量
+	messageIDsToCommit := make(map[types.PartitionInfo]int64)
+	for _, p := range partitions {
+		if ackedOffset, exists := c.offsetsToCommit[p]; exists {
+			messageIDsToCommit[p] = ackedOffset
+		}
+	}
+	c.mu.RUnlock()
+
+	return c.commitMessageIDs(context.Background(), c.config.GroupID, generationID, messageIDsToCommit)
 }
 
 // CommitMessage 提交单个消息ACK
@@ -56,20 +69,6 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 	}
 
 	return c.commitMessageIDs(context.Background(), c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
-}
-
-func (c *Consumer) commitSync(parent context.Context, generationID uint, partitions []types.PartitionInfo) error {
-	c.mu.RLock()
-	// 我们只提交那些已经被Acknowledge的偏移量
-	messageIDsToCommit := make(map[types.PartitionInfo]int64)
-	for _, p := range partitions {
-		if ackedOffset, exists := c.offsetsToCommit[p]; exists {
-			messageIDsToCommit[p] = ackedOffset
-		}
-	}
-	c.mu.RUnlock()
-
-	return c.commitMessageIDs(parent, c.config.GroupID, generationID, messageIDsToCommit)
 }
 
 // commitMessageIDs 提交消息ID的核心逻辑

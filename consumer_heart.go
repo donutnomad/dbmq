@@ -153,3 +153,34 @@ func (c *Consumer) findRevokedPartitions(newPartitions []types.PartitionInfo) []
 	}
 	return revoked
 }
+
+var firstMessageId = int64(1) // 数据库的消息ID主键是从1开始的
+
+// determineStartMessageID 首次，根据消费策略，确定从哪个ID开始消费，比如2，那么第一个将会消费2这个ID
+func (c *Consumer) determineStartMessageID(ctx context.Context, partitions []types.PartitionInfo) map[types.PartitionInfo]int64 {
+	var ret = make(map[types.PartitionInfo]int64)
+
+	var needFetchFromDB []types.PartitionInfo
+	for _, partition := range partitions {
+		ret[partition] = firstMessageId
+		switch c.config.ConsumeStrategy {
+		case ConsumeFromEarliest:
+			continue
+		case ConsumeFromLatest:
+			needFetchFromDB = append(needFetchFromDB, partition)
+		default:
+			// unreachable
+			panic(fmt.Errorf("unknown consume strategy: %v", c.config.ConsumeStrategy))
+		}
+	}
+
+	byPartitions, err := c.dao.GetTopicsLatestIDsByPartitions(ctx, needFetchFromDB)
+	if err != nil {
+		return ret
+	}
+	for k, v := range byPartitions {
+		ret[k] = v
+	}
+
+	return ret
+}
