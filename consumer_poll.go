@@ -42,6 +42,10 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 				timeA.Reset(1 * time.Second)
 				continue
 			}
+			var fetchErr *ErrFailedFetchMessage
+			if errors.As(err, &fetchErr) {
+				c.logger().Error(fmt.Sprintf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err))
+			}
 		} else {
 			if messages == nil {
 				timeA.Reset(500 * time.Millisecond)
@@ -56,15 +60,13 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 }
 
 // Poll 从订阅的Topic和分区中拉取消息
-// 这是消费者逻辑的核心，实现了复杂的拉取和通知机制
 // 会返回的错误:
 // ErrFailedFetchMessage
 // ErrRebalanceInProgress
 // context.DeadlineExceeded
 // context.Canceled
 func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
-	// 如果正在进行重新均衡，立即返回并提示用户
-	// 心跳循环负责处理重新均衡过程
+	// 如果正在进行重新均衡，立即返回并提示用户. 心跳循环负责处理重新均衡过程
 	if c.rebalancing.Load() {
 		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
@@ -95,8 +97,6 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return nil, err
 		}
-		// 如果批量查询失败，记录错误并返回
-		c.logger().Error(fmt.Sprintf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err))
 		return nil, &ErrFailedFetchMessage{err}
 	}
 
@@ -119,10 +119,10 @@ func (c *Consumer) waitPoll(ctx context.Context, timeout time.Duration, partitio
 		c.ensurePubSubConnection()
 		c.muSub.Lock()
 		c.subscribe(partitions)
-		var pubsub = c.pubsub
+		var pubSub = c.pubsub
 		c.muSub.Unlock()
 
-		if pubsub != nil && c.pubsubHealthy.Load() {
+		if pubSub != nil && c.pubsubHealthy.Load() {
 			select {
 			case msg := <-c.notifyCh:
 				c.logger().Debug(fmt.Sprintf("Received notification for consumer %s: %s", c.id, msg.Channel))
