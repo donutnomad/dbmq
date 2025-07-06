@@ -3,10 +3,9 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
 	"time"
-
-	"github.com/donutnomad/dbmq/types"
 )
 
 // Acknowledge 确认一批消息已经成功处理
@@ -22,7 +21,7 @@ func (c *Consumer) Acknowledge(messages ...ConsumerMessage) {
 	defer c.mu.Unlock()
 
 	// 按分区对消息进行分组
-	groupedMessages := lo.GroupBy(messages, func(msg ConsumerMessage) types.PartitionInfo {
+	groupedMessages := lo.GroupBy(messages, func(msg ConsumerMessage) db.PartitionInfo {
 		return msg.PartitionInfo()
 	})
 
@@ -47,7 +46,7 @@ func (c *Consumer) CommitSync() error {
 
 	c.mu.RLock()
 	// 我们只提交那些已经被Acknowledge的偏移量
-	messageIDsToCommit := make(map[types.PartitionInfo]int64)
+	messageIDsToCommit := make(map[db.PartitionInfo]int64)
 	for _, p := range partitions {
 		if ackedOffset, exists := c.offsetsToCommit[p]; exists {
 			messageIDsToCommit[p] = ackedOffset
@@ -64,7 +63,7 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 	c.logger().Debug(fmt.Sprintf("🔍 [CommitMessage] Topic: %s, Partition: %d, ID: %d",
 		msg.Topic, msg.Partition, msg.ID))
 
-	messageIDsToCommit := map[types.PartitionInfo]int64{
+	messageIDsToCommit := map[db.PartitionInfo]int64{
 		msg.PartitionInfo(): msg.ID,
 	}
 
@@ -72,7 +71,7 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 }
 
 // commitMessageIDs 提交消息ID的核心逻辑
-func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, generationID uint, messageIDsToCommit map[types.PartitionInfo]int64) error {
+func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, generationID uint, messageIDsToCommit map[db.PartitionInfo]int64) error {
 	if len(messageIDsToCommit) == 0 {
 		return nil
 	}

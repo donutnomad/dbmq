@@ -2,21 +2,21 @@ package dao
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/samber/lo"
 	"time"
 
-	"github.com/donutnomad/dbmq/types"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 // GetConsumerHeartbeat 获取单个消费者的心跳记录
 // 包含了消费者的分区分配、订阅信息和最后心跳时间
-func (d *MqDao) GetConsumerHeartbeat(ctx context.Context, groupID, consumerID string) (*types.ConsumerHeartbeat, error) {
-	var hb types.ConsumerHeartbeat
+func (d *MqDao) GetConsumerHeartbeat(ctx context.Context, groupID, consumerID string) (*db.ConsumerHeartbeat, error) {
+	var hb db.ConsumerHeartbeat
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerHeartbeat{}).
+		Model(&db.ConsumerHeartbeat{}).
 		Where("`group_id` = ?", groupID).
 		Where("`consumer_id` = ?", consumerID).
 		First(&hb).Error
@@ -38,7 +38,7 @@ func (d *MqDao) UpsertConsumerHeartbeat(ctx context.Context, groupID, consumerID
 		groupID,
 		consumerID,
 		datatypes.NewJSONSlice(subscribedTopics),
-		datatypes.NewJSONSlice([]types.PartitionInfo{}), // 默认为空JSON对象
+		datatypes.NewJSONSlice([]db.PartitionInfo{}), // 默认为空JSON对象
 		time.Now(),
 	).Error
 }
@@ -48,7 +48,7 @@ func (d *MqDao) UpsertConsumerHeartbeat(ctx context.Context, groupID, consumerID
 func (d *MqDao) MarkConsumerOffline(ctx context.Context, groupID, consumerID string) error {
 	now := time.Now()
 	return d.db.WithContext(ctx).
-		Model(&types.ConsumerHeartbeat{}).
+		Model(&db.ConsumerHeartbeat{}).
 		Where("`group_id` = ?", groupID).
 		Where("`consumer_id` = ?", consumerID).
 		Updates(map[string]any{
@@ -63,16 +63,16 @@ func (d *MqDao) DeleteConsumerHeartbeat(ctx context.Context, groupID, consumerID
 	return d.db.WithContext(ctx).
 		Where("`group_id` = ?", groupID).
 		Where("`consumer_id` = ?", consumerID).
-		Delete(&types.ConsumerHeartbeat{}).Error
+		Delete(&db.ConsumerHeartbeat{}).Error
 }
 
 // FindActiveConsumers 查找在超时期间内发送过心跳的消费组中的所有活跃消费者
 // 这是协调器判断消费组成员变化的核心函数
 // 只查找未标记为离线且在超时期间内发送过心跳的消费者
-func (d *MqDao) FindActiveConsumers(ctx context.Context, groupID string, timeout time.Duration) ([]types.ConsumerHeartbeat, error) {
-	var activeConsumers []types.ConsumerHeartbeat
+func (d *MqDao) FindActiveConsumers(ctx context.Context, groupID string, timeout time.Duration) ([]db.ConsumerHeartbeat, error) {
+	var activeConsumers []db.ConsumerHeartbeat
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerHeartbeat{}).
+		Model(&db.ConsumerHeartbeat{}).
 		Where("`group_id` = ?", groupID).
 		Where("`offline` = FALSE").
 		Where("`last_heartbeat` > ?", time.Now().Add(-timeout)).
@@ -82,25 +82,21 @@ func (d *MqDao) FindActiveConsumers(ctx context.Context, groupID string, timeout
 
 // FindAllConsumers 查找消费组中的所有消费者（包括在线和离线的）
 // 用于UI显示，可以看到消费者的完整历史记录
-func (d *MqDao) FindAllConsumers(ctx context.Context, groupID string, timeout time.Duration) ([]types.ConsumerHeartbeat, error) {
-	var allConsumers []types.ConsumerHeartbeat
+func (d *MqDao) FindAllConsumers(ctx context.Context, groupID string, timeout time.Duration) ([]db.ConsumerHeartbeat, error) {
+	var allConsumers []db.ConsumerHeartbeat
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerHeartbeat{}).
+		Model(&db.ConsumerHeartbeat{}).
 		Where("`group_id` = ?", groupID).
 		Order("`last_heartbeat` DESC").
 		Find(&allConsumers).Error
 
 	// 为每个消费者添加状态判断逻辑（在应用层判断是否超时）
 	cutoffTime := time.Now().Add(-timeout)
-	for i := range allConsumers {
-		consumer := &allConsumers[i]
+	for i, consumer := range allConsumers {
 		// 如果没有标记为离线，但心跳超时，认为是超时状态
 		if !consumer.Offline && consumer.LastHeartbeat.Before(cutoffTime) {
 			allConsumers[i].Offline = true
-			allConsumers[i].OfflineAt = sql.NullTime{
-				Time:  time.Now(),
-				Valid: true,
-			}
+			allConsumers[i].OfflineAt = lo.ToPtr(time.Now())
 		}
 	}
 
@@ -109,10 +105,10 @@ func (d *MqDao) FindAllConsumers(ctx context.Context, groupID string, timeout ti
 
 // GetConsumerGroupGeneration 获取消费组的当前代际元数据
 // 代际是重新均衡机制的核心，每次重新均衡时递增
-func (d *MqDao) GetConsumerGroupGeneration(ctx context.Context, groupID string) (*types.ConsumerGroupGeneration, error) {
-	var gen types.ConsumerGroupGeneration
+func (d *MqDao) GetConsumerGroupGeneration(ctx context.Context, groupID string) (*db.ConsumerGroupGeneration, error) {
+	var gen db.ConsumerGroupGeneration
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerGroupGeneration{}).
+		Model(&db.ConsumerGroupGeneration{}).
 		Where("`group_id` = ?", groupID).
 		First(&gen).Error
 	if err != nil {
@@ -127,7 +123,7 @@ func (d *MqDao) GetConsumerGroupGeneration(ctx context.Context, groupID string) 
 // CommitOffset 为单个分区提交消费进度
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
 // offset参数表示最后成功消费的消息ID
-func (d *MqDao) CommitOffset(ctx context.Context, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID int64) error {
+func (d *MqDao) CommitOffset(ctx context.Context, groupID string, generationID uint, p db.PartitionInfo, lastConsumedMessageID int64) error {
 	// IF(VALUES(generation_id) >= generation_id, ...) 子句是隔离的关键
 	// 它防止来自先前代际（具有较小generation_id）的消费者
 	// 覆盖来自当前或未来代际的消费者的进度
@@ -143,7 +139,7 @@ func (d *MqDao) CommitOffset(ctx context.Context, groupID string, generationID u
 // BatchCommitLastConsumeMessageID 在单个事务中为消费组提交一批消息消费进度
 // 这确保了消费进度提交的原子性，要么全部成功要么全部失败
 // offsets参数中的值表示最后成功消费的消息ID
-func (d *MqDao) BatchCommitLastConsumeMessageID(ctx context.Context, groupID string, generationID uint, consumedIds map[types.PartitionInfo]int64) error {
+func (d *MqDao) BatchCommitLastConsumeMessageID(ctx context.Context, groupID string, generationID uint, consumedIds map[db.PartitionInfo]int64) error {
 	if len(consumedIds) == 0 {
 		return nil
 	}

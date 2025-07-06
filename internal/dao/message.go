@@ -2,19 +2,18 @@ package dao
 
 import (
 	"context"
+	"github.com/donutnomad/dbmq/internal/db"
 	"strings"
 	"time"
-
-	"github.com/donutnomad/dbmq/types"
 )
 
 // FetchMessages 从特定分区在给定偏移量之后获取消息
 // 这是消费者Poll操作的核心数据库查询
 // offset现在是全局ID，而不是分区内偏移量
-func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint, offset int64, limit int) ([]types.Message, error) {
-	var messages []types.Message
+func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint, offset int64, limit int) ([]db.Message, error) {
+	var messages []db.Message
 	err := d.db.WithContext(ctx).
-		Model(&types.Message{}).
+		Model(&db.Message{}).
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
 		Where("`id` > ?", offset).
@@ -35,7 +34,7 @@ type PartitionRequest struct {
 // FetchMessagesBatch 批量从多个分区获取消息
 // 每个分区有一个ID，会查询返回大于这个ID的消息，所以这个ID是已消费的最新ID
 // 如果从未消费，那么值是0，而数据库的ID都是从1开始的，所以也是满足要求的
-func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]types.Message, error) {
+func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]db.Message, error) {
 	if len(requests) == 0 {
 		return nil, nil
 	}
@@ -52,7 +51,7 @@ func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequ
 	// 组合所有UNION查询，最后按ID排序以保证消息的顺序
 	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `id` ASC"
 
-	var messages []types.Message
+	var messages []db.Message
 	err := d.db.WithContext(ctx).
 		Raw(sql, args...).
 		Scan(&messages).Error
@@ -66,9 +65,9 @@ type TopicPartitionOffset struct {
 	MaxID     int64  `gorm:"column:max_id"` // 这里用 Offset 对应 MAX(id)
 }
 
-func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
+func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []db.PartitionInfo) (map[db.PartitionInfo]int64, error) {
 	if len(topicPartitions) == 0 {
-		return map[types.PartitionInfo]int64{}, nil // 没有要查询的组合，返回空 map
+		return map[db.PartitionInfo]int64{}, nil // 没有要查询的组合，返回空 map
 	}
 
 	var inArgs []any
@@ -80,7 +79,7 @@ func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartiti
 
 	var results []TopicPartitionOffset
 	query := d.db.WithContext(ctx).
-		Model(&types.Message{}).
+		Model(&db.Message{}).
 		Select("topic, `partition`, COALESCE(MAX(`id`), 0) AS max_id").
 		Where("(topic, `partition`) IN ("+strings.Join(placeholders, ", ")+")", inArgs...). // 核心：使用行构造器
 		Group("topic, `partition`").
@@ -90,9 +89,9 @@ func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartiti
 		return nil, query.Error
 	}
 
-	latestIDs := make(map[types.PartitionInfo]int64)
+	latestIDs := make(map[db.PartitionInfo]int64)
 	for _, res := range results {
-		latestIDs[types.PartitionInfo{Topic: res.Topic, Partition: res.Partition}] = res.MaxID
+		latestIDs[db.PartitionInfo{Topic: res.Topic, Partition: res.Partition}] = res.MaxID
 	}
 
 	return latestIDs, nil
@@ -102,7 +101,7 @@ func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartiti
 func (d *MqDao) GetTopicLatestIDByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
 	var offset int64
 	err := d.db.WithContext(ctx).
-		Model(&types.Message{}).
+		Model(&db.Message{}).
 		Select("COALESCE(MAX(`id`), 0)").
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
@@ -122,7 +121,7 @@ func (d *MqDao) DeleteMessagesByPartition(ctx context.Context, topic string, par
 		Where("`id` < ?", maxOffset).
 		Where("`created_at` < ?", retentionDate).
 		Limit(limit).
-		Delete(&types.Message{})
+		Delete(&db.Message{})
 	return result.RowsAffected, result.Error
 }
 
@@ -134,6 +133,6 @@ func (d *MqDao) DeleteMessagesByPartitionUnconsumed(ctx context.Context, topic s
 		Where("`partition` = ?", partition).
 		Where("`created_at` < ?", retentionDate).
 		Limit(limit).
-		Delete(&types.Message{})
+		Delete(&db.Message{})
 	return result.RowsAffected, result.Error
 }

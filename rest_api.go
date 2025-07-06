@@ -6,12 +6,12 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/donutnomad/dbmq/types"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -777,7 +777,7 @@ func (ras *RestAPIServer) getTopicMessagesHandler(c *gin.Context) {
 
 // getMessages 获取消息列表
 func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, partition *uint, offset int64, limit int, searchKey, fromTime, toTime string) ([]map[string]any, int64, error) {
-	var messages []types.Message
+	var messages []db.Message
 	query := ras.config.DB.WithContext(ctx).Where("topic = ?", topicName)
 
 	// 分区过滤
@@ -803,7 +803,7 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 	}
 
 	var total int64
-	query.Model(&types.Message{}).Count(&total)
+	query.Model(&db.Message{}).Count(&total)
 
 	// 排序和限制
 	err := query.Order("created_at DESC").Offset(int(offset)).Limit(limit).Find(&messages).Error
@@ -815,12 +815,7 @@ func (ras *RestAPIServer) getMessages(ctx context.Context, topicName string, par
 	result := make([]map[string]any, len(messages))
 	for i, msg := range messages {
 		// 将字节数组转换为字符串
-		var messageKey string
-		if msg.MessageKey.Valid {
-			messageKey = msg.MessageKey.String
-		} else {
-			messageKey = ""
-		}
+		var messageKey = msg.MessageKey
 
 		// 将消息体字节转换为字符串
 		messageValue := string(msg.Body)

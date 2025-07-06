@@ -3,25 +3,23 @@ package dbmq
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/types"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
 	"time"
 )
 
-// --- Redis Notification Helpers ---
-
 // toChannelNames converts a slice of PartitionInfo into a slice of Redis channel names.
-func toChannelNames(partitions []types.PartitionInfo) []string {
+func toChannelNames(partitions []db.PartitionInfo) []string {
 	if len(partitions) == 0 {
 		return nil
 	}
-	return lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
+	return lo.Map(partitions, func(p db.PartitionInfo, _ int) string {
 		return fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition)
 	})
 }
 
 // subscribeToChannels subscribes the consumer to Redis channels for new message notifications.
-func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
+func (c *Consumer) subscribeToChannels(partitions []db.PartitionInfo) {
 	if !c.config.NotificationEnabled || c.redis == nil || len(partitions) == 0 {
 		return
 	}
@@ -50,7 +48,7 @@ func (c *Consumer) subscribeToChannels(partitions []types.PartitionInfo) {
 }
 
 // unsubscribeFromChannels unsubscribes the consumer from Redis channels.
-func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
+func (c *Consumer) unsubscribeFromChannels(partitions []db.PartitionInfo) {
 	if !c.config.NotificationEnabled || c.redis == nil || len(partitions) == 0 {
 		return
 	}
@@ -75,14 +73,12 @@ func (c *Consumer) unsubscribeFromChannels(partitions []types.PartitionInfo) {
 	}
 }
 
-// --- Helper methods ---
-
 // resetNotificationStateBatch deletes multiple notification state keys in Redis using a single command.
-func (c *Consumer) resetNotificationStateBatch(ctx context.Context, partitions []types.PartitionInfo) {
+func (c *Consumer) resetNotificationStateBatch(ctx context.Context, partitions []db.PartitionInfo) {
 	if len(partitions) == 0 || c.redis == nil {
 		return
 	}
-	keys := lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
+	keys := lo.Map(partitions, func(p db.PartitionInfo, _ int) string {
 		return fmt.Sprintf("mq_notify_state:%s:%d", p.Topic, p.Partition)
 	})
 	if err := c.redis.Del(ctx, keys...).Err(); err != nil {
@@ -91,7 +87,7 @@ func (c *Consumer) resetNotificationStateBatch(ctx context.Context, partitions [
 }
 
 // tryResetNotificationStateBatch asynchronously deletes multiple notification state keys.
-func (c *Consumer) tryResetNotificationStateBatch(ctx context.Context, partitions []types.PartitionInfo) {
+func (c *Consumer) tryResetNotificationStateBatch(ctx context.Context, partitions []db.PartitionInfo) {
 	if c.config.NotificationEnabled && c.redis != nil {
 		go c.resetNotificationStateBatch(ctx, partitions)
 	}
@@ -143,7 +139,7 @@ func (c *Consumer) ensurePubSubConnection() {
 	c.subscribe(assignedPartitions)
 }
 
-func (c *Consumer) subscribe(topics []types.PartitionInfo) {
+func (c *Consumer) subscribe(topics []db.PartitionInfo) {
 	if len(topics) == 0 {
 		return
 	}

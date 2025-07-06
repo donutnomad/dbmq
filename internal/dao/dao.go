@@ -3,12 +3,11 @@ package dao
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
 	"strings"
 	"time"
 
 	"gorm.io/datatypes"
-
-	"github.com/donutnomad/dbmq/types"
 
 	"gorm.io/gorm"
 )
@@ -72,7 +71,7 @@ func (d *MqDao) IncrementAndGetGenerationID(ctx context.Context, groupID string)
 // UpdateAssignments 在单个事务中更新多个消费者的分区分配
 // assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
-func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
+func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]db.PartitionInfo) error {
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -95,12 +94,12 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 // GetCommittedOffsets 获取消费组对一组分区的消费进度
 // 返回PartitionInfo到下一个要消费的消息ID的映射
 // 如果返回的消息ID为N，是最后一次消费的消息ID
-func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []types.PartitionInfo) (types.ConsumerGroupConsumptionProgressSlice, error) {
+func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []db.PartitionInfo) (db.ConsumerGroupConsumptionProgressSlice, error) {
 	if len(partitions) == 0 {
 		return nil, nil
 	}
 
-	var progressRecords types.ConsumerGroupConsumptionProgressSlice
+	var progressRecords db.ConsumerGroupConsumptionProgressSlice
 
 	// 为每个分区构建OR子句，因为GORM在复杂IN查询上有问题
 	var conditions []string
@@ -115,7 +114,7 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 	whereClause := "`group_id` = ? AND (" + strings.Join(conditions, " OR ") + ")"
 
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerGroupConsumptionProgress{}).
+		Model(&db.ConsumerGroupConsumptionProgress{}).
 		Where(whereClause, args...).
 		Find(&progressRecords).Error
 
@@ -127,7 +126,7 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 
 // BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批消费进度，同时设置初始水位线
 // 这个方法用于首次消费分区时，记录初始水位线以区分消费策略，解决手动提交模式下的注册问题
-func (d *MqDao) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[types.PartitionInfo]ConsumptionProgressWithWatermark) error {
+func (d *MqDao) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[db.PartitionInfo]ConsumptionProgressWithWatermark) error {
 	if len(progressWithWatermarks) == 0 {
 		return nil
 	}
@@ -151,10 +150,11 @@ type ConsumptionProgressWithWatermark struct {
 // CommitConsumptionProgressWithSubscriptionRegistration 为单个分区提交消费进度，同时设置订阅注册信息
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
 // 这个函数专门用于首次订阅分区时，同时设置消费进度和订阅水位线
-func (d *MqDao) CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, p types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
+func (d *MqDao) CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, p db.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
 	var sql string
 	var args []any
 
+	_ = db.ConsumerGroupConsumptionProgress{}
 	now := time.Now()
 	// 包含订阅水位线的SQL - 用于首次订阅分区
 	sql = `INSERT INTO mq_consumer_group_consumption_progress (
@@ -166,16 +166,12 @@ func (d *MqDao) CommitConsumptionProgressWithSubscriptionRegistration(ctx contex
 	subscription_start_watermark,
 	generation_id,
 	updated_at
-) VALUES
-	(?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE last_consumed_message_id =
-	IF(VALUES(generation_id) >= generation_id, VALUES(last_consumed_message_id), last_consumed_message_id),
-	subscription_start_watermark =
-	IF(subscription_start_watermark IS NULL AND VALUES(generation_id) >= generation_id, VALUES(subscription_start_watermark), subscription_start_watermark),
-	generation_id =
-	IF(VALUES(generation_id) >= generation_id, VALUES(generation_id), generation_id),
-	updated_at =
-	IF(VALUES(generation_id) >= generation_id, VALUES(updated_at), updated_at)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE 
+ 	last_consumed_message_id = IF(VALUES(generation_id) >= generation_id, VALUES(last_consumed_message_id), last_consumed_message_id),
+	subscription_start_watermark = IF(subscription_start_watermark IS NULL AND VALUES(generation_id) >= generation_id, VALUES(subscription_start_watermark), subscription_start_watermark),
+	generation_id = IF(VALUES(generation_id) >= generation_id, VALUES(generation_id), generation_id),
+	updated_at = IF(VALUES(generation_id) >= generation_id, VALUES(updated_at), updated_at)
 `
 
 	args = []any{groupID, p.Topic, p.Partition, lastConsumedMessageID, now, subscriptionStartWatermark, generationID, now}
@@ -184,7 +180,7 @@ ON DUPLICATE KEY UPDATE last_consumed_message_id =
 }
 
 // CreateMessagesBatch 批量插入消息，显著提升高吞吐量场景的性能
-func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*types.Message) error {
+func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*db.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -203,7 +199,7 @@ func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*types.Messa
 func (d *MqDao) FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error) {
 	var groupIDs []string
 	err := d.db.WithContext(ctx).
-		Model(&types.ConsumerHeartbeat{}).
+		Model(&db.ConsumerHeartbeat{}).
 		Where("`last_heartbeat` > ?", time.Now().Add(-timeout)).
 		Distinct("`group_id`").
 		Pluck("`group_id`", &groupIDs).Error
@@ -214,7 +210,7 @@ func (d *MqDao) FindAllActiveGroups(ctx context.Context, timeout time.Duration) 
 // 通过联合查询心跳表和代际表获取所有消费组
 func (d *MqDao) FindAllGroups(ctx context.Context) ([]string, error) {
 	var groupIDs []string
-	sql := "SELECT DISTINCT `group_id` FROM (SELECT `group_id` FROM `mq_consumer_heartbeats` UNION SELECT `group_id` FROM `mq_consumer_group_generations`) AS all_groups"
+	sql := `SELECT DISTINCT group_id FROM (SELECT group_id FROM mq_consumer_heartbeats UNION SELECT group_id FROM mq_consumer_group_generations) AS all_groups`
 	err := d.db.WithContext(ctx).Raw(sql).Pluck("group_id", &groupIDs).Error
 	return groupIDs, err
 }
@@ -228,9 +224,9 @@ type LowWatermark struct {
 
 // GetConsumerGroupLowWatermarks calculates the minimum committed offset for every partition across all consumer groups.
 // This is the "consumption low watermark".
-func (d *MqDao) GetConsumerGroupLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error) {
+func (d *MqDao) GetConsumerGroupLowWatermarks(ctx context.Context) (map[db.PartitionInfo]int64, error) {
 	var results []LowWatermark
-	err := d.db.WithContext(ctx).Model(&types.ConsumerGroupConsumptionProgress{}).
+	err := d.db.WithContext(ctx).Model(&db.ConsumerGroupConsumptionProgress{}).
 		Select("topic, `partition`, MIN(last_consumed_message_id) as low_watermark").
 		Group("topic, `partition`").
 		Scan(&results).Error
@@ -238,9 +234,9 @@ func (d *MqDao) GetConsumerGroupLowWatermarks(ctx context.Context) (map[types.Pa
 		return nil, err
 	}
 
-	watermarks := make(map[types.PartitionInfo]int64, len(results))
+	watermarks := make(map[db.PartitionInfo]int64, len(results))
 	for _, res := range results {
-		p := types.PartitionInfo{Topic: res.Topic, Partition: res.Partition}
+		p := db.PartitionInfo{Topic: res.Topic, Partition: res.Partition}
 		watermarks[p] = res.LowWatermarkOffset
 	}
 

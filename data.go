@@ -1,9 +1,8 @@
 package dbmq
 
 import (
-	"encoding/json"
 	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/types"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
 	"time"
@@ -54,7 +53,7 @@ func (c ProducerConfig) GetNotificationStateTTL() time.Duration {
 // ProducerMessage 生产者发送的消息结构（重复定义，为了保持兼容性）
 type ProducerMessage struct {
 	Topic   string            // 目标Topic名称
-	Key     []byte            // 消息Key，用于分区路由
+	Key     string            // 消息Key，用于分区路由
 	Value   []byte            // 消息内容
 	Headers map[string]string // 消息头，键值对格式
 }
@@ -109,6 +108,13 @@ type ConsumerConfig struct {
 	AutoCommitInterval time.Duration // 自动提交间隔，仅在EnableAutoCommit为true时有效
 }
 
+func (c ConsumerConfig) GetHeartbeatInterval() time.Duration {
+	if c.HeartbeatInterval == 0 {
+		return 3 * time.Second
+	}
+	return c.HeartbeatInterval
+}
+
 func (c ConsumerConfig) GetPollFetchTimeout() time.Duration {
 	if c.PollFetchTimeout == 0 {
 		return 5 * time.Second
@@ -128,14 +134,14 @@ type ConsumerMessage struct {
 	Topic     string            // 消息所属的Topic
 	Partition uint              // 消息所属的分区
 	ID        int64             // 消息的ID
-	Key       []byte            // 消息Key
+	Key       string            // 消息Key
 	Value     []byte            // 消息内容
 	Headers   map[string]string // 消息头
 	Timestamp time.Time         // 消息时间戳
 }
 
-func (c ConsumerMessage) PartitionInfo() types.PartitionInfo {
-	return types.PartitionInfo{
+func (c ConsumerMessage) PartitionInfo() db.PartitionInfo {
+	return db.PartitionInfo{
 		Topic:     c.Topic,
 		Partition: c.Partition,
 	}
@@ -143,23 +149,16 @@ func (c ConsumerMessage) PartitionInfo() types.PartitionInfo {
 
 type ConsumerMessages []ConsumerMessage
 
-func (*ConsumerMessages) FromMessages(messages []types.Message) ConsumerMessages {
-	return lo.Map(messages, func(m types.Message, index int) ConsumerMessage {
-		msg := ConsumerMessage{
+func (*ConsumerMessages) FromMessages(messages []db.Message) ConsumerMessages {
+	return lo.Map(messages, func(m db.Message, index int) ConsumerMessage {
+		return ConsumerMessage{
 			Topic:     m.Topic,
 			Partition: m.Partition,
 			ID:        m.ID,
 			Value:     m.Body,
 			Timestamp: m.CreatedAt,
+			Headers:   m.Headers.Data(),
+			Key:       m.MessageKey,
 		}
-		if len(m.Headers) > 0 {
-			var headers map[string]string
-			_ = json.Unmarshal(m.Headers, &headers)
-			msg.Headers = headers
-		}
-		if m.MessageKey.Valid {
-			msg.Key = []byte(m.MessageKey.String)
-		}
-		return msg
 	})
 }

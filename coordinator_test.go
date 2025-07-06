@@ -1,31 +1,31 @@
 package dbmq
 
 import (
-	"github.com/donutnomad/dbmq/types"
+	"github.com/donutnomad/dbmq/internal/db"
 	"reflect"
 	"testing"
 )
 
 // Helper function to create a slice of consumer heartbeats for testing.
-func makeTestConsumers(ids ...string) []types.ConsumerHeartbeat {
-	consumers := make([]types.ConsumerHeartbeat, len(ids))
+func makeTestConsumers(ids ...string) []db.ConsumerHeartbeat {
+	consumers := make([]db.ConsumerHeartbeat, len(ids))
 	for i, id := range ids {
-		consumers[i] = types.ConsumerHeartbeat{ConsumerID: id}
+		consumers[i] = db.ConsumerHeartbeat{ConsumerID: id}
 	}
 	return consumers
 }
 
 // Helper function to create a slice of partition infos for testing.
-func makeTestPartitions(topic string, count uint) []types.PartitionInfo {
-	partitions := make([]types.PartitionInfo, count)
+func makeTestPartitions(topic string, count uint) []db.PartitionInfo {
+	partitions := make([]db.PartitionInfo, count)
 	for i := uint(0); i < count; i++ {
-		partitions[i] = types.PartitionInfo{Topic: topic, Partition: i}
+		partitions[i] = db.PartitionInfo{Topic: topic, Partition: i}
 	}
 	return partitions
 }
 
 // Helper function to sort the results for consistent comparison.
-func sortAssignments(assignments map[string][]types.PartitionInfo) map[string][]types.PartitionInfo {
+func sortAssignments(assignments map[string][]db.PartitionInfo) map[string][]db.PartitionInfo {
 	for cid := range assignments {
 		SortPartitionsByTopicAndPartition(assignments[cid])
 	}
@@ -68,7 +68,7 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 	// a: [topic-1:0, topic-1:3]
 	// b: [topic-1:1, topic-1:4]
 	// c: [topic-1:2, topic-1:5]
-	expectedInitial := map[string][]types.PartitionInfo{
+	expectedInitial := map[string][]db.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 3}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 4}},
 		"consumer-c": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 5}},
@@ -84,7 +84,7 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 
 	// The 2 partitions from consumer-c should be redistributed to a and b.
 	// a gets partition 2, b gets partition 5
-	expectedNew := map[string][]types.PartitionInfo{
+	expectedNew := map[string][]db.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 4}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 3}, {Topic: "topic-1", Partition: 5}},
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/types"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
 	"slices"
 	"time"
@@ -18,7 +18,7 @@ import (
 func (c *Consumer) heartbeatLoop() {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(c.config.HeartbeatInterval)
+	ticker := time.NewTicker(c.config.GetHeartbeatInterval())
 	defer ticker.Stop()
 
 	for {
@@ -78,7 +78,7 @@ func (c *Consumer) reconcileState(ctx context.Context) {
 // clearAndFetchOffsetsForNewAssignment
 // 清除旧状态并获取新分配的已提交偏移量。
 // 必须在消费者设置新分配后调用。
-func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, newGenerationID uint, newPartitions []types.PartitionInfo) error {
+func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, newGenerationID uint, newPartitions []db.PartitionInfo) error {
 	// 找出被撤销的分区
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
 
@@ -90,14 +90,14 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	fetchedOffsetsMap := fetchedOffsets.ToMap()
 
 	// 筛选出新增的分区
-	addedPartitions := lo.Filter(newPartitions, func(p types.PartitionInfo, index int) bool {
+	addedPartitions := lo.Filter(newPartitions, func(p db.PartitionInfo, index int) bool {
 		_, exists := fetchedOffsetsMap[p]
 		return !exists
 	})
 
 	// 为没有已提交偏移量的分区应用消费策略并立即记录到数据库
 	partitionMaxIDMap := c.determineStartMessageID(ctx, addedPartitions)
-	initialProgressWithWatermarks := lo.MapValues(partitionMaxIDMap, func(startID int64, key types.PartitionInfo) dao.ConsumptionProgressWithWatermark {
+	initialProgressWithWatermarks := lo.MapValues(partitionMaxIDMap, func(startID int64, key db.PartitionInfo) dao.ConsumptionProgressWithWatermark {
 		return dao.ConsumptionProgressWithWatermark{LastConsumedMessageID: startID - 1, SubscriptionStartWatermark: startID}
 	})
 
@@ -123,7 +123,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 		}
 
 		for _, item := range fetchedOffsets {
-			c.alreadyConsumeMessageIDs[types.PartitionInfo{
+			c.alreadyConsumeMessageIDs[db.PartitionInfo{
 				Topic:     item.Topic,
 				Partition: item.Partition,
 			}] = item.LastConsumedMessageID
@@ -138,14 +138,14 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 }
 
 // findRevokedPartitions 计算出在旧分配方案中存在而在新分配方案中不存在的分区
-func (c *Consumer) findRevokedPartitions(newPartitions []types.PartitionInfo) []types.PartitionInfo {
-	oldSet := lo.SliceToMap(c.getAssignedPartitions(), func(item types.PartitionInfo) (types.PartitionInfo, struct{}) {
+func (c *Consumer) findRevokedPartitions(newPartitions []db.PartitionInfo) []db.PartitionInfo {
+	oldSet := lo.SliceToMap(c.getAssignedPartitions(), func(item db.PartitionInfo) (db.PartitionInfo, struct{}) {
 		return item, struct{}{}
 	})
-	newSet := lo.SliceToMap(newPartitions, func(item types.PartitionInfo) (types.PartitionInfo, struct{}) {
+	newSet := lo.SliceToMap(newPartitions, func(item db.PartitionInfo) (db.PartitionInfo, struct{}) {
 		return item, struct{}{}
 	})
-	var revoked []types.PartitionInfo
+	var revoked []db.PartitionInfo
 	for p := range oldSet {
 		if _, ok := newSet[p]; !ok {
 			revoked = append(revoked, p)
@@ -157,10 +157,10 @@ func (c *Consumer) findRevokedPartitions(newPartitions []types.PartitionInfo) []
 var firstMessageId = int64(1) // 数据库的消息ID主键是从1开始的
 
 // determineStartMessageID 首次，根据消费策略，确定从哪个ID开始消费，比如2，那么第一个将会消费2这个ID
-func (c *Consumer) determineStartMessageID(ctx context.Context, partitions []types.PartitionInfo) map[types.PartitionInfo]int64 {
-	var ret = make(map[types.PartitionInfo]int64)
+func (c *Consumer) determineStartMessageID(ctx context.Context, partitions []db.PartitionInfo) map[db.PartitionInfo]int64 {
+	var ret = make(map[db.PartitionInfo]int64)
 
-	var needFetchFromDB []types.PartitionInfo
+	var needFetchFromDB []db.PartitionInfo
 	for _, partition := range partitions {
 		ret[partition] = firstMessageId
 		switch c.config.ConsumeStrategy {

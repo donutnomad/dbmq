@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/types"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
 	"maps"
 	"slices"
@@ -82,7 +82,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	defer cancel()
 
 	// 批量获取消息, 获取id > ?的记录
-	allMessages, err := c.dao.FetchMessagesBatch(fetchCtx, lo.Map(assignedPartitions, func(p types.PartitionInfo, _ int) dao.PartitionRequest {
+	allMessages, err := c.dao.FetchMessagesBatch(fetchCtx, lo.Map(assignedPartitions, func(p db.PartitionInfo, _ int) dao.PartitionRequest {
 		return dao.PartitionRequest{
 			Topic:     p.Topic,
 			Partition: p.Partition,
@@ -99,7 +99,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		return nil, &ErrFailedFetchMessage{err}
 	}
 
-	partitionsToReset := slices.Collect(maps.Keys(lo.GroupBy(allMessages, func(msg types.Message) types.PartitionInfo {
+	partitionsToReset := slices.Collect(maps.Keys(lo.GroupBy(allMessages, func(msg db.Message) db.PartitionInfo {
 		return msg.ToPartitionInfo()
 	})))
 	// 批量重置通知状态
@@ -111,7 +111,7 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 // 返回错误
 // context.DeadlineExceeded
 // context.Canceled
-func (c *Consumer) waitPoll(ctx context.Context, timeout time.Duration, partitions []types.PartitionInfo) error {
+func (c *Consumer) waitPoll(ctx context.Context, timeout time.Duration, partitions []db.PartitionInfo) error {
 	// 如果启用了通知优化，使用Redis Pub/Sub等待通知
 	if c.config.NotificationEnabled && c.redis != nil {
 		// 检查并确保PubSub连接健康

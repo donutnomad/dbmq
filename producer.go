@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/dao"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/logger"
-	"github.com/donutnomad/dbmq/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
 	"hash/fnv"
@@ -45,7 +45,7 @@ var (
 type Producer struct {
 	config             ProducerConfig // 生产者配置
 	redis              *redis.Client  // Redis连接（可选）
-	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*types.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
+	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*db.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
 	roundRobinCounters sync.Map       // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
 	dao                *dao.MqDao
 }
@@ -80,7 +80,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	}
 
 	// 预先获取所有Topic的元数据
-	topicMetadataMap := make(map[string]*types.Topic)
+	topicMetadataMap := make(map[string]*db.Topic)
 	for topicName := range lo.GroupBy(messages, func(item ProducerMessage) string {
 		return item.Topic
 	}) {
@@ -92,8 +92,8 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	}
 
 	// 准备批量插入的数据库消息
-	var dbMessages []*types.Message
-	var notificationPartitions []types.PartitionInfo
+	var dbMessages []*db.Message
+	var notificationPartitions []db.PartitionInfo
 	var currentTime = time.Now()
 
 	// 为每条消息分配分区并构造数据库对象
@@ -101,14 +101,14 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		partitionCount := topicMetadataMap[msg.Topic].PartitionCount
 		// 选择目标分区
 		var partition uint
-		if msg.Key != nil {
+		if len(msg.Key) > 0 {
 			partition = hashPartition(msg.Key, partitionCount)
 		} else {
 			partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
 		}
-		dbMsg := types.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, currentTime)
+		dbMsg := db.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, currentTime)
 		dbMessages = append(dbMessages, &dbMsg)
-		notificationPartitions = append(notificationPartitions, types.PartitionInfo{Topic: msg.Topic, Partition: partition})
+		notificationPartitions = append(notificationPartitions, db.PartitionInfo{Topic: msg.Topic, Partition: partition})
 	}
 
 	// 批量插入消息到数据库
@@ -117,7 +117,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	}
 
 	// 构造返回结果
-	results := lo.Map(dbMessages, func(dbMsg *types.Message, index int) SendResult {
+	results := lo.Map(dbMessages, func(dbMsg *db.Message, index int) SendResult {
 		return SendResult{
 			Topic:     dbMsg.Topic,
 			Partition: dbMsg.Partition,
@@ -134,7 +134,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 }
 
 // sendBatchNotifications 批量发送通知，去重相同的topic-partition组合
-func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []types.PartitionInfo) {
+func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []db.PartitionInfo) {
 	if p.redis == nil || !p.config.NotificationEnabled {
 		return
 	}
@@ -171,10 +171,10 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 
 // getTopicMetadata 获取Topic元数据，带内存缓存优化
 // 缓存可以显著减少数据库查询，提高性能
-func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*types.Topic, error) {
+func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.Topic, error) {
 	// 首先检查缓存
 	if metadata, ok := p.topicMetadataCache.Load(topicName); ok {
-		return metadata.(*types.Topic), nil
+		return metadata.(*db.Topic), nil
 	}
 
 	// 缓存未命中，从数据库查询
@@ -207,12 +207,12 @@ func (p *Producer) nextRoundRobinPartition(topic string, partitionCount uint) ui
 
 // hashPartition 使用哈希算法选择分区
 // 使用FNV-1a哈希算法，确保相同Key总是路由到同一分区，保证消息顺序
-func hashPartition(key []byte, partitionCount uint) uint {
+func hashPartition(key string, partitionCount uint) uint {
 	if partitionCount == 0 {
 		return 0
 	}
 	hasher := fnv.New64a() // FNV-1a哈希算法，速度快且分布均匀
-	hasher.Write(key)
+	_, _ = hasher.Write([]byte(key))
 	return uint(hasher.Sum64() % uint64(partitionCount))
 }
 

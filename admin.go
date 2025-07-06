@@ -2,21 +2,16 @@ package dbmq
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
-
 	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/types"
-
 	"gorm.io/gorm"
+	"time"
 )
 
 // AdminClient 管理客户端，用于Topic和分区的管理操作
-// 模仿Kafka AdminClient的设计模式
 type AdminClient struct {
 	db dao.DB
 }
@@ -87,7 +82,7 @@ func (ac *AdminClient) CreateTopics(ctx context.Context, requests []NewTopicRequ
 // ListTopics 列出所有Topic
 func (ac *AdminClient) ListTopics(ctx context.Context) ([]string, error) {
 	var topicNames []string
-	err := ac.db.WithContext(ctx).Model(&types.Topic{}).Select("topic_name").Scan(&topicNames).Error
+	err := ac.db.WithContext(ctx).Model(&db.Topic{}).Select("topic_name").Scan(&topicNames).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list topics: %w", err)
 	}
@@ -101,7 +96,7 @@ func (ac *AdminClient) DescribeTopics(ctx context.Context, topicNames []string) 
 		return make(map[string]*TopicDescription), nil
 	}
 
-	var topics []types.Topic
+	var topics []db.Topic
 	err := ac.db.WithContext(ctx).Where("topic_name IN ?", topicNames).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe topics: %w", err)
@@ -114,15 +109,11 @@ func (ac *AdminClient) DescribeTopics(ctx context.Context, topicNames []string) 
 			NumPartitions: int(topic.PartitionCount),
 			CreatedAt:     topic.CreatedAt,
 		}
-
 		// 解析配置
-		if topic.Configs.Valid {
-			var config TopicConfig
-			if err := json.Unmarshal([]byte(topic.Configs.String), &config); err == nil {
-				desc.Config = &config
-			}
+		var config TopicConfig
+		if err := json.Unmarshal(topic.Configs, &config); err == nil {
+			desc.Config = &config
 		}
-
 		result[topic.TopicName] = desc
 	}
 
@@ -150,17 +141,17 @@ func (ac *AdminClient) DeleteTopics(ctx context.Context, topicNames []string) er
 		// 删除Topic相关的所有数据
 		for _, topicName := range topicNames {
 			// 1. 删除消息
-			if err := tx.Where("topic = ?", topicName).Delete(&types.Message{}).Error; err != nil {
+			if err := tx.Where("topic = ?", topicName).Delete(&db.Message{}).Error; err != nil {
 				return fmt.Errorf("failed to delete messages for topic %s: %w", topicName, err)
 			}
 
 			// 2. 删除消费组偏移量
-			if err := tx.Where("topic = ?", topicName).Delete(&types.ConsumerGroupConsumptionProgress{}).Error; err != nil {
+			if err := tx.Where("topic = ?", topicName).Delete(&db.ConsumerGroupConsumptionProgress{}).Error; err != nil {
 				return fmt.Errorf("failed to delete offsets for topic %s: %w", topicName, err)
 			}
 
 			// 3. 删除Topic本身
-			result := tx.Where("topic_name = ?", topicName).Delete(&types.Topic{})
+			result := tx.Where("topic_name = ?", topicName).Delete(&db.Topic{})
 			if result.Error != nil {
 				return fmt.Errorf("failed to delete topic %s: %w", topicName, result.Error)
 			}
@@ -197,7 +188,7 @@ func (ac *AdminClient) validateTopicRequest(req NewTopicRequest) error {
 
 	// 检查Topic是否已存在
 	var count int64
-	err := ac.db.Model(&types.Topic{}).Where("topic_name = ?", req.Name).Count(&count).Error
+	err := ac.db.Model(&db.Topic{}).Where("topic_name = ?", req.Name).Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("failed to check topic existence: %w", err)
 	}
@@ -210,28 +201,21 @@ func (ac *AdminClient) validateTopicRequest(req NewTopicRequest) error {
 
 // createTopicInDB 在数据库中创建Topic
 func (ac *AdminClient) createTopicInDB(ctx context.Context, req NewTopicRequest) error {
-	topic := &types.Topic{
+	topic := &db.Topic{
 		TopicName:      req.Name,
 		PartitionCount: uint(req.NumPartitions),
+		Configs:        []byte("{}"),
 		CreatedAt:      time.Now(),
 	}
-
-	// 处理配置
 	if req.Config != nil {
 		configBytes, err := json.Marshal(req.Config)
 		if err != nil {
 			return fmt.Errorf("failed to marshal topic config: %w", err)
 		}
-		topic.Configs = sql.NullString{
-			String: string(configBytes),
-			Valid:  true,
-		}
+		topic.Configs = configBytes
 	}
-
-	err := ac.db.WithContext(ctx).Create(topic).Error
-	if err != nil {
+	if err := ac.db.WithContext(ctx).Create(topic).Error; err != nil {
 		return fmt.Errorf("failed to create topic '%s': %w", req.Name, err)
 	}
-
 	return nil
 }

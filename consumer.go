@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/dao"
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/logger"
-	"github.com/donutnomad/dbmq/types"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"log/slog"
@@ -31,13 +31,13 @@ type Consumer struct {
 	lastPubsubTime atomic.Int64          // 最后一次PubSub活动时间戳
 
 	// 重新均衡和轮询状态管理
-	mu                       sync.RWMutex                  // 保护内部状态的读写锁
-	rebalancing              atomic.Bool                   // 标记是否正在进行重新均衡
-	generationID             uint                          // 当前代际ID，用于版本控制
-	assignment               map[string][]uint             // 分区分配，topic -> partitions
-	alreadyConsumeMessageIDs map[types.PartitionInfo]int64 // 已经消费的最大消息ID
-	offsetsToCommit          map[types.PartitionInfo]int64 // 已经处理的最大消息ID(适用于自动提交)
-	heartbeatStarted         atomic.Bool                   // 标记心跳循环是否已启动
+	mu                       sync.RWMutex               // 保护内部状态的读写锁
+	rebalancing              atomic.Bool                // 标记是否正在进行重新均衡
+	generationID             uint                       // 当前代际ID，用于版本控制
+	assignment               map[string][]uint          // 分区分配，topic -> partitions
+	alreadyConsumeMessageIDs map[db.PartitionInfo]int64 // 已经消费的最大消息ID
+	offsetsToCommit          map[db.PartitionInfo]int64 // 已经处理的最大消息ID(适用于自动提交)
+	heartbeatStarted         atomic.Bool                // 标记心跳循环是否已启动
 
 	// 自动提交相关
 	autoCommitStarted atomic.Bool  // 标记自动提交循环是否已启动
@@ -49,9 +49,6 @@ type Consumer struct {
 }
 
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
-	if config.HeartbeatInterval == 0 {
-		config.HeartbeatInterval = 3 * time.Second
-	}
 	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
 	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
 		config.AutoCommitInterval = 5 * time.Second
@@ -63,12 +60,11 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		topics:                   config.Topics,
 		stopCh:                   make(chan struct{}),
 		assignment:               make(map[string][]uint),
-		alreadyConsumeMessageIDs: make(map[types.PartitionInfo]int64),
-		offsetsToCommit:          make(map[types.PartitionInfo]int64),
+		alreadyConsumeMessageIDs: make(map[db.PartitionInfo]int64),
+		offsetsToCommit:          make(map[db.PartitionInfo]int64),
 		dao:                      dao.NewMqDao(config.DB),
 	}
 
-	// 初始化原子变量
 	consumer.pubsubHealthy.Store(false)
 	consumer.lastPubsubTime.Store(time.Now().Unix())
 	consumer.lastAutoCommit.Store(time.Now().Unix())
@@ -173,13 +169,13 @@ func (c *Consumer) getTopics() []string {
 	return c.topics
 }
 
-func (c *Consumer) getAssignedPartitions() []types.PartitionInfo {
+func (c *Consumer) getAssignedPartitions() []db.PartitionInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return mapToPartition(c.assignment)
 }
 
-func (c *Consumer) getAlreadyConsumeMessageIDByPartition(p types.PartitionInfo) int64 {
+func (c *Consumer) getAlreadyConsumeMessageIDByPartition(p db.PartitionInfo) int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.alreadyConsumeMessageIDs[p]

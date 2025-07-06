@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db"
 	"time"
 
 	"github.com/samber/lo"
 
 	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/types"
 	"gorm.io/gorm"
 )
 
@@ -80,11 +80,11 @@ type ConsumerGroupMetrics struct {
 
 // ConsumerMemberInfo 消费者成员信息
 type ConsumerMemberInfo struct {
-	ConsumerID    string                `json:"consumerId"`    // 消费者ID
-	ClientID      string                `json:"clientId"`      // 客户端ID
-	Host          string                `json:"host"`          // 主机地址
-	LastHeartbeat time.Time             `json:"lastHeartbeat"` // 最后心跳
-	Assignment    []types.PartitionInfo `json:"assignment"`    // 分区分配
+	ConsumerID    string             `json:"consumerId"`    // 消费者ID
+	ClientID      string             `json:"clientId"`      // 客户端ID
+	Host          string             `json:"host"`          // 主机地址
+	LastHeartbeat time.Time          `json:"lastHeartbeat"` // 最后心跳
+	Assignment    []db.PartitionInfo `json:"assignment"`    // 分区分配
 }
 
 // PartitionLag 分区延迟信息
@@ -127,7 +127,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 	}
 
 	// 获取Topic总数和分区总数
-	var topics []types.Topic
+	var topics []db.Topic
 	err := mc.db.WithContext(ctx).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topics: %w", err)
@@ -140,7 +140,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 
 	// 获取消息总数
 	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&types.Message{}).Count(&messageCount).Error
+	err = mc.db.WithContext(ctx).Model(&db.Message{}).Count(&messageCount).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get message count: %w", err)
 	}
@@ -156,7 +156,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 	// 获取活跃消费者数量
 	var activeConsumers int64
 	cutoff := time.Now().Add(-30 * time.Second)
-	err = mc.db.WithContext(ctx).Model(&types.ConsumerHeartbeat{}).
+	err = mc.db.WithContext(ctx).Model(&db.ConsumerHeartbeat{}).
 		Where("last_heartbeat > ?", cutoff).
 		Count(&activeConsumers).Error
 	if err != nil {
@@ -171,7 +171,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 // 兼容Kafka UI的Topic详情页面
 func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) (*TopicMetrics, error) {
 	// 获取Topic基本信息
-	var topic types.Topic
+	var topic db.Topic
 	err := mc.db.WithContext(ctx).Where("topic_name = ?", topicName).First(&topic).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topic %s: %w", topicName, err)
@@ -185,12 +185,10 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 	}
 
 	// 解析Topic配置
-	if topic.Configs.Valid {
-		var config map[string]any
-		if err := json.Unmarshal([]byte(topic.Configs.String), &config); err == nil {
-			for k, v := range config {
-				metrics.Config[k] = fmt.Sprintf("%v", v)
-			}
+	var config map[string]any
+	if err := json.Unmarshal(topic.Configs, &config); err == nil {
+		for k, v := range config {
+			metrics.Config[k] = fmt.Sprintf("%v", v)
 		}
 	}
 
@@ -208,7 +206,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 		// 获取分区消息数量
 		var messageCount int64
-		err = mc.db.WithContext(ctx).Model(&types.Message{}).
+		err = mc.db.WithContext(ctx).Model(&db.Message{}).
 			Where("topic = ? AND `partition` = ?", topicName, i).
 			Count(&messageCount).Error
 		if err != nil {
@@ -217,7 +215,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 		// 获取分区存储大小（估算）
 		var sizeBytes int64
-		err = mc.db.WithContext(ctx).Model(&types.Message{}).
+		err = mc.db.WithContext(ctx).Model(&db.Message{}).
 			Select("COALESCE(SUM(LENGTH(body)), 0)").
 			Where("topic = ? AND `partition` = ?", topicName, i).
 			Scan(&sizeBytes).Error
@@ -293,10 +291,10 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		metrics.State = "Active"
 	}
 
-	var slices []types.ConsumerGroupConsumptionProgress
-	mc.db.Model(&types.ConsumerGroupConsumptionProgress{}).Where("group_id = ?", groupID).Find(&slices)
+	var slices []db.ConsumerGroupConsumptionProgress
+	mc.db.Model(&db.ConsumerGroupConsumptionProgress{}).Where("group_id = ?", groupID).Find(&slices)
 
-	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item types.ConsumerGroupConsumptionProgress, index int) string {
+	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item db.ConsumerGroupConsumptionProgress, index int) string {
 		return item.Topic
 	}))
 
@@ -309,10 +307,10 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		}
 
 		for i := uint(0); i < topicInfo.PartitionCount; i++ {
-			partition := types.PartitionInfo{Topic: topic, Partition: i}
+			partition := db.PartitionInfo{Topic: topic, Partition: i}
 
 			// 获取已提交ID
-			committedIDs, err := mc.dao.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
+			committedIDs, err := mc.dao.GetCommittedOffsets(ctx, groupID, []db.PartitionInfo{partition})
 			if err != nil {
 				continue
 			}
@@ -329,7 +327,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				updateAt = committedIDs[0].UpdatedAt.UnixMilli()
 			}
 
-			var offsetRecord types.ConsumerGroupConsumptionProgress
+			var offsetRecord db.ConsumerGroupConsumptionProgress
 			err = mc.db.WithContext(ctx).
 				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
 				First(&offsetRecord).
@@ -337,23 +335,23 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			if err != nil {
 				continue
 			}
-			watermark := offsetRecord.SubscriptionStartWatermark.Int64
+			watermark := offsetRecord.SubscriptionStartWatermark
 			var lag int64
-			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("id > ?", currentID).Count(&lag).Error
 			if err != nil {
 				continue
 			}
 			var totalMessageCount int64
-			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Count(&totalMessageCount).Error
 			if err != nil {
 				continue
 			}
 			var consumedMessages int64
-			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("id >= ? AND id < ?", watermark, currentID).
 				Count(&consumedMessages).Error
@@ -361,7 +359,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				continue
 			}
 			var remainingMessages int64
-			err = mc.db.Model(&types.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("(id > ?)", currentID).
 				Count(&remainingMessages).Error
@@ -406,7 +404,7 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 	}
 
 	// 获取Topic和分区数量
-	var topics []types.Topic
+	var topics []db.Topic
 	err := mc.db.WithContext(ctx).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topics: %w", err)
@@ -419,7 +417,7 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 
 	// 获取消息总数
 	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&types.Message{}).Count(&messageCount).Error
+	err = mc.db.WithContext(ctx).Model(&db.Message{}).Count(&messageCount).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get message count: %w", err)
 	}

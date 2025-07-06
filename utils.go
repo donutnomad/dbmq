@@ -1,33 +1,24 @@
 package dbmq
 
 import (
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
 	"sort"
-
-	"github.com/donutnomad/dbmq/types"
 )
 
-func mapToPartition(assignment map[string][]uint) (ret []types.PartitionInfo) {
+func mapToPartition(assignment map[string][]uint) (ret []db.PartitionInfo) {
 	for topic, parts := range assignment {
 		for _, pNum := range parts {
-			ret = append(ret, types.PartitionInfo{Topic: topic, Partition: pNum})
+			ret = append(ret, db.PartitionInfo{Topic: topic, Partition: pNum})
 		}
 	}
 	return
 }
 
-func partitionToMap(ps []types.PartitionInfo) map[string][]uint {
-	return lo.GroupByMap(ps, func(item types.PartitionInfo) (string, uint) {
+func partitionToMap(ps []db.PartitionInfo) map[string][]uint {
+	return lo.GroupByMap(ps, func(item db.PartitionInfo) (string, uint) {
 		return item.Topic, item.Partition
 	})
-}
-
-func CloneMap[K comparable, V any](m map[K]V) map[K]V {
-	clone := make(map[K]V)
-	for k, v := range m {
-		clone[k] = v
-	}
-	return clone
 }
 
 func isEmpty[Slice ~[]E, E any](s Slice) bool {
@@ -63,7 +54,7 @@ type Ordered interface {
 
 // SortConsumersByID 按消费者ID升序排序消费者列表
 // 确保分配的确定性和一致性
-func SortConsumersByID(consumers []types.ConsumerHeartbeat) {
+func SortConsumersByID(consumers []db.ConsumerHeartbeat) {
 	sort.Slice(consumers, func(i, j int) bool {
 		return consumers[i].ConsumerID < consumers[j].ConsumerID
 	})
@@ -71,7 +62,7 @@ func SortConsumersByID(consumers []types.ConsumerHeartbeat) {
 
 // SortPartitionsByTopicAndPartition 按主题名称和分区号排序分区列表
 // 先按主题排序，再按分区号排序，确保分配的逻辑顺序
-func SortPartitionsByTopicAndPartition(partitions []types.PartitionInfo) {
+func SortPartitionsByTopicAndPartition(partitions []db.PartitionInfo) {
 	sort.Slice(partitions, func(i, j int) bool {
 		if partitions[i].Topic != partitions[j].Topic {
 			return partitions[i].Topic < partitions[j].Topic
@@ -80,25 +71,7 @@ func SortPartitionsByTopicAndPartition(partitions []types.PartitionInfo) {
 	})
 }
 
-// SortStringSlice 对字符串切片进行排序
-func SortStringSlice(slice []string) {
-	sort.Strings(slice)
-}
-
-// SortTopicsByName 按主题名称排序主题列表
-func SortTopicsByName(topics []types.Topic) {
-	sort.Slice(topics, func(i, j int) bool {
-		return topics[i].TopicName < topics[j].TopicName
-	})
-}
-
 // 高级排序工具
-
-// StableSort 使用稳定排序算法对切片进行排序
-// 相等元素的相对顺序保持不变
-func StableSort[T any](slice []T, less func(i, j int) bool) {
-	sort.SliceStable(slice, less)
-}
 
 // IsSorted 检查切片是否已按给定的比较函数排序
 func IsSorted[T any](slice []T, less func(i, j int) bool) bool {

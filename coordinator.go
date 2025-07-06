@@ -3,14 +3,13 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/dao"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/logger"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/logger"
-	"github.com/donutnomad/dbmq/types"
 )
 
 const (
@@ -308,7 +307,7 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 		retentionDate := time.Now().Add(-retentionAge)
 
 		for i := uint(0); i < topic.PartitionCount; i++ {
-			p := types.PartitionInfo{Topic: topic.TopicName, Partition: i}
+			p := db.PartitionInfo{Topic: topic.TopicName, Partition: i}
 			partitionTotalDeleted := int64(0)
 
 			// Loop to delete in batches until no more rows are affected
@@ -543,7 +542,7 @@ func (c *Coordinator) getMemberIDs(groupID string) []string {
 // 2. 合并所有消费者的订阅主题，去重
 // 3. 从数据库查询主题的元数据（分区数量等）
 // 4. 为每个主题生成完整的分区列表
-func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []types.ConsumerHeartbeat) ([]types.PartitionInfo, error) {
+func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []db.ConsumerHeartbeat) ([]db.PartitionInfo, error) {
 	// 使用map去重，收集所有唯一的订阅主题
 	subscribedTopics := make(map[string]struct{})
 	for _, consumer := range consumers {
@@ -566,11 +565,11 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 	}
 
 	// 为每个主题生成所有分区的完整列表
-	var allPartitions []types.PartitionInfo
+	var allPartitions []db.PartitionInfo
 	for _, topic := range dbTopics {
 		// 根据主题的分区数量，生成从0到PartitionCount-1的所有分区
 		for i := uint(0); i < topic.PartitionCount; i++ {
-			allPartitions = append(allPartitions, types.PartitionInfo{Topic: topic.TopicName, Partition: i})
+			allPartitions = append(allPartitions, db.PartitionInfo{Topic: topic.TopicName, Partition: i})
 		}
 	}
 	return allPartitions, nil
@@ -578,8 +577,8 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 
 // calculateAssignments 使用稳定的轮询策略在消费者之间分配分区。
 // 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销
-func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, partitions []types.PartitionInfo) map[string][]types.PartitionInfo {
-	assignments := make(map[string][]types.PartitionInfo)
+func (c *Coordinator) calculateAssignments(consumers []db.ConsumerHeartbeat, partitions []db.PartitionInfo) map[string][]db.PartitionInfo {
+	assignments := make(map[string][]db.PartitionInfo)
 	if len(consumers) == 0 {
 		return assignments
 	}
@@ -594,7 +593,7 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 	consumerIDs := make([]string, 0, len(consumers))
 	for _, consumer := range consumers {
 		consumerIDs = append(consumerIDs, consumer.ConsumerID)
-		assignments[consumer.ConsumerID] = []types.PartitionInfo{}
+		assignments[consumer.ConsumerID] = []db.PartitionInfo{}
 	}
 
 	// 使用轮询算法分配分区
