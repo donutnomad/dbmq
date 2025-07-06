@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // 注释掉静态导出配置，因为有动态路由
-  // output: 'export',
+  output: 'export',
   // trailingSlash: true,
   
   // 图片优化配置

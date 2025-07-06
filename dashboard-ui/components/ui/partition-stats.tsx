@@ -8,8 +8,7 @@ import { Badge } from './badge';
 import { Progress } from './progress';
 import { 
   Database, 
-  MessageSquare, 
-  HardDrive, 
+  HardDrive,
   Hash,
   TrendingUp,
   TrendingDown,

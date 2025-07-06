@@ -17,7 +17,6 @@ import {
   Settings,
   Send,
   Activity,
-  Server,
   Zap
 } from 'lucide-react';
 import Link from 'next/link';
@@ -163,7 +162,7 @@ export function Dashboard() {
           />
           <StatCard
             title="系统负载"
-            value={data?.system?.load || '0%'}
+            value={'0%'}
             icon={<Activity className="h-5 w-5 text-rose-500" />}
             className="bg-rose-50 border-none"
           />
