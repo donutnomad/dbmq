@@ -21,19 +21,15 @@ type MetricsConfig struct {
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
-	db  *gorm.DB
+	db  dao.DB
 	dao *dao.MqDao
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
-func NewMetricsClient(config MetricsConfig) (*MetricsClient, error) {
-	if config.DB == nil {
-		return nil, fmt.Errorf("database connection is required")
-	}
-
+func NewMetricsClient(db dao.DB) (*MetricsClient, error) {
 	return &MetricsClient{
-		db:  config.DB,
-		dao: dao.NewMqDao(config.DB),
+		db:  db,
+		dao: dao.NewMqDao(db),
 	}, nil
 }
 
@@ -476,10 +472,4 @@ func (mc *MetricsClient) GetAllConsumerGroupsMetrics(ctx context.Context) ([]Con
 	}
 
 	return metricsSlice, nil
-}
-
-// Close 关闭监控指标客户端
-func (mc *MetricsClient) Close() {
-	// MetricsClient本身不需要特殊的清理操作
-	// 数据库连接由调用者管理
 }

@@ -28,32 +28,6 @@ func NewAdminClient(db dao.DB) *AdminClient {
 	}
 }
 
-// TopicConfig Topic配置结构，模仿Kafka的TopicConfig
-type TopicConfig struct {
-	RetentionMs    *int64 `json:"retention.ms,omitempty"`    // 消息保留时间（毫秒）
-	RetentionHours *int   `json:"retention.hours,omitempty"` // 消息保留时间（小时）
-	CleanupPolicy  string `json:"cleanup.policy,omitempty"`  // 清理策略：delete或compact
-}
-
-// NewTopicRequest 创建Topic的请求结构
-type NewTopicRequest struct {
-	Name          string       // Topic名称
-	NumPartitions int          // 分区数量
-	Config        *TopicConfig // Topic配置（可选）
-	ValidateOnly  bool         // 是否仅验证而不实际创建
-}
-
-// TopicResult Topic操作的结果
-type TopicResult struct {
-	Name  string // Topic名称
-	Error error  // 操作错误（如果有）
-}
-
-// CreateTopicsResult 批量创建Topic的结果
-type CreateTopicsResult struct {
-	Results []TopicResult // 每个Topic的创建结果
-}
-
 func (ac *AdminClient) InitDB() error {
 	return db.ApplySchemas(ac.db.(*gorm.DB))
 }
@@ -111,19 +85,13 @@ func (ac *AdminClient) CreateTopics(ctx context.Context, requests []NewTopicRequ
 }
 
 // ListTopics 列出所有Topic
-// 模仿Kafka AdminClient.ListTopics
 func (ac *AdminClient) ListTopics(ctx context.Context) ([]string, error) {
-	var topics []types.Topic
-	err := ac.db.WithContext(ctx).Select("topic_name").Find(&topics).Error
+	var topicNames []string
+	err := ac.db.WithContext(ctx).Model(&types.Topic{}).Select("topic_name").Scan(&topicNames).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list topics: %w", err)
 	}
-
-	names := make([]string, len(topics))
-	for i, topic := range topics {
-		names[i] = topic.TopicName
-	}
-	return names, nil
+	return topicNames, nil
 }
 
 // DescribeTopics 获取Topic详细信息

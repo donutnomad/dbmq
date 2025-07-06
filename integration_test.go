@@ -51,7 +51,6 @@ func TestIntegration_FullFlow(t *testing.T) {
 	}
 	producer, err := NewProducer(producerConf)
 	require.NoError(t, err)
-	defer producer.Close()
 
 	testKey := []byte("test-key")
 	testValue := []byte("hello world")
@@ -61,7 +60,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 		Value: testValue,
 	}
 	log.Printf("Sending message: key=%s, value=%s", string(testKey), string(testValue))
-	sendResult, err := producer.Send(context.Background(), sentMsg)
+	sendResult, err := producer.Send(context.Background(), *sentMsg)
 	require.NoError(t, err)
 	assert.Equal(t, uint(0), sendResult.Partition)
 	log.Printf("Message sent successfully: partition=%d, offset=%d", sendResult.Partition, sendResult.Offset)
@@ -79,8 +78,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	}
 	consumer, err := NewConsumer(consumerConf)
 	require.NoError(t, err)
-	err = consumer.SubscribeTopics(topicReq.Name)
-	require.NoError(t, err)
+	consumer.SubscribeTopics(topicReq.Name)
 	defer consumer.Close()
 
 	// Wait for the rebalance to happen and partitions to be assigned
@@ -97,7 +95,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	log.Printf("Starting to poll for messages...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	receivedMsgs, err := consumer.Poll(ctx, 5*time.Second)
+	receivedMsgs, err := consumer.Poll(ctx, 5*time.Second, 60*time.Second)
 	log.Printf("Poll completed, received %d messages", len(receivedMsgs))
 	require.NoError(t, err)
 	require.Len(t, receivedMsgs, 1, "Consumer should have received exactly one message")
@@ -192,9 +190,9 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	defer consumer2.Close()
 
 	// 订阅主题
-	require.NoError(t, consumer1_1.SubscribeTopics(topicReq.Name))
-	require.NoError(t, consumer1_2.SubscribeTopics(topicReq.Name))
-	require.NoError(t, consumer2.SubscribeTopics(topicReq.Name))
+	consumer1_1.SubscribeTopics(topicReq.Name)
+	consumer1_2.SubscribeTopics(topicReq.Name)
+	consumer2.SubscribeTopics(topicReq.Name)
 
 	// 等待所有消费者准备就绪
 	consumers := []*Consumer{consumer1_1, consumer1_2, consumer2}
@@ -211,7 +209,6 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		NotificationEnabled: false, // 禁用通知以避免超时
 	})
 	require.NoError(t, err)
-	defer producer.Close()
 
 	// 发送消息到两个分区
 	messages := []struct {
@@ -225,7 +222,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		_, err := producer.Send(context.Background(), &ProducerMessage{
+		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
 			Key:   []byte(msg.key),
 			Value: []byte(msg.value),
@@ -239,7 +236,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	var allMessages []ConsumerMessage
 	for _, consumer := range consumers {
-		receivedMsgs, err := consumer.Poll(ctx, 2*time.Second)
+		receivedMsgs, err := consumer.Poll(ctx, 5*time.Second, 60*time.Second)
 		require.NoError(t, err)
 		allMessages = append(allMessages, receivedMsgs...)
 
@@ -298,7 +295,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		HeartbeatInterval:   1 * time.Second,
 	})
 	require.NoError(t, err)
-	require.NoError(t, consumer1.SubscribeTopics(topicReq.Name))
+	consumer1.SubscribeTopics(topicReq.Name)
 
 	// 等待消费者准备就绪
 	require.Eventually(t, consumer1.IsReady, 10*time.Second, 500*time.Millisecond)
@@ -310,10 +307,9 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		NotificationEnabled: false,
 	})
 	require.NoError(t, err)
-	defer producer.Close()
 
 	for i := 0; i < 4; i++ {
-		_, err := producer.Send(context.Background(), &ProducerMessage{
+		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
 			Key:   []byte(fmt.Sprintf("key-%d", i)),
 			Value: []byte(fmt.Sprintf("value-%d", i)),
@@ -342,7 +338,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer consumer2.Close()
-	require.NoError(t, consumer2.SubscribeTopics(topicReq.Name))
+	consumer2.SubscribeTopics(topicReq.Name)
 
 	// 等待重新平衡
 	time.Sleep(3 * time.Second)
@@ -410,7 +406,6 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 		Redis: redisClient,
 	})
 	require.NoError(t, err)
-	defer producer.Close()
 
 	// 4. Send two "old" messages and two "new" messages.
 	var oldMsgIDs []int64
@@ -419,7 +414,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// Send old messages
 	for i := 0; i < 2; i++ {
-		result, err := producer.Send(context.Background(), &ProducerMessage{Topic: topicReq.Name, Value: []byte("old")})
+		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: []byte("old")})
 		require.NoError(t, err)
 		// Manually update timestamp to be older than retention period
 		err = dbClient.Model(&types.Message{}).Where("id = ?", result.Offset).Update("created_at", time.Now().Add(-1*time.Hour)).Error
@@ -429,7 +424,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// Send new messages
 	for i := 0; i < 2; i++ {
-		result, err := producer.Send(context.Background(), &ProducerMessage{Topic: topicReq.Name, Value: []byte("new")})
+		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: []byte("new")})
 		require.NoError(t, err)
 		newMsgIDs = append(newMsgIDs, result.Offset)
 	}
@@ -443,11 +438,11 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer consumer.Close()
-	require.NoError(t, consumer.SubscribeTopics(topicReq.Name))
+	consumer.SubscribeTopics(topicReq.Name)
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 200*time.Millisecond)
 
 	// Poll and find the last "old" message
-	msgs, err := consumer.Poll(context.Background(), 2*time.Second)
+	msgs, err := consumer.Poll(context.Background(), 5*time.Second, 60*time.Second)
 	require.NoError(t, err)
 	// 前面手动修改了时间，所以那些都已经过期了，现在消费者消费剩下的两条消息，会按照已消费的逻辑清理
 	require.Len(t, msgs, 2, "Should get all 4 messages initially")
@@ -465,7 +460,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	require.NoError(t, err, "Failed to commit offset for old messages")
 
 	// 6. Wait for the retention period and cleanup cycle.
-	time.Sleep(300 * time.Millisecond) // Wait longer than retention.ms and check interval
+	time.Sleep(300 * time.Millisecond) // Wait longer than retention_ms and check interval
 
 	// 7. Manually trigger cleanup for consistent testing.
 	err = coordinator.CleanupExpiredMessages(context.Background())
@@ -528,7 +523,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	require.NoError(t, err)
 	defer consumer.Close()
 
-	require.NoError(t, consumer.SubscribeTopics(topicReq.Name))
+	consumer.SubscribeTopics(topicReq.Name)
 	require.Eventually(t, consumer.IsReady, 10*time.Second, 500*time.Millisecond)
 
 	// 等待额外的时间确保Redis订阅完全建立
@@ -541,10 +536,9 @@ func TestIntegration_RedisNotification(t *testing.T) {
 		NotificationEnabled: true, // 启用通知进行测试
 	})
 	require.NoError(t, err)
-	defer producer.Close()
 
 	// 5. 发送消息并验证基本功能
-	_, err = producer.Send(context.Background(), &ProducerMessage{
+	_, err = producer.Send(context.Background(), ProducerMessage{
 		Topic: topicReq.Name,
 		Key:   []byte("test-key"),
 		Value: []byte("test-value"),
@@ -558,7 +552,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	receivedMsgs, err := consumer.Poll(ctx, 3*time.Second)
+	receivedMsgs, err := consumer.Poll(ctx, 3*time.Second, 60*time.Second)
 	require.NoError(t, err)
 
 	// 验证收到了消息

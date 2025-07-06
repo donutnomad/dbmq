@@ -17,6 +17,7 @@ type DB interface {
 	WithContext(ctx context.Context) *gorm.DB
 	Exec(sql string, values ...any) (tx *gorm.DB)
 	Model(value any) *gorm.DB
+	Raw(sql string, values ...interface{}) (tx *gorm.DB)
 }
 
 type MqDao struct {
@@ -25,6 +26,10 @@ type MqDao struct {
 
 func NewMqDao(db DB) *MqDao {
 	return &MqDao{db: db}
+}
+
+func (d *MqDao) DB() DB {
+	return d.db
 }
 
 // IncrementAndGetGenerationID 原子性地递增消费组的代际ID并返回新值
@@ -179,24 +184,17 @@ ON DUPLICATE KEY UPDATE last_consumed_message_id =
 }
 
 // CreateMessagesBatch 批量插入消息，显著提升高吞吐量场景的性能
-// 使用简单的批量INSERT，依赖AUTO_INCREMENT自动生成ID
-// 消除了复杂的offset计算和死锁问题
-func CreateMessagesBatch(ctx context.Context, db DB, messages []*types.Message) error {
+func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*types.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-
-	// 预处理所有消息
 	for _, msg := range messages {
 		msg.Fix()
 	}
-
-	// 使用GORM的批量创建功能
-	result := db.WithContext(ctx).CreateInBatches(messages, 100) // 每批100条
+	result := d.db.WithContext(ctx).CreateInBatches(messages, 100) // 每批100条
 	if result.Error != nil {
-		return fmt.Errorf("批量插入失败: %w", result.Error)
+		return fmt.Errorf("batch create message: %w", result.Error)
 	}
-
 	return nil
 }
 

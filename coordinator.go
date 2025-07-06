@@ -11,8 +11,6 @@ import (
 	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/donutnomad/dbmq/types"
-
-	"gorm.io/gorm"
 )
 
 const (
@@ -22,41 +20,9 @@ const (
 	cleanupBatchSleep   = 100 * time.Millisecond       // 批处理间的睡眠时间
 )
 
-// groupLocks 提供基于消费组ID的锁机制
-// 确保同一个消费组在同一时间只能进行一次重新均衡操作
-type groupLocks struct {
-	mu    sync.Mutex          // 保护locks map的互斥锁
-	locks map[string]struct{} // 存储已锁定的消费组ID
-}
-
-func newGroupLocks() *groupLocks {
-	return &groupLocks{
-		locks: make(map[string]struct{}),
-	}
-}
-
-// TryLock 尝试为给定的消费组ID获取锁
-// 返回true表示获取成功，false表示锁已被持有
-func (gl *groupLocks) TryLock(groupID string) bool {
-	gl.mu.Lock()
-	defer gl.mu.Unlock()
-	if _, ok := gl.locks[groupID]; ok {
-		return false // 锁已被持有
-	}
-	gl.locks[groupID] = struct{}{}
-	return true
-}
-
-// Unlock 释放指定消费组ID的锁
-func (gl *groupLocks) Unlock(groupID string) {
-	gl.mu.Lock()
-	defer gl.mu.Unlock()
-	delete(gl.locks, groupID)
-}
-
 // CoordinatorConfig 协调器配置结构
 type CoordinatorConfig struct {
-	DB                     *gorm.DB      // 数据库连接
+	DB                     dao.DB        // 数据库连接
 	HeartbeatTimeout       time.Duration // 消费者心跳超时时间，超过此时间认为消费者已死亡
 	RebalanceInterval      time.Duration // 重新均衡检查间隔
 	RebalanceTimeout       time.Duration // 重新均衡操作的上下文超时时间
@@ -67,18 +33,21 @@ type CoordinatorConfig struct {
 // Coordinator 管理单个消费组及其重新均衡的协调器
 // 当它是领导者时，还承担消息保留清理的全局责任
 type Coordinator struct {
-	config           CoordinatorConfig              // 协调器配置
-	db               *gorm.DB                       // 数据库连接
-	isLeader         atomic.Bool                    // 原子布尔值，标记是否为领导者
-	rebalancingLocks *groupLocks                    // 分消费组的重新均衡锁
-	ctx              context.Context                // 根上下文，控制整个协调器生命周期
-	cancel           context.CancelFunc             // 取消函数，用于停止所有goroutine
-	wg               sync.WaitGroup                 // 等待组，用于优雅关闭
-	mu               sync.Mutex                     // 保护members map的互斥锁
-	members          map[string]map[string]struct{} // groupID -> set of consumer IDs，缓存消费组成员信息
-	stopped          atomic.Bool                    // 原子布尔值，标记是否已停止
-	dao              *dao.MqDao
+	config   CoordinatorConfig // 协调器配置
+	dao      *dao.MqDao
+	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
+
+	ctx     context.Context    // 根上下文，控制整个协调器生命周期
+	cancel  context.CancelFunc // 取消函数，用于停止所有goroutine
+	stopped atomic.Bool        // 原子布尔值，标记是否已停止
+
+	wg sync.WaitGroup // 等待组，用于优雅关闭
+
+	mu      sync.Mutex                     // 保护members map的互斥锁
+	members map[string]map[string]struct{} // groupID -> set of consumer IDs，缓存消费组成员信息
+
 	logger           *slog.Logger
+	rebalancingLocks *groupLocks // 分消费组的重新均衡锁
 }
 
 // NewCoordinator 创建一个新的协调器
@@ -102,7 +71,6 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Coordinator{
 		config:           config,
-		db:               config.DB,
 		ctx:              ctx,
 		cancel:           cancel,
 		members:          make(map[string]map[string]struct{}),
@@ -167,7 +135,6 @@ func (c *Coordinator) setLeader(isLeader bool) {
 }
 
 // leaderElectionLoop 领导者选举循环
-// 使用MySQL的GET_LOCK函数实现分布式锁机制
 func (c *Coordinator) leaderElectionLoop() {
 	defer c.wg.Done()
 	ticker := time.NewTicker(lockRefreshInterval)
@@ -190,7 +157,6 @@ func (c *Coordinator) leaderElectionLoop() {
 }
 
 // attemptToBecomeLeader 尝试成为领导者
-// 使用MySQL的GET_LOCK函数进行原子性的锁获取
 func (c *Coordinator) attemptToBecomeLeader() {
 	// 如果协调器已停止，不再尝试获取领导权
 	if c.IsStopped() {
@@ -204,7 +170,7 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		// GET_LOCK是会话特定的。结果为1表示我们获得了锁
 		// 0表示另一个会话持有锁。NULL表示发生了错误
 		// 使用30秒超时，如果当前持有者死亡，允许接管
-		err := c.db.Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockRefreshInterval/time.Second/2).Scan(&result).Error
+		err := c.dao.DB().Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockRefreshInterval/time.Second/2).Scan(&result).Error
 		if err != nil {
 			c.logger.Error("Error in leader election", "error", err)
 			ch <- -1
@@ -247,7 +213,7 @@ func (c *Coordinator) attemptToBecomeLeader() {
 // releaseLock 释放全局领导者锁
 // 在优雅关闭时调用这个函数是好的实践
 func (c *Coordinator) releaseLock() {
-	if err := c.db.Exec("SELECT RELEASE_LOCK(?)", leaderLockName).Error; err != nil {
+	if err := c.dao.DB().Exec("SELECT RELEASE_LOCK(?)", leaderLockName).Error; err != nil {
 		c.logger.Error("Error releasing global leader lock", "error", err)
 	} else {
 		c.logger.Debug("Coordinator released global leader lock.")
@@ -462,7 +428,6 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	}
 
 	// 将活跃消费者列表转换为ID集合，便于后续比较和处理
-	// 使用map[string]struct{}作为集合类型，内存效率高且查找快速
 	activeConsumerIDs := make(map[string]struct{}, len(activeConsumers))
 	for _, consumer := range activeConsumers {
 		activeConsumerIDs[consumer.ConsumerID] = struct{}{}
@@ -493,66 +458,37 @@ func (c *Coordinator) rebalanceIfNeeded(groupID string) error {
 	// 这种情况通常发生在所有消费者都退出时，
 	// 递增代际确保后续加入的消费者使用新的代际ID
 	if len(activeConsumers) == 0 {
-		c.logger.Debug(fmt.Sprintf("No active consumers for group '%s'. Rebalance to generation %d complete.",
-			groupID, newGenerationID))
+		c.logger.Debug(fmt.Sprintf("No active consumers for group '%s'. Rebalance to generation %d complete.", groupID, newGenerationID))
 		c.updateMembers(groupID, activeConsumerIDs)
 		return nil
 	}
 
-	// ========== 第五步：收集订阅信息 ==========
-	// 收集所有活跃消费者订阅的主题及其分区信息。
-	// 这一步会：
-	// 1. 解析每个消费者的订阅主题列表（JSON格式）
-	// 2. 合并所有唯一主题
-	// 3. 查询数据库获取主题的分区数量
-	// 4. 生成完整的分区列表
+	// 收集所有活跃消费者订阅的主题及其分区信息
 	allPartitions, err := c.getAllPartitionsForConsumers(ctx, activeConsumers)
 	if err != nil {
 		return fmt.Errorf("failed to get partitions for consumers: %w", err)
 	}
 
-	// ========== 第六步：计算新的分区分配 ==========
-	// 使用稳定的轮询分配算法分配分区：
-	// 1. 对消费者和分区进行排序，确保分配的确定性
-	// 2. 使用轮询方式分配分区，确保负载均衡
-	// 3. 最小化消费者变化时的分区迁移
+	// 分配分区
 	newAssignments := c.calculateAssignments(activeConsumers, allPartitions)
 
-	// ========== 第七步：持久化新分配 ==========
-	// 将新的分区分配持久化到数据库中。
-	// UpdateAssignments函数内部会自动创建事务，确保所有消费者的分配
-	// 要么全部成功，要么全部失败，维护分配状态的一致性。
+	// 持久化到数据库中
 	err = c.dao.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
 	if err != nil {
 		return fmt.Errorf("failed to update assignments: %w", err)
 	}
 
-	// ========== 第八步：更新内存状态 ==========
-	// 更新协调器的内存缓存，记录新的消费组成员。
-	// 这个缓存用于下次重新均衡时的成员变化检测，
-	// 避免每次都需要查询数据库。
+	// 记录新的消费组成员
 	c.updateMembers(groupID, activeConsumerIDs)
-	c.logger.Info(fmt.Sprintf("Rebalance for group '%s' to generation %d completed successfully.",
-		groupID, newGenerationID))
+	c.logger.Info(fmt.Sprintf("Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
 	return nil
 }
 
 // isRebalanceNeeded 检查是否需要对指定消费组进行重新均衡。
-// 通过比较当前活跃消费者集合与上次重新均衡后缓存的消费者集合，
-// 判断消费组成员是否发生了变化。
-//
 // 触发重新均衡的条件：
 // 1. 消费组首次出现活跃成员（从空组变为有成员）
 // 2. 消费者数量发生变化（新增或减少）
 // 3. 消费者成员发生变化（不同的消费者ID）
-//
-// 参数：
-//   - groupID: 消费组ID
-//   - activeConsumerIDs: 当前检测到的活跃消费者ID集合
-//
-// 返回值：
-//   - true: 需要重新均衡
-//   - false: 不需要重新均衡，成员集合未发生变化
 func (c *Coordinator) isRebalanceNeeded(groupID string, activeConsumerIDs map[string]struct{}) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -580,15 +516,6 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, activeConsumerIDs map[st
 	return false // 成员集合完全相同，无需重新均衡
 }
 
-// updateMembers 更新指定消费组的成员缓存。
-// 在重新均衡完成后调用，将新的成员集合保存到内存中，
-// 用于下次重新均衡时的成员变化检测。
-//
-// 参数：
-//   - groupID: 消费组ID
-//   - newMembers: 新的消费者成员ID集合
-//
-// 存储消费组ID中活动的消费者ID
 func (c *Coordinator) updateMembers(groupID string, newMembers map[string]struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -596,13 +523,6 @@ func (c *Coordinator) updateMembers(groupID string, newMembers map[string]struct
 }
 
 // getMemberIDs 获取指定消费组当前缓存的成员ID列表。
-// 用于日志记录和调试，显示消费组的当前成员状态。
-//
-// 参数：
-//   - groupID: 消费组ID
-//
-// 返回值：
-//   - []string: 消费者ID列表
 func (c *Coordinator) getMemberIDs(groupID string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -623,14 +543,6 @@ func (c *Coordinator) getMemberIDs(groupID string) []string {
 // 2. 合并所有消费者的订阅主题，去重
 // 3. 从数据库查询主题的元数据（分区数量等）
 // 4. 为每个主题生成完整的分区列表
-//
-// 参数：
-//   - ctx: 上下文，用于超时控制
-//   - consumers: 活跃消费者列表
-//
-// 返回值：
-//   - []types.PartitionInfo: 所有需要分配的分区信息
-//   - error: 错误信息，如果解析订阅或查询主题失败
 func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []types.ConsumerHeartbeat) ([]types.PartitionInfo, error) {
 	// 使用map去重，收集所有唯一的订阅主题
 	subscribedTopics := make(map[string]struct{})
@@ -665,36 +577,18 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 }
 
 // calculateAssignments 使用稳定的轮询策略在消费者之间分配分区。
-// 通过对消费者和分区进行排序，确保分配结果是确定性的，
-// 并在消费者增减时最小化分区迁移的开销。
-//
-// 分配算法特点：
-// 1. 确定性：相同的输入总是产生相同的分配结果
-// 2. 负载均衡：使用轮询确保分区尽可能均匀分配
-// 3. 稳定性：消费者变化时尽量减少不必要的分区迁移
-// 4. 有序性：通过排序确保分配的一致性和可预测性
-//
-// 参数：
-//   - consumers: 活跃消费者列表
-//   - partitions: 需要分配的分区列表
-//
-// 返回值：
-//   - map[string][]types.PartitionInfo: 消费者ID到分区列表的映射
+// 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销
 func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, partitions []types.PartitionInfo) map[string][]types.PartitionInfo {
 	assignments := make(map[string][]types.PartitionInfo)
 	if len(consumers) == 0 {
 		return assignments
 	}
 
-	// ========== 关键步骤：排序以确保确定性分配 ==========
-	// 对消费者按ID排序，确保分配顺序的一致性
-	// 这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
+	// 对消费者按ID排序，确保分配顺序的一致性。这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
 	SortConsumersByID(consumers)
 
-	// 对分区按主题名称和分区号排序
 	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
 	SortPartitionsByTopicAndPartition(partitions)
-	// ========== 排序完成 ==========
 
 	// 提取消费者ID列表，并初始化每个消费者的分区分配为空
 	consumerIDs := make([]string, 0, len(consumers))
@@ -719,4 +613,36 @@ func (c *Coordinator) calculateAssignments(consumers []types.ConsumerHeartbeat, 
 func (c *Coordinator) CleanupExpiredMessages(ctx context.Context) error {
 	c.runRetentionCleanup(ctx)
 	return nil
+}
+
+// groupLocks 提供基于消费组ID的锁机制
+// 确保同一个消费组在同一时间只能进行一次重新均衡操作
+type groupLocks struct {
+	mu    sync.Mutex
+	locks map[string]struct{} // 存储已锁定的消费组ID
+}
+
+func newGroupLocks() *groupLocks {
+	return &groupLocks{
+		locks: make(map[string]struct{}),
+	}
+}
+
+// TryLock 尝试为给定的消费组ID获取锁
+// 返回true表示获取成功，false表示锁已被持有
+func (gl *groupLocks) TryLock(groupID string) bool {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	if _, ok := gl.locks[groupID]; ok {
+		return false // 锁已被持有
+	}
+	gl.locks[groupID] = struct{}{}
+	return true
+}
+
+// Unlock 释放指定消费组ID的锁
+func (gl *groupLocks) Unlock(groupID string) {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	delete(gl.locks, groupID)
 }

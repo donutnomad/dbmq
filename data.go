@@ -2,12 +2,72 @@ package dbmq
 
 import (
 	"encoding/json"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
-	"gorm.io/gorm"
 	"time"
 )
+
+// TopicConfig Topic配置结构，模仿Kafka的TopicConfig
+type TopicConfig struct {
+	RetentionMs    *int64 `json:"retention_ms,omitempty"`    // 消息保留时间（毫秒）
+	RetentionHours *int   `json:"retention_hours,omitempty"` // 消息保留时间（小时）
+	CleanupPolicy  string `json:"cleanup_policy,omitempty"`  // 清理策略：delete或compact
+}
+
+// NewTopicRequest 创建Topic的请求结构
+type NewTopicRequest struct {
+	Name          string       // Topic名称
+	NumPartitions int          // 分区数量
+	Config        *TopicConfig // Topic配置（可选）
+	ValidateOnly  bool         // 是否仅验证而不实际创建
+}
+
+// TopicResult Topic操作的结果
+type TopicResult struct {
+	Name  string // Topic名称
+	Error error  // 操作错误（如果有）
+}
+
+// CreateTopicsResult 批量创建Topic的结果
+type CreateTopicsResult struct {
+	Results []TopicResult // 每个Topic的创建结果
+}
+
+// ProducerConfig 生产者配置结构
+// 包含数据库连接、Redis连接和通知相关配置
+type ProducerConfig struct {
+	NotificationEnabled  bool          // 启用Redis实时通知优化. 这是一个"即发即忘"的操作，失败不影响消息发送
+	NotificationStateTTL time.Duration // 设置Redis中通知状态键的过期时间, 默认60秒
+	DB                   dao.DB        // 数据库连接，用于消息持久化
+	Redis                *redis.Client // Redis连接，用于实时通知（可选）
+}
+
+func (c ProducerConfig) GetNotificationStateTTL() time.Duration {
+	if c.NotificationStateTTL == 0 {
+		return defaultNotificationStateTTL
+	}
+	return c.NotificationStateTTL
+}
+
+// ProducerMessage 生产者发送的消息结构（重复定义，为了保持兼容性）
+type ProducerMessage struct {
+	Topic   string            // 目标Topic名称
+	Key     []byte            // 消息Key，用于分区路由
+	Value   []byte            // 消息内容
+	Headers map[string]string // 消息头，键值对格式
+}
+
+// SendResult 消息发送后返回的结果（重复定义，为了保持兼容性）
+type SendResult struct {
+	Topic     string // 消息所在的Topic
+	Partition uint   // 消息所在的分区
+	Offset    int64  // 消息的全局ID（用作偏移量）
+}
+
+// BatchSendResult 批量发送的结果
+type BatchSendResult []SendResult
 
 // ConsumeStrategy 消费策略枚举
 type ConsumeStrategy int
@@ -38,7 +98,7 @@ func (s ConsumeStrategy) String() string {
 // ConsumerConfig 消费者配置结构
 // 包含数据库连接、Redis连接、消费组设置和性能参数
 type ConsumerConfig struct {
-	DB                  *gorm.DB        // 数据库连接，用于消息拉取和偏移量提交
+	DB                  dao.DB          // 数据库连接，用于消息拉取和偏移量提交
 	Redis               *redis.Client   // Redis连接，用于实时通知（可选）
 	GroupID             string          // 消费组ID，同一消费组内的消费者共同消费Topic
 	NotificationEnabled bool            // 是否启用Redis实时通知优化

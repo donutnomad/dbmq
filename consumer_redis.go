@@ -140,11 +140,14 @@ func (c *Consumer) ensurePubSubConnection() {
 	c.lastPubsubTime.Store(now)
 	c.logger().Debug("Successfully refreshed PubSub connection.")
 
-	// 7. Resubscribe to channels for the previously fetched assignments.
-	channels := toChannelNames(assignedPartitions)
-	if len(channels) == 0 {
+	c.subscribe(assignedPartitions)
+}
+
+func (c *Consumer) subscribe(topics []types.PartitionInfo) {
+	if len(topics) == 0 {
 		return
 	}
+	channels := toChannelNames(topics)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.pubsub.Subscribe(ctx, channels...); err != nil {

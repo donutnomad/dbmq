@@ -51,7 +51,7 @@ func NewRestAPIServer(config RestAPIConfig) (*RestAPIServer, error) {
 	}
 
 	// 创建监控客户端
-	metricsClient, err := NewMetricsClient(MetricsConfig{DB: config.DB})
+	metricsClient, err := NewMetricsClient(config.DB)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metrics client: %w", err)
 	}

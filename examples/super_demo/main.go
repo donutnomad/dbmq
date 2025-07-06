@@ -12,7 +12,6 @@ import (
 
 	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/db"
-	"gorm.io/gorm"
 )
 
 // OrderMessage 订单消息结构
@@ -72,9 +71,9 @@ func main() {
 	}
 	redisClient, err := db.InitRedis(redisConfig)
 	if err != nil {
-		fmt.Printf("⚠️  Redis连接失败（将使用轮询模式）: %v\n", err)
-		redisClient = nil
+		panic(err)
 	}
+	fmt.Println("有没有redis")
 
 	fmt.Println("✅ 数据库和Redis连接初始化完成")
 	fmt.Println()
@@ -114,17 +113,16 @@ func main() {
 
 	// 4. 创建生产者
 	fmt.Println("📤 创建生产者...")
-	//producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
-	//	DB:                   dbClient,
-	//	Redis:                redisClient,
-	//	NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
-	//	NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
-	//})
-	//if err != nil {
-	//	log.Fatalf("❌ 创建生产者失败: %v", err)
-	//}
-	//defer producer.Close()
-	//fmt.Println("✅ 生产者创建成功")
+	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
+		DB:                   dbClient,
+		Redis:                redisClient,
+		NotificationEnabled:  redisClient != nil, // 如果Redis可用则启用通知
+		NotificationStateTTL: 10 * time.Second,   // 设置通知状态TTL为10秒
+	})
+	if err != nil {
+		log.Fatalf("❌ 创建生产者失败: %v", err)
+	}
+	fmt.Println("✅ 生产者创建成功")
 
 	// 5. 创建两个消费组的消费者
 	fmt.Println("📥 创建消费者...")
@@ -192,32 +190,15 @@ func main() {
 
 	// 6. 启动消费者订阅
 	fmt.Println("🔄 启动消费者订阅...")
-	err = consumer001.SubscribeTopics(topicName)
-	if err != nil {
-		log.Fatalf("❌ 消费者001订阅失败: %v", err)
-	}
-	err = consumer002.SubscribeTopics(topicName)
-	if err != nil {
-		log.Fatalf("❌ 消费者002订阅失败: %v", err)
-	}
-
-	err = consumer003.SubscribeTopics(topicName)
-	if err != nil {
-		log.Fatalf("❌ 消费者003订阅失败: %v", err)
-	}
+	consumer001.SubscribeTopics(topicName)
+	consumer002.SubscribeTopics(topicName)
+	consumer003.SubscribeTopics(topicName)
 
 	fmt.Println("✅ 消费者订阅启动成功")
 
 	// 7. 创建上下文和等待组，用于协调所有goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	// 清除演示用消费组的历史偏移量，确保从最新消息开始消费
-	fmt.Println("🧹 清除演示用消费组的历史偏移量...")
-	clearConsumerGroupOffsets(dbClient, "消费组001")
-	clearConsumerGroupOffsets(dbClient, "消费组002")
-	fmt.Println("✅ 历史偏移量清除完成，消费者将从最新消息开始消费")
-	fmt.Println()
 
 	var wg sync.WaitGroup
 
@@ -243,11 +224,11 @@ func main() {
 	}()
 
 	// 11. 启动生产者发送消息
-	//wg.Add(1)
-	//go func() {
-	//	defer wg.Done()
-	//	produceOrderMessages(ctx, producer, topicName)
-	//}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		produceOrderMessages(ctx, producer, topicName)
+	}()
 
 	fmt.Println("🎬 演示开始！所有服务已启动...")
 	fmt.Println("📊 实时监控消息流转...")
@@ -260,16 +241,6 @@ func main() {
 	fmt.Println("🏁 演示结束！")
 	fmt.Println("📈 所有消费者和生产者已优雅关闭")
 	fmt.Println("💾 消息已持久化到数据库")
-}
-
-// clearConsumerGroupOffsets 清除指定消费组的所有偏移量提交记录
-func clearConsumerGroupOffsets(db *gorm.DB, groupID string) {
-	result := db.Exec("DELETE FROM mq_consumer_group_offsets WHERE group_id = ?", groupID)
-	if result.Error != nil {
-		log.Printf("⚠️  清除消费组 %s 偏移量时出错: %v", groupID, result.Error)
-	} else {
-		log.Printf("🗑️  已清除消费组 %s 的 %d 条偏移量记录", groupID, result.RowsAffected)
-	}
 }
 
 // produceOrderMessages 生产者发送订单消息
@@ -303,7 +274,7 @@ func produceOrderMessages(ctx context.Context, producer *dbmq.Producer, topicNam
 			}
 
 			// 发送消息
-			message := &dbmq.ProducerMessage{
+			message := dbmq.ProducerMessage{
 				Topic: topicName,
 				Key:   []byte(order.OrderID), // 使用订单ID作为消息键
 				Value: orderJSON,
@@ -331,105 +302,58 @@ func produceOrderMessages(ctx context.Context, producer *dbmq.Producer, topicNam
 // consumeMessagesWithManualCommit 手动提交模式的消费者消费消息循环
 func consumeMessagesWithManualCommit(ctx context.Context, consumer *dbmq.Consumer, consumerName, serviceName string) {
 	fmt.Printf("📥 [%s] %s 开始消费消息...(手动提交模式)\n", consumerName, serviceName)
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Printf("📥 [%s] 收到停止信号，正在关闭...\n", consumerName)
-			return
-		default:
-			// 拉取消息
-			messages, err := consumer.Poll(ctx, 1*time.Second)
-			if err != nil {
-				// 检查是否是重新均衡错误
-				var rebalanceErr *dbmq.ErrRebalanceInProgress
-				if errors.As(err, &rebalanceErr) {
-					fmt.Printf("⚖️  [%s] 正在进行重新均衡，等待完成...\n", consumerName)
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
-
-				// 检查是否是上下文取消
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
-
-				log.Printf("❌ [%s] 拉取消息失败: %v\n", consumerName, err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-
-			// 逐个处理消息，并精确提交每个消息的偏移量
-			for i, msg := range messages {
-				// 处理消息
-				success := processOrderMessageWithResult(msg, consumerName, serviceName)
-				success = false
-				if success {
-					// 处理成功，提交这个具体消息的偏移量
-					if err := consumer.CommitMessage(msg); err != nil {
-						log.Printf("❌ [%s] 提交消息偏移量失败 (消息ID: %d): %v\n", consumerName, msg.ID, err)
-					} else {
-						fmt.Printf("✅ [%s] 精确提交消息偏移量: %d (第%d/%d条)\n",
-							consumerName, msg.ID, i+1, len(messages))
-					}
+	err := consumer.PollLoop(ctx, 60*time.Second, func(messages []dbmq.ConsumerMessage) {
+		// 逐个处理消息，并精确提交每个消息的偏移量
+		for i, msg := range messages {
+			// 处理消息
+			success := processOrderMessageWithResult(msg, consumerName, serviceName)
+			//success = false
+			if success {
+				// 处理成功，提交这个具体消息的偏移量
+				if err := consumer.CommitMessage(msg); err != nil {
+					log.Printf("❌ [%s] 提交消息偏移量失败 (消息ID: %d): %v\n", consumerName, msg.ID, err)
 				} else {
-					// 处理失败，不提交偏移量，这条消息会在下次重新消费
-					fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.ID)
-					fmt.Println("等待下一次再次得到该消息呢")
-					spew.Dump(msg)
+					fmt.Printf("✅ [%s] 精确提交消息偏移量: %d (第%d/%d条)\n",
+						consumerName, msg.ID, i+1, len(messages))
 				}
+			} else {
+				// 处理失败，不提交偏移量，这条消息会在下次重新消费
+				fmt.Printf("❌ [%s] 消息处理失败，不提交偏移量: %d\n", consumerName, msg.ID)
+				fmt.Println("等待下一次再次得到该消息呢")
+				spew.Dump(msg)
 			}
 		}
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			fmt.Printf("📥 [%s] 收到停止信号，正在关闭...\n", consumerName)
+			return
+		}
+		fmt.Println("[consumeMessagesWithManualCommit] ", err)
 	}
 }
 
 // consumeMessagesWithAutoCommit 自动提交模式的消费者消费消息循环
 func consumeMessagesWithAutoCommit(ctx context.Context, consumer *dbmq.Consumer, consumerName, serviceName string) {
 	fmt.Printf("📥 [%s] %s 开始消费消息...(自动提交模式)\n", consumerName, serviceName)
-	for {
-		select {
-		case <-ctx.Done():
+
+	err := consumer.PollLoop(ctx, 60*time.Second, func(messages []dbmq.ConsumerMessage) {
+		// 处理接收到的消息
+		for _, msg := range messages {
+			processOrderMessageWithResult(msg, consumerName, serviceName)
+		}
+		// 自动提交模式下不需要手动提交偏移量
+		// 偏移量会由自动提交循环定期提交
+		fmt.Printf("📦 [%s] 处理了 %d 条消息，提交偏移量\n", consumerName, len(messages))
+		consumer.Acknowledge(messages...)
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			fmt.Printf("📥 [%s] 收到停止信号，正在关闭...\n", consumerName)
 			return
-		default:
-			// 拉取消息
-			messages, err := consumer.Poll(ctx, 1*time.Second)
-			if err != nil {
-				// 检查是否是重新均衡错误
-				var rebalanceErr *dbmq.ErrRebalanceInProgress
-				if errors.As(err, &rebalanceErr) {
-					fmt.Printf("⚖️  [%s] 正在进行重新均衡，等待完成...\n", consumerName)
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
-
-				// 检查是否是上下文取消
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
-
-				log.Printf("❌ [%s] 拉取消息失败: %v\n", consumerName, err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-
-			// 处理接收到的消息
-			for _, msg := range messages {
-				processOrderMessage(msg, consumerName, serviceName)
-			}
-
-			// 自动提交模式下不需要手动提交偏移量
-			// 偏移量会由自动提交循环定期提交
-			if len(messages) > 0 {
-				fmt.Printf("📦 [%s] 处理了 %d 条消息，提交偏移量\n", consumerName, len(messages))
-				consumer.Acknowledge(messages...)
-			}
 		}
+		fmt.Println("[consumeMessagesWithAutoCommit] ", err)
 	}
-}
-
-// processOrderMessage 处理订单消息（无返回值版本，用于自动提交模式）
-func processOrderMessage(msg dbmq.ConsumerMessage, consumerName, serviceName string) {
-	processOrderMessageWithResult(msg, consumerName, serviceName)
 }
 
 // processOrderMessageWithResult 处理订单消息并返回处理结果（用于手动提交模式）

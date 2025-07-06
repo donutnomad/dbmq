@@ -8,7 +8,6 @@ import (
 	"github.com/donutnomad/dbmq/types"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -21,7 +20,6 @@ import (
 type Consumer struct {
 	config ConsumerConfig // 消费者配置
 	id     string         // 消费者唯一ID（UUID），用于在消费组内标识
-	db     *gorm.DB       // 数据库连接
 	redis  *redis.Client  // Redis连接（可选）
 	topics []string       // 订阅的Topic列表
 
@@ -66,7 +64,6 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 	consumer := &Consumer{
 		config:                   config,
 		id:                       uuid.NewString(), // 生成唯一的消费者ID
-		db:                       config.DB,
 		redis:                    config.Redis,
 		topics:                   config.Topics,
 		stopCh:                   make(chan struct{}),
@@ -85,9 +82,8 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 }
 
 // SubscribeTopics 注册消费者要监听的Topic列表
-// 必须在第一次调用Poll之前调用
-// 同时触发消费者加入消费组并开始心跳
-func (c *Consumer) SubscribeTopics(topics ...string) error {
+// 必须在第一次调用Poll之前调用, 同时触发消费者加入消费组并开始心跳
+func (c *Consumer) SubscribeTopics(topics ...string) {
 	c.mu.Lock()
 	c.topics = topics
 	c.mu.Unlock()
@@ -103,8 +99,6 @@ func (c *Consumer) SubscribeTopics(topics ...string) error {
 		c.wg.Add(1)
 		go c.autoCommitLoop()
 	}
-
-	return nil
 }
 
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
@@ -130,14 +124,10 @@ func (c *Consumer) Close() {
 	c.muSub.Unlock()
 
 	// 在所有后台进程停止后，只有在自动提交模式下才进行最后一次提交
-	// 手动提交模式下，用户应该负责提交所有需要确认的消息
-	// 这样可以避免与自动提交循环的竞争条件，也避免在手动模式下误提交未确认的消息
 	if c.config.EnableAutoCommit {
 		if err := c.CommitSync(); err != nil {
 			c.logger().Error(fmt.Sprintf("ERROR: final auto-commit failed for consumer %s: %v", c.id, err))
 		}
-	} else {
-		c.logger().Debug(fmt.Sprintf("Consumer %s: 手动提交模式，跳过Close时的自动提交。用户应确保所有消息都已手动提交。", c.id))
 	}
 
 	// 通过标记消费者为离线状态优雅离开消费组，保留历史记录
