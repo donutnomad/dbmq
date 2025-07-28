@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/internal/interfaces"
-	"time"
-
 	"github.com/samber/lo"
-
-	"github.com/donutnomad/dbmq/internal/dao"
-	"gorm.io/gorm"
+	"time"
 )
 
 // MetricsConfig 监控指标配置
