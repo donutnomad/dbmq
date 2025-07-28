@@ -16,7 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-//go:embed dashboard-ui/out/*
+//go:embed dashboard-ui/outhtml/*
 var embedFS embed.FS
 
 // RestAPIConfig REST API配置
