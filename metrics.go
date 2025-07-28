@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"time"
 
 	"github.com/samber/lo"
@@ -15,7 +16,7 @@ import (
 
 // MetricsConfig 监控指标配置
 type MetricsConfig struct {
-	DB *gorm.DB // 数据库连接
+	DB interfaces.DB // 数据库连接
 }
 
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口

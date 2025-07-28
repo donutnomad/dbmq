@@ -3,6 +3,7 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm/logger"
 	"log"
@@ -31,7 +32,7 @@ const (
 
 // setupIntegrationTest prepares the environment for an integration test.
 // It creates a unique database for the test run, applies schemas, and cleans up afterwards.
-func setupIntegrationTest(t *testing.T) (*gorm.DB, *redis.Client) {
+func setupIntegrationTest(t *testing.T) (interfaces.DB, *redis.Client) {
 	// Create a unique DB name for this test run to ensure isolation
 	dbName := fmt.Sprintf("dbmq_test_%d", time.Now().UnixNano())
 
@@ -87,7 +88,7 @@ func setupIntegrationTest(t *testing.T) (*gorm.DB, *redis.Client) {
 }
 
 // DropAllTables 删除所有mq_开头的表
-func DropAllTables(db *gorm.DB) error {
+func DropAllTables(db interfaces.DB) error {
 	// 获取所有以 mq_ 开头的表名
 	var tableNames []string
 	if err := db.Raw("SHOW TABLES LIKE 'mq_%%'").Scan(&tableNames).Error; err != nil {
@@ -133,7 +134,7 @@ type RedisConfig struct {
 }
 
 // InitMySQL initializes the database connection for MySQL.
-func InitMySQL(mysqlConf MySQLConfig) (*gorm.DB, error) {
+func InitMySQL(mysqlConf MySQLConfig) (interfaces.DB, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		mysqlConf.User, mysqlConf.Password, mysqlConf.Host, mysqlConf.Port, mysqlConf.DBName)
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"log"
 	"os"
 	"os/signal"
@@ -88,7 +89,7 @@ func main() {
 }
 
 // 初始化数据库连接
-func initDatabase() (*gorm.DB, error) {
+func initDatabase() (interfaces.DB, error) {
 	// 简单的数据库连接字符串
 	dsn := "root:123456@tcp(localhost:3306)/dbmq_demo?charset=utf8mb4&parseTime=True&loc=Local"
 

@@ -3,13 +3,12 @@ package db
 import (
 	"encoding/json"
 	"fmt"
-	"gorm.io/gorm"
-	"time"
-
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"gorm.io/datatypes"
+	"time"
 )
 
-func ApplySchemas(db *gorm.DB) error {
+func ApplySchemas(db interfaces.DB) error {
 	return db.AutoMigrate(Topic{}, Message{}, ConsumerGroupGeneration{}, ConsumerHeartbeat{}, ConsumerGroupConsumptionProgress{})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"strings"
 	"time"
 
@@ -12,12 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type DB interface {
-	WithContext(ctx context.Context) *gorm.DB
-	Exec(sql string, values ...any) (tx *gorm.DB)
-	Model(value any) *gorm.DB
-	Raw(sql string, values ...interface{}) (tx *gorm.DB)
-}
+type DB = interfaces.DB
 
 type MqDao struct {
 	db DB

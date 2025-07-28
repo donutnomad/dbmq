@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -21,10 +22,10 @@ var embedFS embed.FS
 
 // RestAPIConfig REST API配置
 type RestAPIConfig struct {
-	DB     *gorm.DB // 数据库连接
-	Port   int      // 监听端口，默认8080
-	Host   string   // 监听地址，默认localhost
-	Prefix string   // API路径前缀，默认/api/v1
+	DB     interfaces.DB // 数据库连接
+	Port   int           // 监听端口，默认8080
+	Host   string        // 监听地址，默认localhost
+	Prefix string        // API路径前缀，默认/api/v1
 }
 
 // RestAPIServer REST API服务器，兼容Kafka UI工具

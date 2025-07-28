@@ -24,7 +24,7 @@ func NewAdminClient(db dao.DB) *AdminClient {
 }
 
 func (ac *AdminClient) InitDB() error {
-	return db.ApplySchemas(ac.db.(*gorm.DB))
+	return db.ApplySchemas(ac.db)
 }
 
 func (ac *AdminClient) CreateTopicIfNotExist(ctx context.Context, req NewTopicRequest) error {
