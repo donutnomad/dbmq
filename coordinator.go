@@ -168,13 +168,20 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		var result int
 		// GET_LOCK是会话特定的。结果为1表示我们获得了锁
 		// 0表示另一个会话持有锁。NULL表示发生了错误
-		// 使用30秒超时，如果当前持有者死亡，允许接管
-		err := c.dao.DB().Raw("SELECT GET_LOCK(?, ?)", leaderLockName, lockRefreshInterval/time.Second/2).Scan(&result).Error
+		// 使用5秒超时，如果当前持有者死亡，允许接管
+		var timeout = int(lockRefreshInterval / time.Second / 2)
+		sqlDb, err := c.dao.DB().DB()
 		if err != nil {
 			c.logger.Error("Error in leader election", "error", err)
 			ch <- -1
 		} else {
-			ch <- result
+			err = sqlDb.QueryRowContext(c.ctx, "SELECT GET_LOCK(?, ?)", leaderLockName, timeout).Scan(&result)
+			if err != nil {
+				c.logger.Error("Error in leader election", "error", err)
+				ch <- -1
+			} else {
+				ch <- result
+			}
 		}
 	}()
 
