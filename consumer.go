@@ -3,15 +3,16 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"log/slog"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // Consumer 代表一个消费者实例，属于某个消费组
@@ -20,7 +21,7 @@ import (
 type Consumer struct {
 	config ConsumerConfig // 消费者配置
 	id     string         // 消费者唯一ID（UUID），用于在消费组内标识
-	redis  *redis.Client  // Redis连接（可选）
+	redis  redis.Cmdable  // Redis连接（可选）
 	topics []string       // 订阅的Topic列表
 
 	// Redis发布/订阅，用于实时通知

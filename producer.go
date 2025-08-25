@@ -3,16 +3,17 @@ package dbmq
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/logger"
-	"github.com/redis/go-redis/v9"
-	"github.com/samber/lo"
 	"hash/fnv"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/dao"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/logger"
+	"github.com/redis/go-redis/v9"
+	"github.com/samber/lo"
 )
 
 const (
@@ -44,7 +45,7 @@ var (
 // 负责将消息发送到指定的Topic和分区
 type Producer struct {
 	config             ProducerConfig // 生产者配置
-	redis              *redis.Client  // Redis连接（可选）
+	redis              redis.Cmdable  // Redis连接（可选）
 	topicMetadataCache sync.Map       // Topic元数据缓存，map[string]*db.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
 	roundRobinCounters sync.Map       // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
 	dao                *dao.MqDao

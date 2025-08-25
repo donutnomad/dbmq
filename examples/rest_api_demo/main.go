@@ -105,7 +105,7 @@ func initDatabase() (interfaces.DB, error) {
 }
 
 // 初始化Redis连接（可选）
-func initRedis() *redis.Client {
+func initRedis() redis.Cmdable {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "", // 没有密码
