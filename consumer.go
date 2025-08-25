@@ -19,10 +19,10 @@ import (
 // 消费者负责从分配的分区中拉取消息、处理消息、提交偏移量
 // 支持自动重新均衡和故障恢复
 type Consumer struct {
-	config ConsumerConfig // 消费者配置
-	id     string         // 消费者唯一ID（UUID），用于在消费组内标识
-	redis  redis.Cmdable  // Redis连接（可选）
-	topics []string       // 订阅的Topic列表
+	config ConsumerConfig        // 消费者配置
+	id     string                // 消费者唯一ID（UUID），用于在消费组内标识
+	redis  redis.UniversalClient // Redis连接（可选）
+	topics []string              // 订阅的Topic列表
 
 	// Redis发布/订阅，用于实时通知
 	pubsub         *redis.PubSub         // Redis订阅对象

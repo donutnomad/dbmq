@@ -32,7 +32,7 @@ const (
 
 // setupIntegrationTest prepares the environment for an integration test.
 // It creates a unique database for the test run, applies schemas, and cleans up afterwards.
-func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.Cmdable) {
+func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 	// Create a unique DB name for this test run to ensure isolation
 	dbName := fmt.Sprintf("dbmq_test_%d", time.Now().UnixNano())
 
@@ -190,7 +190,7 @@ func CreateDatabaseIfNotExists(config MySQLConfig) error {
 }
 
 // InitRedis initializes the database connection for Redis.
-func InitRedis(redisConf RedisConfig) (redis.Cmdable, error) {
+func InitRedis(redisConf RedisConfig) (redis.UniversalClient, error) {
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", redisConf.Host, redisConf.Port),
 		DB:           redisConf.DB,
