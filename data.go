@@ -40,6 +40,7 @@ type CreateTopicsResult struct {
 type ProducerConfig struct {
 	NotificationEnabled  bool                  // 启用Redis实时通知优化. 这是一个"即发即忘"的操作，失败不影响消息发送
 	NotificationStateTTL time.Duration         // 设置Redis中通知状态键的过期时间, 默认60秒
+	TopicMetadataTTL     time.Duration         // Topic 元数据缓存存活时间，默认30秒
 	DB                   dao.DB                // 数据库连接，用于消息持久化
 	Redis                redis.UniversalClient // Redis连接，用于实时通知（可选）
 }
@@ -49,6 +50,13 @@ func (c ProducerConfig) GetNotificationStateTTL() time.Duration {
 		return defaultNotificationStateTTL
 	}
 	return c.NotificationStateTTL
+}
+
+func (c ProducerConfig) GetTopicMetadataTTL() time.Duration {
+	if c.TopicMetadataTTL <= 0 {
+		return 30 * time.Second
+	}
+	return c.TopicMetadataTTL
 }
 
 // ProducerMessage 生产者发送的消息结构（重复定义，为了保持兼容性）

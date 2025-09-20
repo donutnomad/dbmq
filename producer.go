@@ -46,9 +46,14 @@ var (
 type Producer struct {
 	config             ProducerConfig        // 生产者配置
 	redis              redis.UniversalClient // Redis连接（可选）
-	topicMetadataCache sync.Map              // Topic元数据缓存，map[string]*db.Topic， // TODO: 未来如果支持增加分区数量，那么需要清理这个缓存
+	topicMetadataCache sync.Map              // Topic元数据缓存，带TTL自动失效
 	roundRobinCounters sync.Map              // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
 	dao                *dao.MqDao
+}
+
+type cachedTopicMetadata struct {
+	topic     *db.Topic
+	expiresAt time.Time
 }
 
 func NewProducer(config ProducerConfig) (*Producer, error) {
@@ -164,8 +169,13 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 // 缓存可以显著减少数据库查询，提高性能
 func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.Topic, error) {
 	// 首先检查缓存
-	if metadata, ok := p.topicMetadataCache.Load(topicName); ok {
-		return metadata.(*db.Topic), nil
+	if entry, ok := p.topicMetadataCache.Load(topicName); ok {
+		cached := entry.(*cachedTopicMetadata)
+		if time.Now().Before(cached.expiresAt) {
+			return cached.topic, nil
+		}
+		// 条目已过期，删除后重建
+		p.topicMetadataCache.Delete(topicName)
 	}
 
 	// 缓存未命中，从数据库查询
@@ -177,9 +187,12 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.
 		return nil, &ErrUnknownTopicOrPartition{Topic: topicName}
 	}
 
-	// 缓存查询结果
+	// 缓存查询结果并设置TTL
 	topic := &topics[0]
-	p.topicMetadataCache.Store(topicName, topic)
+	p.topicMetadataCache.Store(topicName, &cachedTopicMetadata{
+		topic:     topic,
+		expiresAt: time.Now().Add(p.config.GetTopicMetadataTTL()),
+	})
 	return topic, nil
 }
 
