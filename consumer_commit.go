@@ -67,7 +67,7 @@ func (c *Consumer) CommitMessage(msg ConsumerMessage) error {
 		msg.PartitionInfo(): msg.ID,
 	}
 
-	return c.commitMessageIDs(context.Background(), c.config.GroupID, c.getGenerationIDLocked(), messageIDsToCommit)
+	return c.commitMessageIDs(context.Background(), c.config.GroupID, c.GetGenerationID(), messageIDsToCommit)
 }
 
 // commitMessageIDs 提交消息ID的核心逻辑

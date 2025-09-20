@@ -102,7 +102,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	})
 
 	////////////////////// 为新增的分区应用策略-START //////////////////////
-	if err := c.dao.BatchCommitOffsetsWithInitialWatermark(ctx, c.config.GroupID, c.generationID, initialProgressWithWatermarks); err != nil {
+	if err := c.dao.BatchCommitOffsetsWithInitialWatermark(ctx, c.config.GroupID, newGenerationID, initialProgressWithWatermarks); err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: Failed to register subscription information: %v", c.id, err))
 		// 继续执行，但记录错误。这不是致命错误，因为重新注册时会重新应用策略
 	} else {

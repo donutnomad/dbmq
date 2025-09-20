@@ -36,6 +36,7 @@ func (d *MqDao) UpsertConsumerHeartbeat(ctx context.Context, groupID, consumerID
 	sql := "INSERT INTO " + db.ConsumerHeartbeat{}.TableName() + ` (group_id, consumer_id, generation_id, subscribed_topics, assigned_partitions, offline, last_heartbeat, offline_at) 
 	VALUES (?, ?, 0, ?, ?, FALSE, ?, NULL) 
 	ON DUPLICATE KEY UPDATE 
+		subscribed_topics = VALUES(subscribed_topics), 
 		last_heartbeat = VALUES(last_heartbeat), 
 		offline = FALSE, 
 		offline_at = NULL

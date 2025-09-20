@@ -4,7 +4,9 @@
       "Bash(rg:*)",
       "Bash(go build:*)",
       "Bash(go test:*)",
-      "Bash(ls -R)"
+      "Bash(ls -R)",
+      "mcp__brave-search__brave_web_search",
+      "mcp__fetch__fetch"
     ],
     "deny": []
   }
