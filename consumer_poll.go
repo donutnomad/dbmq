@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dao"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/samber/lo"
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/dao"
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/samber/lo"
 )
 
 type ErrFailedFetchMessage struct {
@@ -20,8 +21,9 @@ func (e *ErrFailedFetchMessage) Error() string {
 	return e.err.Error()
 }
 
-func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessage func(messages []ConsumerMessage)) error {
+func (c *Consumer) PollLoopTimeout(ctx context.Context, fn func(c *Consumer, lastMessageCount int64) time.Duration, onMessage func(messages []ConsumerMessage)) error {
 	var timeA = time.NewTimer(1 * time.Second)
+	var lastMessageCount int64 = 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -32,7 +34,7 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 			timeA.Reset(1 * time.Second)
 			continue
 		}
-		messages, err := c.Poll(ctx, timeout)
+		messages, err := c.Poll(ctx, fn(c, lastMessageCount))
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -47,6 +49,7 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 				c.logger().Error(fmt.Sprintf("ERROR: failed to batch fetch messages for consumer %s: %v", c.id, err))
 			}
 		} else {
+			lastMessageCount = int64(len(messages))
 			if messages == nil {
 				timeA.Reset(500 * time.Millisecond)
 				continue
@@ -57,6 +60,12 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 		}
 		timeA.Reset(0)
 	}
+}
+
+func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessage func(messages []ConsumerMessage)) error {
+	return c.PollLoopTimeout(ctx, func(c *Consumer, lastMessageCount int64) time.Duration {
+		return timeout
+	}, onMessage)
 }
 
 // Poll 从订阅的Topic和分区中拉取消息
