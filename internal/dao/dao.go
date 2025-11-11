@@ -71,17 +71,38 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		updateSQL := "UPDATE `mq_consumer_heartbeats` SET generation_id = ?, `assigned_partitions` = ? WHERE `group_id` = ? AND `consumer_id` = ?"
+		activeIDs := make([]string, 0, len(assignments))
 		for consumerID, partitions := range assignments {
-			result := tx.Exec(updateSQL, generationID, datatypes.NewJSONSlice(partitions), groupID, consumerID)
+			activeIDs = append(activeIDs, consumerID)
+			updates := map[string]any{
+				"generation_id":       generationID,
+				"assigned_partitions": datatypes.NewJSONSlice(partitions),
+				"offline":             false,
+				"offline_at":          gorm.Expr("NULL"),
+			}
+			result := tx.Model(&db.ConsumerHeartbeat{}).
+				Where("`group_id` = ?", groupID).
+				Where("`consumer_id` = ?", consumerID).
+				Updates(updates)
 			if result.Error != nil {
-				// 如果任何一个消费者的更新失败，整个事务会自动回滚
 				return fmt.Errorf("failed to update assignment for consumer %s: %w", consumerID, result.Error)
 			}
-			// 检查是否有行被更新，如果没有则说明消费者不存在
 			if result.RowsAffected == 0 {
 				return fmt.Errorf("consumer %s not found in group %s", consumerID, groupID)
 			}
+		}
+
+		inactiveQuery := tx.Model(&db.ConsumerHeartbeat{}).
+			Where("`group_id` = ?", groupID)
+		if len(activeIDs) > 0 {
+			inactiveQuery = inactiveQuery.Where("`consumer_id` NOT IN ?", activeIDs)
+		}
+		inactiveUpdates := map[string]any{
+			"generation_id":       generationID,
+			"assigned_partitions": datatypes.NewJSONSlice([]db.PartitionInfo{}),
+		}
+		if err := inactiveQuery.Updates(inactiveUpdates).Error; err != nil {
+			return fmt.Errorf("failed to clear assignments for inactive consumers: %w", err)
 		}
 		return nil
 	})
