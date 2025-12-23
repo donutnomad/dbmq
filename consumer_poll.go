@@ -133,7 +133,14 @@ func (c *Consumer) waitPoll(ctx context.Context, timeout time.Duration, partitio
 
 		if pubSub != nil && c.pubsubHealthy.Load() {
 			select {
-			case msg := <-c.notifyCh:
+			case msg, ok := <-c.notifyCh:
+				if !ok {
+					// channel 已关闭，标记为不健康并回退到轮询模式
+					c.logger().Debug(fmt.Sprintf("notifyCh closed for consumer %s, marking pubsub unhealthy", c.id))
+					c.pubsubHealthy.Store(false)
+					// 继续执行到下面的轮询逻辑
+					break
+				}
 				c.logger().Debug(fmt.Sprintf("Received notification for consumer %s: %s", c.id, msg.Channel))
 				c.lastPubsubTime.Store(time.Now().Unix())
 				return nil
