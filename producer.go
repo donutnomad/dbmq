@@ -14,9 +14,19 @@ import (
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.28.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
+type contextKey string
+
 const (
+	// contextKeyLogEnabled 用于在 context 中标记是否启用日志
+	contextKeyLogEnabled contextKey = "dbmq.log_enabled"
+
 	// producerNotifyScript 实现"智能通知合并"逻辑的Lua脚本
 	// 只有当分区的通知状态键不存在时才发送通知，避免惊群效应
 	//
@@ -40,6 +50,22 @@ end
 var (
 	notifyScript = redis.NewScript(producerNotifyScript) // 预编译的Lua脚本
 )
+
+// WithLogEnabled 返回一个启用日志记录的 context
+// 当使用此 context 调用 Send/SendBatch 或消费消息时，会记录详细的调试日志
+func WithLogEnabled(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextKeyLogEnabled, true)
+}
+
+// IsLogEnabled 检查 context 中是否启用了日志
+func IsLogEnabled(ctx context.Context) bool {
+	if val := ctx.Value(contextKeyLogEnabled); val != nil {
+		if enabled, ok := val.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
 
 // Producer 消息生产者，线程安全，可以并发使用
 // 负责将消息发送到指定的Topic和分区
@@ -75,13 +101,39 @@ func (p *Producer) Send(ctx context.Context, msg ProducerMessage) (*SendResult, 
 }
 
 func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (BatchSendResult, error) {
+	// 创建 OTEL span，使用标准语义约定
+	tracer := otel.Tracer("dbmq.producer")
+
+	// 收集所有涉及的 topic，用于 span 属性
+	topics := lo.Uniq(lo.Map(messages, func(m ProducerMessage, _ int) string {
+		return m.Topic
+	}))
+
+	ctx, span := tracer.Start(ctx, "send",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKey.String("dbmq"),
+			semconv.MessagingOperationName("publish"),
+			semconv.MessagingBatchMessageCount(len(messages)),
+		),
+	)
+	defer span.End()
+
+	// 如果只有一个 topic，添加到 span 属性
+	if len(topics) == 1 {
+		span.SetAttributes(semconv.MessagingDestinationName(topics[0]))
+	}
+
 	if len(messages) == 0 {
 		return nil, nil
 	}
 
 	for i, msg := range messages {
 		if msg.Topic == "" {
-			return nil, fmt.Errorf("message at index %d: producer message and topic cannot be empty", i)
+			err := fmt.Errorf("message at index %d: producer message and topic cannot be empty", i)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, err
 		}
 	}
 
@@ -91,6 +143,8 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	}) {
 		topicMeta, err := p.getTopicMetadata(ctx, topicName)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("failed to get metadata for topic %s: %w", topicName, err)
 		}
 		topicMetadataMap[topicName] = topicMeta
@@ -100,6 +154,9 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	var notificationPartitions []db.PartitionInfo
 	var currentTime = time.Now()
 
+	// 创建 TextMapPropagator 用于注入追踪上下文
+	propagator := otel.GetTextMapPropagator()
+
 	for _, msg := range messages {
 		partitionCount := topicMetadataMap[msg.Topic].PartitionCount
 		var partition uint
@@ -108,6 +165,13 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		} else {
 			partition = p.nextRoundRobinPartition(msg.Topic, partitionCount)
 		}
+
+		// 将追踪上下文注入到消息 Headers 中
+		if msg.Headers == nil {
+			msg.Headers = make(map[string]string)
+		}
+		propagator.Inject(ctx, propagation.MapCarrier(msg.Headers))
+
 		dbMsg := db.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, currentTime)
 		dbMessages = append(dbMessages, &dbMsg)
 		notificationPartitions = append(notificationPartitions, db.PartitionInfo{Topic: msg.Topic, Partition: partition})
@@ -115,10 +179,27 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 
 	// 批量插入消息到数据库
 	if err := p.dao.CreateMessagesBatch(ctx, dbMessages); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to create messages batch in db: %w", err)
 	}
 
+	// 如果启用了日志记录，打印消息详情
+	if IsLogEnabled(ctx) {
+		for _, dbMsg := range dbMessages {
+			p.logger().DebugContext(ctx, "producer.send",
+				"topic", dbMsg.Topic,
+				"partition", dbMsg.Partition,
+				"key", dbMsg.MessageKey,
+				"message_id", dbMsg.ID,
+				"headers", dbMsg.Headers.Data(),
+			)
+		}
+	}
+
 	p.sendBatchNotifications(context.Background(), notificationPartitions)
+
+	span.SetStatus(codes.Ok, "")
 
 	return lo.Map(dbMessages, func(dbMsg *db.Message, index int) SendResult {
 		return SendResult{

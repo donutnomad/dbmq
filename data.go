@@ -1,12 +1,18 @@
 package dbmq
 
 import (
+	"context"
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.28.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TopicConfig Topic配置结构，模仿Kafka的TopicConfig
@@ -156,7 +162,111 @@ func (c ConsumerMessage) PartitionInfo() db.PartitionInfo {
 	}
 }
 
+// ExtractTracingContext 从消息 Headers 中提取追踪上下文并创建新的 context
+// parentCtx: 父级 context（通常是当前请求的 context）
+// 返回: 包含从消息中提取的追踪信息的新 context
+func (c ConsumerMessage) ExtractTracingContext(parentCtx context.Context) context.Context {
+	propagator := otel.GetTextMapPropagator()
+	return propagator.Extract(parentCtx, propagation.MapCarrier(c.Headers))
+}
+
+// StartConsumerSpan 创建一个消费者 span，并从消息 Headers 中提取追踪上下文作为链接
+// 这是推荐的方式，符合 OpenTelemetry 消息消费的语义约定
+// parentCtx: 父级 context
+// spanName: span 名称，如果为空则使用 "process"
+// 返回: 新的 context 和 span（调用者负责调用 span.End()）
+func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName string) (context.Context, trace.Span) {
+	if spanName == "" {
+		spanName = "process"
+	}
+
+	tracer := otel.Tracer("dbmq.consumer")
+	propagator := otel.GetTextMapPropagator()
+
+	// 从消息头提取父级 span context
+	carrierCtx := propagator.Extract(context.Background(), propagation.MapCarrier(c.Headers))
+	parentSpanContext := trace.SpanContextFromContext(carrierCtx)
+
+	var links []trace.Link
+	if parentSpanContext.IsValid() {
+		links = append(links, trace.Link{
+			SpanContext: parentSpanContext,
+		})
+	}
+
+	ctx, span := tracer.Start(parentCtx, spanName,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithLinks(links...),
+		trace.WithAttributes(
+			semconv.MessagingSystemKey.String("dbmq"),
+			semconv.MessagingOperationName("process"),
+			semconv.MessagingDestinationName(c.Topic),
+			attribute.Int64("messaging.message.id", c.ID),
+			attribute.Int("messaging.destination.partition.id", int(c.Partition)),
+		),
+	)
+
+	if c.Key != "" {
+		span.SetAttributes(attribute.String("messaging.message.conversation_id", c.Key))
+	}
+
+	return ctx, span
+}
+
 type ConsumerMessages []ConsumerMessage
+
+// StartBatchConsumerSpan 为批量消息创建一个消费者 span，使用 Span Links 链接所有消息的追踪上下文
+// 这是处理批量消息时推荐的方式，符合 OpenTelemetry 消息消费的语义约定
+// parentCtx: 父级 context
+// spanName: span 名称，如果为空则使用 "process_batch"
+// 返回: 新的 context 和 span（调用者负责调用 span.End()）
+func (messages ConsumerMessages) StartBatchConsumerSpan(parentCtx context.Context, spanName string) (context.Context, trace.Span) {
+	if spanName == "" {
+		spanName = "process_batch"
+	}
+
+	tracer := otel.Tracer("dbmq.consumer")
+	propagator := otel.GetTextMapPropagator()
+
+	// 从所有消息头提取 span context 并创建 links
+	var links []trace.Link
+	topicSet := make(map[string]bool)
+
+	for _, msg := range messages {
+		carrierCtx := propagator.Extract(context.Background(), propagation.MapCarrier(msg.Headers))
+		parentSpanContext := trace.SpanContextFromContext(carrierCtx)
+
+		if parentSpanContext.IsValid() {
+			links = append(links, trace.Link{
+				SpanContext: parentSpanContext,
+			})
+		}
+
+		topicSet[msg.Topic] = true
+	}
+
+	// 创建 span 属性
+	attrs := []attribute.KeyValue{
+		semconv.MessagingSystemKey.String("dbmq"),
+		semconv.MessagingOperationName("process"),
+		semconv.MessagingBatchMessageCount(len(messages)),
+	}
+
+	// 如果只有一个 topic，添加 destination name
+	if len(topicSet) == 1 {
+		for topic := range topicSet {
+			attrs = append(attrs, semconv.MessagingDestinationName(topic))
+		}
+	}
+
+	ctx, span := tracer.Start(parentCtx, spanName,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithLinks(links...),
+		trace.WithAttributes(attrs...),
+	)
+
+	return ctx, span
+}
 
 func (*ConsumerMessages) FromMessages(messages []db.Message) ConsumerMessages {
 	return lo.Map(messages, func(m db.Message, index int) ConsumerMessage {

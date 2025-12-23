@@ -115,7 +115,22 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	// 批量重置通知状态
 	c.tryResetNotificationStateBatch(context.Background(), partitionsToReset)
 
-	return new(ConsumerMessages).FromMessages(allMessages), nil
+	messages := new(ConsumerMessages).FromMessages(allMessages)
+
+	// 如果启用了日志记录，打印消息详情
+	if IsLogEnabled(ctx) {
+		for _, msg := range messages {
+			c.logger().DebugContext(ctx, "consumer.poll",
+				"topic", msg.Topic,
+				"partition", msg.Partition,
+				"key", msg.Key,
+				"message_id", msg.ID,
+				"headers", msg.Headers,
+			)
+		}
+	}
+
+	return messages, nil
 }
 
 // 返回错误
