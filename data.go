@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
@@ -47,7 +47,7 @@ type ProducerConfig struct {
 	NotificationEnabled  bool                  // 启用Redis实时通知优化. 这是一个"即发即忘"的操作，失败不影响消息发送
 	NotificationStateTTL time.Duration         // 设置Redis中通知状态键的过期时间, 默认60秒
 	TopicMetadataTTL     time.Duration         // Topic 元数据缓存存活时间，默认30秒
-	DB                   dao.DB                // 数据库连接，用于消息持久化
+	DB                   repo.DB               // 数据库连接，用于消息持久化
 	Redis                redis.UniversalClient // Redis连接，用于实时通知（可选）
 }
 
@@ -108,7 +108,7 @@ func (s ConsumeStrategy) String() string {
 // ConsumerConfig 消费者配置结构
 // 包含数据库连接、Redis连接、消费组设置和性能参数
 type ConsumerConfig struct {
-	DB                  dao.DB                // 数据库连接，用于消息拉取和偏移量提交
+	DB                  repo.DB               // 数据库连接，用于消息拉取和偏移量提交
 	Redis               redis.UniversalClient // Redis连接，用于实时通知（可选）
 	GroupID             string                // 消费组ID，同一消费组内的消费者共同消费Topic
 	NotificationEnabled bool                  // 是否启用Redis实时通知优化

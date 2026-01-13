@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -46,7 +46,7 @@ type Consumer struct {
 
 	stopCh chan struct{}  // 停止信号频道
 	wg     sync.WaitGroup // 等待组，用于优雅关闭
-	dao    *dao.MqDao
+	dao    *repo.MqDao
 }
 
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
@@ -63,7 +63,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		assignment:               make(map[string][]uint),
 		alreadyConsumeMessageIDs: make(map[db.PartitionInfo]int64),
 		offsetsToCommit:          make(map[db.PartitionInfo]int64),
-		dao:                      dao.NewMqDao(config.DB),
+		dao:                      repo.NewMqDao(config.DB),
 	}
 
 	consumer.pubsubHealthy.Store(false)

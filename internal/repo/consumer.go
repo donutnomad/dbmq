@@ -1,11 +1,12 @@
-package dao
+package repo
 
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
-	"time"
 
 	"gorm.io/datatypes"
 	"gorm.io/gorm"

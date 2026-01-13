@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/samber/lo"
 	"time"
 )
@@ -19,15 +19,15 @@ type MetricsConfig struct {
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
-	db  dao.DB
-	dao *dao.MqDao
+	db  repo.DB
+	dao *repo.MqDao
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
-func NewMetricsClient(db dao.DB) (*MetricsClient, error) {
+func NewMetricsClient(db repo.DB) (*MetricsClient, error) {
 	return &MetricsClient{
 		db:  db,
-		dao: dao.NewMqDao(db),
+		dao: repo.NewMqDao(db),
 	}, nil
 }
 
@@ -263,7 +263,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取活跃消费者
-	consumers, err := dao.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
+	consumers, err := repo.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	// 计算消费延迟
 	var totalLag int64
 	for _, topic := range metrics.AssignedTopics {
-		topicInfo, err := dao.NewMqDao(mc.db).GetTopic(ctx, topic)
+		topicInfo, err := repo.NewMqDao(mc.db).GetTopic(ctx, topic)
 		if err != nil || topicInfo == nil {
 			continue
 		}

@@ -5,19 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"gorm.io/gorm"
 	"time"
 )
 
 // AdminClient 管理客户端，用于Topic和分区的管理操作
 type AdminClient struct {
-	db dao.DB
+	db repo.DB
 }
 
 // NewAdminClient 创建新的管理客户端实例
-func NewAdminClient(db dao.DB) *AdminClient {
+func NewAdminClient(db repo.DB) *AdminClient {
 	return &AdminClient{
 		db: db,
 	}

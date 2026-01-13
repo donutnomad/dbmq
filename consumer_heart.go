@@ -3,8 +3,8 @@ package dbmq
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/samber/lo"
 	"slices"
 	"time"
@@ -97,8 +97,8 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 
 	// 为没有已提交偏移量的分区应用消费策略并立即记录到数据库
 	partitionMaxIDMap := c.determineStartMessageID(ctx, addedPartitions)
-	initialProgressWithWatermarks := lo.MapValues(partitionMaxIDMap, func(startID int64, key db.PartitionInfo) dao.ConsumptionProgressWithWatermark {
-		return dao.ConsumptionProgressWithWatermark{LastConsumedMessageID: startID - 1, SubscriptionStartWatermark: startID}
+	initialProgressWithWatermarks := lo.MapValues(partitionMaxIDMap, func(startID int64, key db.PartitionInfo) repo.ConsumptionProgressWithWatermark {
+		return repo.ConsumptionProgressWithWatermark{LastConsumedMessageID: startID - 1, SubscriptionStartWatermark: startID}
 	})
 
 	////////////////////// 为新增的分区应用策略-START //////////////////////

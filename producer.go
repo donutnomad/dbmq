@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
@@ -74,7 +74,7 @@ type Producer struct {
 	redis              redis.UniversalClient // Redis连接（可选）
 	topicMetadataCache sync.Map              // Topic元数据缓存，带TTL自动失效
 	roundRobinCounters sync.Map              // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
-	dao                *dao.MqDao
+	dao                *repo.MqDao
 }
 
 type cachedTopicMetadata struct {
@@ -88,7 +88,7 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 		redis:              config.Redis,
 		topicMetadataCache: sync.Map{},
 		roundRobinCounters: sync.Map{},
-		dao:                dao.NewMqDao(config.DB),
+		dao:                repo.NewMqDao(config.DB),
 	}, nil
 }
 

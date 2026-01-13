@@ -1,12 +1,13 @@
-package dao
+package repo
 
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/internal/interfaces"
 	"strings"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 
 	"gorm.io/datatypes"
 

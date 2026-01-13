@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
 )
 
@@ -26,7 +26,7 @@ const (
 
 // CoordinatorConfig 协调器配置结构
 type CoordinatorConfig struct {
-	DB                     dao.DB        // 数据库连接
+	DB                     repo.DB       // 数据库连接
 	HeartbeatTimeout       time.Duration // 消费者心跳超时时间，超过此时间认为消费者已死亡
 	RebalanceInterval      time.Duration // 重新均衡检查间隔
 	RebalanceTimeout       time.Duration // 重新均衡操作的上下文超时时间
@@ -38,7 +38,7 @@ type CoordinatorConfig struct {
 // 当它是领导者时，还承担消息保留清理的全局责任
 type Coordinator struct {
 	config   CoordinatorConfig // 协调器配置
-	dao      *dao.MqDao
+	dao      *repo.MqDao
 	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
 
 	ctx     context.Context    // 根上下文，控制整个协调器生命周期
@@ -98,7 +98,7 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		cancel:           cancel,
 		groupSnapshots:   make(map[string]*groupSnapshot),
 		rebalancingLocks: newGroupLocks(),
-		dao:              dao.NewMqDao(config.DB),
+		dao:              repo.NewMqDao(config.DB),
 		logger:           logger.GetLogger().With("component", "coordinator"),
 	}
 }

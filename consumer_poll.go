@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/dao"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/samber/lo"
 )
 
@@ -102,8 +102,8 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	defer cancel()
 
 	// 批量获取消息, 获取id > ?的记录
-	allMessages, err := c.dao.FetchMessagesBatch(fetchCtx, lo.Map(assignedPartitions, func(p db.PartitionInfo, _ int) dao.PartitionRequest {
-		return dao.PartitionRequest{
+	allMessages, err := c.dao.FetchMessagesBatch(fetchCtx, lo.Map(assignedPartitions, func(p db.PartitionInfo, _ int) repo.PartitionRequest {
+		return repo.PartitionRequest{
 			Topic:     p.Topic,
 			Partition: p.Partition,
 			ID:        c.getAlreadyConsumeMessageIDByPartition(p),
