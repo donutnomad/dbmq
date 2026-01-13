@@ -9,7 +9,7 @@ import (
 )
 
 // FindTopicsByNames 查找所有匹配给定名称的Topic
-func (d *MqDao) FindTopicsByNames(ctx context.Context, topicNames []string) ([]db.Topic, error) {
+func (d *MqRepo) FindTopicsByNames(ctx context.Context, topicNames []string) ([]db.Topic, error) {
 	if len(topicNames) == 0 {
 		return nil, nil
 	}
@@ -22,13 +22,13 @@ func (d *MqDao) FindTopicsByNames(ctx context.Context, topicNames []string) ([]d
 }
 
 // GetAllTopics retrieves all topics from the database.
-func (d *MqDao) GetAllTopics(ctx context.Context) ([]db.Topic, error) {
+func (d *MqRepo) GetAllTopics(ctx context.Context) ([]db.Topic, error) {
 	var topics []db.Topic
 	err := d.db.WithContext(ctx).Find(&topics).Error
 	return topics, err
 }
 
-func (d *MqDao) GetTopic(ctx context.Context, topicName string) (*db.Topic, error) {
+func (d *MqRepo) GetTopic(ctx context.Context, topicName string) (*db.Topic, error) {
 	var topic db.Topic
 	err := d.db.WithContext(ctx).
 		Where("topic_name = ?", topicName).

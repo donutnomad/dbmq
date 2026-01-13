@@ -46,7 +46,7 @@ type Consumer struct {
 
 	stopCh chan struct{}  // 停止信号频道
 	wg     sync.WaitGroup // 等待组，用于优雅关闭
-	dao    *repo.MqDao
+	repo   *repo.MqRepo
 }
 
 func NewConsumer(config ConsumerConfig) (*Consumer, error) {
@@ -63,7 +63,7 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 		assignment:               make(map[string][]uint),
 		alreadyConsumeMessageIDs: make(map[db.PartitionInfo]int64),
 		offsetsToCommit:          make(map[db.PartitionInfo]int64),
-		dao:                      repo.NewMqDao(config.DB),
+		repo:                     repo.NewMqRepo(config.DB),
 	}
 
 	consumer.pubsubHealthy.Store(false)
@@ -125,7 +125,7 @@ func (c *Consumer) Close() {
 	// 通过标记消费者为离线状态优雅离开消费组，保留历史记录
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.dao.MarkConsumerOffline(ctx, c.config.GroupID, c.id); err != nil {
+	if err := c.repo.MarkConsumerOffline(ctx, c.config.GroupID, c.id); err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: failed to mark consumer offline gracefully for consumer %s: %v", c.id, err))
 	}
 

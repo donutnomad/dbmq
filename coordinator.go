@@ -38,7 +38,7 @@ type CoordinatorConfig struct {
 // 当它是领导者时，还承担消息保留清理的全局责任
 type Coordinator struct {
 	config   CoordinatorConfig // 协调器配置
-	dao      *repo.MqDao
+	dao      *repo.MqRepo
 	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
 
 	ctx     context.Context    // 根上下文，控制整个协调器生命周期
@@ -98,7 +98,7 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		cancel:           cancel,
 		groupSnapshots:   make(map[string]*groupSnapshot),
 		rebalancingLocks: newGroupLocks(),
-		dao:              repo.NewMqDao(config.DB),
+		dao:              repo.NewMqRepo(config.DB),
 		logger:           logger.GetLogger().With("component", "coordinator"),
 	}
 }

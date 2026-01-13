@@ -94,4 +94,4 @@ type Repo interface {
 }
 
 // 编译时接口实现检查
-var _ Repo = (*MqDao)(nil)
+var _ Repo = (*MqRepo)(nil)

@@ -16,22 +16,22 @@ import (
 
 type DB = interfaces.DB
 
-type MqDao struct {
+type MqRepo struct {
 	db DB
 }
 
-func NewMqDao(db DB) *MqDao {
-	return &MqDao{db: db}
+func NewMqRepo(db DB) *MqRepo {
+	return &MqRepo{db: db}
 }
 
-func (d *MqDao) DB() DB {
+func (d *MqRepo) DB() DB {
 	return d.db
 }
 
 // IncrementAndGetGenerationID 原子性地递增消费组的代际ID并返回新值
 // 如果消费组不存在，则创建一个新的
 // 这是重新均衡过程中最关键的操作，确保了代际的原子性更新
-func (d *MqDao) IncrementAndGetGenerationID(ctx context.Context, groupID string) (uint, error) {
+func (d *MqRepo) IncrementAndGetGenerationID(ctx context.Context, groupID string) (uint, error) {
 	var generationID uint
 
 	err := d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -68,7 +68,7 @@ func (d *MqDao) IncrementAndGetGenerationID(ctx context.Context, groupID string)
 // UpdateAssignments 在单个事务中更新多个消费者的分区分配
 // assignments map是 consumerID -> partition list 的映射
 // 这确保了所有消费者的分区分配是原子性更新的
-func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]db.PartitionInfo) error {
+func (d *MqRepo) UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]db.PartitionInfo) error {
 	// 在函数内部创建事务，确保所有分配更新的原子性
 	// 这防止了调用者忘记使用事务而导致的部分更新问题
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -112,7 +112,7 @@ func (d *MqDao) UpdateAssignments(ctx context.Context, groupID string, generatio
 // GetCommittedOffsets 获取消费组对一组分区的消费进度
 // 返回PartitionInfo到下一个要消费的消息ID的映射
 // 如果返回的消息ID为N，是最后一次消费的消息ID
-func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partitions []db.PartitionInfo) (db.ConsumerGroupConsumptionProgressSlice, error) {
+func (d *MqRepo) GetCommittedOffsets(ctx context.Context, groupID string, partitions []db.PartitionInfo) (db.ConsumerGroupConsumptionProgressSlice, error) {
 	if len(partitions) == 0 {
 		return nil, nil
 	}
@@ -144,12 +144,12 @@ func (d *MqDao) GetCommittedOffsets(ctx context.Context, groupID string, partiti
 
 // BatchCommitOffsetsWithInitialWatermark 在单个事务中为消费组提交一批消费进度，同时设置初始水位线
 // 这个方法用于首次消费分区时，记录初始水位线以区分消费策略，解决手动提交模式下的注册问题
-func (d *MqDao) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[db.PartitionInfo]ConsumptionProgressWithWatermark) error {
+func (d *MqRepo) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[db.PartitionInfo]ConsumptionProgressWithWatermark) error {
 	if len(progressWithWatermarks) == 0 {
 		return nil
 	}
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		dao := NewMqDao(tx)
+		dao := NewMqRepo(tx)
 		for p, progressData := range progressWithWatermarks {
 			if err := dao.CommitConsumptionProgressWithSubscriptionRegistration(ctx, groupID, generationID, p, progressData.LastConsumedMessageID, progressData.SubscriptionStartWatermark); err != nil {
 				return err
@@ -168,7 +168,7 @@ type ConsumptionProgressWithWatermark struct {
 // CommitConsumptionProgressWithSubscriptionRegistration 为单个分区提交消费进度，同时设置订阅注册信息
 // 使用代际隔离机制防止旧代际的消费者覆盖新代际的进度
 // 这个函数专门用于首次订阅分区时，同时设置消费进度和订阅水位线
-func (d *MqDao) CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, p db.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
+func (d *MqRepo) CommitConsumptionProgressWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, p db.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
 	var sql string
 	var args []any
 
@@ -198,7 +198,7 @@ ON DUPLICATE KEY UPDATE
 }
 
 // CreateMessagesBatch 批量插入消息，显著提升高吞吐量场景的性能
-func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*db.Message) error {
+func (d *MqRepo) CreateMessagesBatch(ctx context.Context, messages []*db.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -214,7 +214,7 @@ func (d *MqDao) CreateMessagesBatch(ctx context.Context, messages []*db.Message)
 
 // FindAllActiveGroups 查找在超时期间内发送过心跳的所有不同消费组ID
 // 用于协调器的全局扫描，找出所有活跃的消费组
-func (d *MqDao) FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error) {
+func (d *MqRepo) FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error) {
 	var groupIDs []string
 	err := d.db.WithContext(ctx).
 		Model(&db.ConsumerHeartbeat{}).
@@ -226,7 +226,7 @@ func (d *MqDao) FindAllActiveGroups(ctx context.Context, timeout time.Duration) 
 
 // FindAllGroups 查找所有消费组ID，包括活跃和非活跃的
 // 通过联合查询心跳表和代际表获取所有消费组
-func (d *MqDao) FindAllGroups(ctx context.Context) ([]string, error) {
+func (d *MqRepo) FindAllGroups(ctx context.Context) ([]string, error) {
 	var groupIDs []string
 	sql := `SELECT DISTINCT group_id FROM (SELECT group_id FROM mq_consumer_heartbeats UNION SELECT group_id FROM mq_consumer_group_generations) AS all_groups`
 	err := d.db.WithContext(ctx).Raw(sql).Pluck("group_id", &groupIDs).Error
@@ -242,7 +242,7 @@ type LowWatermark struct {
 
 // GetConsumerGroupLowWatermarks calculates the minimum committed offset for every partition across all consumer groups.
 // This is the "consumption low watermark".
-func (d *MqDao) GetConsumerGroupLowWatermarks(ctx context.Context) (map[db.PartitionInfo]int64, error) {
+func (d *MqRepo) GetConsumerGroupLowWatermarks(ctx context.Context) (map[db.PartitionInfo]int64, error) {
 	var results []LowWatermark
 	err := d.db.WithContext(ctx).Model(&db.ConsumerGroupConsumptionProgress{}).
 		Select("topic, `partition`, MIN(last_consumed_message_id) as low_watermark").

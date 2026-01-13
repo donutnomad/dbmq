@@ -20,14 +20,14 @@ type MetricsConfig struct {
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
 	db  repo.DB
-	dao *repo.MqDao
+	dao *repo.MqRepo
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
 func NewMetricsClient(db repo.DB) (*MetricsClient, error) {
 	return &MetricsClient{
 		db:  db,
-		dao: repo.NewMqDao(db),
+		dao: repo.NewMqRepo(db),
 	}, nil
 }
 
@@ -263,7 +263,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取活跃消费者
-	consumers, err := repo.NewMqDao(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
+	consumers, err := repo.NewMqRepo(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	// 计算消费延迟
 	var totalLag int64
 	for _, topic := range metrics.AssignedTopics {
-		topicInfo, err := repo.NewMqDao(mc.db).GetTopic(ctx, topic)
+		topicInfo, err := repo.NewMqRepo(mc.db).GetTopic(ctx, topic)
 		if err != nil || topicInfo == nil {
 			continue
 		}

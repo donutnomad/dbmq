@@ -10,7 +10,7 @@ import (
 // FetchMessages 从特定分区在给定偏移量之后获取消息
 // 这是消费者Poll操作的核心数据库查询
 // offset现在是全局ID，而不是分区内偏移量
-func (d *MqDao) FetchMessages(ctx context.Context, topic string, partition uint, offset int64, limit int) ([]db.Message, error) {
+func (d *MqRepo) FetchMessages(ctx context.Context, topic string, partition uint, offset int64, limit int) ([]db.Message, error) {
 	var messages []db.Message
 	err := d.db.WithContext(ctx).
 		Model(&db.Message{}).
@@ -34,7 +34,7 @@ type PartitionRequest struct {
 // FetchMessagesBatch 批量从多个分区获取消息
 // 每个分区有一个ID，会查询返回大于这个ID的消息，所以这个ID是已消费的最新ID
 // 如果从未消费，那么值是0，而数据库的ID都是从1开始的，所以也是满足要求的
-func (d *MqDao) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]db.Message, error) {
+func (d *MqRepo) FetchMessagesBatch(ctx context.Context, requests []PartitionRequest) ([]db.Message, error) {
 	if len(requests) == 0 {
 		return nil, nil
 	}
@@ -65,7 +65,7 @@ type TopicPartitionOffset struct {
 	MaxID     int64  `gorm:"column:max_id"` // 这里用 Offset 对应 MAX(id)
 }
 
-func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []db.PartitionInfo) (map[db.PartitionInfo]int64, error) {
+func (d *MqRepo) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []db.PartitionInfo) (map[db.PartitionInfo]int64, error) {
 	if len(topicPartitions) == 0 {
 		return map[db.PartitionInfo]int64{}, nil // 没有要查询的组合，返回空 map
 	}
@@ -98,7 +98,7 @@ func (d *MqDao) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartiti
 }
 
 // GetTopicLatestIDByPartition 获取指定分区的最后一个消息的ID
-func (d *MqDao) GetTopicLatestIDByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
+func (d *MqRepo) GetTopicLatestIDByPartition(ctx context.Context, topic string, partition uint) (int64, error) {
 	var offset int64
 	err := d.db.WithContext(ctx).
 		Model(&db.Message{}).
@@ -114,7 +114,7 @@ func (d *MqDao) GetTopicLatestIDByPartition(ctx context.Context, topic string, p
 
 // DeleteMessagesByPartition 删除分区中比某个偏移量和某个时间都更早的消息。
 // maxOffset现在是全局ID，而不是分区内偏移量
-func (d *MqDao) DeleteMessagesByPartition(ctx context.Context, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
+func (d *MqRepo) DeleteMessagesByPartition(ctx context.Context, topic string, partition uint, maxOffset int64, retentionDate time.Time, limit int) (int64, error) {
 	result := d.db.WithContext(ctx).
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).
@@ -127,7 +127,7 @@ func (d *MqDao) DeleteMessagesByPartition(ctx context.Context, topic string, par
 
 // DeleteMessagesByPartitionUnconsumed 会删除某个分区中超过特定时间的未消费消息。
 // 用于分区没有活跃消费者的情况
-func (d *MqDao) DeleteMessagesByPartitionUnconsumed(ctx context.Context, topic string, partition uint, retentionDate time.Time, limit int) (int64, error) {
+func (d *MqRepo) DeleteMessagesByPartitionUnconsumed(ctx context.Context, topic string, partition uint, retentionDate time.Time, limit int) (int64, error) {
 	result := d.db.WithContext(ctx).
 		Where("`topic` = ?", topic).
 		Where("`partition` = ?", partition).

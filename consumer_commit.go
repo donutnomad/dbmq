@@ -79,7 +79,7 @@ func (c *Consumer) commitMessageIDs(parent context.Context, groupID string, gene
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	err := c.dao.BatchCommitLastConsumeMessageID(ctx, groupID, generationID, messageIDsToCommit)
+	err := c.repo.BatchCommitLastConsumeMessageID(ctx, groupID, generationID, messageIDsToCommit)
 	if err != nil {
 		return fmt.Errorf("failed to commit message IDs: %w", err)
 	}

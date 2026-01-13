@@ -80,9 +80,6 @@ type SendResult struct {
 	Offset    int64  // 消息的全局ID（用作偏移量）
 }
 
-// BatchSendResult 批量发送的结果
-type BatchSendResult []SendResult
-
 // ConsumeStrategy 消费策略枚举
 type ConsumeStrategy int
 

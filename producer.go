@@ -74,7 +74,7 @@ type Producer struct {
 	redis              redis.UniversalClient // Redis连接（可选）
 	topicMetadataCache sync.Map              // Topic元数据缓存，带TTL自动失效
 	roundRobinCounters sync.Map              // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
-	dao                *repo.MqDao
+	dao                *repo.MqRepo
 }
 
 type cachedTopicMetadata struct {
@@ -88,7 +88,7 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 		redis:              config.Redis,
 		topicMetadataCache: sync.Map{},
 		roundRobinCounters: sync.Map{},
-		dao:                repo.NewMqDao(config.DB),
+		dao:                repo.NewMqRepo(config.DB),
 	}, nil
 }
 
@@ -100,7 +100,7 @@ func (p *Producer) Send(ctx context.Context, msg ProducerMessage) (*SendResult, 
 	return &results[0], nil
 }
 
-func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (BatchSendResult, error) {
+func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) ([]SendResult, error) {
 	// 创建 OTEL span，使用标准语义约定
 	tracer := otel.Tracer("dbmq.producer")
 

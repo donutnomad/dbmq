@@ -34,12 +34,12 @@ func (c *Consumer) heartbeatLoop() {
 // reconcileState 执行单次发送心跳、获取消费者当前状态和处理重新均衡（如有必要）的循环
 func (c *Consumer) reconcileState(ctx context.Context) {
 	// 首先注册/更新心跳
-	if err := c.dao.UpsertConsumerHeartbeat(ctx, c.config.GroupID, c.id, c.getTopics()); err != nil {
+	if err := c.repo.UpsertConsumerHeartbeat(ctx, c.config.GroupID, c.id, c.getTopics()); err != nil {
 		c.logger().Debug(fmt.Sprintf("ERROR: failed to send heartbeat for consumer %s: %v", c.id, err))
 		return // 如果连心跳都无法发送，就不继续处理
 	}
 	// 从数据库获取我们自己的状态
-	hb, err := c.dao.GetConsumerHeartbeat(ctx, c.config.GroupID, c.id)
+	hb, err := c.repo.GetConsumerHeartbeat(ctx, c.config.GroupID, c.id)
 	if err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: failed to fetch consumer state for %s: %v", c.id, err))
 		return
@@ -83,9 +83,9 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	revokedPartitions := c.findRevokedPartitions(newPartitions)
 
 	c.logger().Debug(fmt.Sprintf("Consumer %s: fetching offsets for partitions: %v", c.id, newPartitions))
-	fetchedOffsets, err := c.dao.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
+	fetchedOffsets, err := c.repo.GetCommittedOffsets(ctx, c.config.GroupID, newPartitions)
 	if err != nil {
-		return fmt.Errorf("dao.GetCommittedOffsets failed: %w", err)
+		return fmt.Errorf("repo.GetCommittedOffsets failed: %w", err)
 	}
 	fetchedOffsetsMap := fetchedOffsets.ToMap()
 
@@ -102,7 +102,7 @@ func (c *Consumer) clearAndFetchOffsetsForNewAssignment(ctx context.Context, new
 	})
 
 	////////////////////// 为新增的分区应用策略-START //////////////////////
-	if err := c.dao.BatchCommitOffsetsWithInitialWatermark(ctx, c.config.GroupID, newGenerationID, initialProgressWithWatermarks); err != nil {
+	if err := c.repo.BatchCommitOffsetsWithInitialWatermark(ctx, c.config.GroupID, newGenerationID, initialProgressWithWatermarks); err != nil {
 		c.logger().Error(fmt.Sprintf("ERROR: Consumer %s: Failed to register subscription information: %v", c.id, err))
 		// 继续执行，但记录错误。这不是致命错误，因为重新注册时会重新应用策略
 	} else {
@@ -174,7 +174,7 @@ func (c *Consumer) determineStartMessageID(ctx context.Context, partitions []db.
 		}
 	}
 
-	byPartitions, err := c.dao.GetTopicsLatestIDsByPartitions(ctx, needFetchFromDB)
+	byPartitions, err := c.repo.GetTopicsLatestIDsByPartitions(ctx, needFetchFromDB)
 	if err != nil {
 		return ret
 	}
