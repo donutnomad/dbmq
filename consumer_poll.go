@@ -80,14 +80,22 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 
-	// 获取当前分配的分区
+	// 获取当前分配的分区和代际快照
+	// 用于在 waitPoll 后检测是否发生了重平衡
 	assignedPartitions := c.getAssignedPartitions()
+	snapshotGeneration := c.GetGenerationID()
 
 	if isEmpty(assignedPartitions) {
 		return nil, nil
 	}
 	if err := c.waitPoll(ctx, timeout, assignedPartitions); err != nil {
 		return nil, err
+	}
+
+	// waitPoll 返回后，检查是否发生了重平衡
+	// 这是为了防止在 waitPoll 等待期间发生重平衡，导致 assignedPartitions 和 alreadyConsumeMessageIDs 不一致
+	if c.rebalancing.Load() || c.GetGenerationID() != snapshotGeneration {
+		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 
 	fetchCtx, cancel := context.WithTimeout(ctx, c.config.GetPollFetchTimeout())
