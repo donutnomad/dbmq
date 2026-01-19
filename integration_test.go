@@ -30,6 +30,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 2. Start Coordinator
 	coordConf := CoordinatorConfig{
+		LockSuffix:        "test",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,
@@ -137,6 +138,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
+		LockSuffix:        "test",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,
@@ -273,6 +275,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
+		LockSuffix:        "test",
 		DB:                dbClient,
 		HeartbeatTimeout:  3 * time.Second, // 较短的超时时间以便快速故障检测
 		RebalanceInterval: 1 * time.Second,
@@ -387,6 +390,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// 2. Start the Coordinator.
 	coordConf := CoordinatorConfig{
+		LockSuffix:             "test",
 		DB:                     dbClient,
 		HeartbeatTimeout:       5 * time.Second,
 		RebalanceInterval:      1 * time.Second,
@@ -499,6 +503,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
+		LockSuffix:        "test",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,

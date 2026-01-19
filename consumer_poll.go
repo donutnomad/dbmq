@@ -31,6 +31,7 @@ func (c *Consumer) PollLoopTimeout(ctx context.Context, fn func(c *Consumer, las
 		case <-timeA.C:
 		}
 		if !c.IsReady() {
+			c.logger().Debug(fmt.Sprintf("[CONSUMER-%s] PollLoop: not ready", c.config.GroupID))
 			timeA.Reset(1 * time.Second)
 			continue
 		}
@@ -75,8 +76,10 @@ func (c *Consumer) PollLoop(ctx context.Context, timeout time.Duration, onMessag
 // context.DeadlineExceeded
 // context.Canceled
 func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
+	groupID := c.config.GroupID
 	// 如果正在进行重新均衡，立即返回并提示用户. 心跳循环负责处理重新均衡过程
 	if c.rebalancing.Load() {
+		c.logger().Debug(fmt.Sprintf("[CONSUMER-%s] Poll: rebalancing in progress", groupID))
 		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 
@@ -86,15 +89,18 @@ func (c *Consumer) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerM
 	snapshotGeneration := c.GetGenerationID()
 
 	if isEmpty(assignedPartitions) {
+		c.logger().Debug(fmt.Sprintf("[CONSUMER-%s] Poll: no assigned partitions", groupID))
 		return nil, nil
 	}
 	if err := c.waitPoll(ctx, timeout, assignedPartitions); err != nil {
+		c.logger().Debug(fmt.Sprintf("[CONSUMER-%s] Poll: waitPoll failed: %v", groupID, err))
 		return nil, err
 	}
 
 	// waitPoll 返回后，检查是否发生了重平衡
 	// 这是为了防止在 waitPoll 等待期间发生重平衡，导致 assignedPartitions 和 alreadyConsumeMessageIDs 不一致
 	if c.rebalancing.Load() || c.GetGenerationID() != snapshotGeneration {
+		c.logger().Debug(fmt.Sprintf("[CONSUMER-%s] Poll: rebalancing or generation ID mismatch: %d != %d", groupID, c.GetGenerationID(), snapshotGeneration))
 		return nil, &ErrRebalanceInProgress{GroupID: c.config.GroupID}
 	}
 

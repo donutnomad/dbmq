@@ -81,6 +81,7 @@ func main() {
 	// 2. 启动协调器（必须在消费者之前启动）
 	fmt.Println("⚖️  启动协调器...")
 	coordinator := dbmq.NewCoordinator(dbmq.CoordinatorConfig{
+		LockSuffix:             "super_demo",
 		DB:                     dbClient,
 		HeartbeatTimeout:       30 * time.Second,   // 心跳超时时间，增加到30秒
 		RebalanceInterval:      3 * time.Second,    // 重新均衡检查间隔，设置为3秒确保快速重新均衡

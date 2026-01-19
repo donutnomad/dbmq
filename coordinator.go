@@ -18,14 +18,15 @@ import (
 )
 
 const (
-	leaderLockName      = "mq_coordinator_leader_lock" // 全局领导者锁名称
-	lockRefreshInterval = 10 * time.Second             // 锁刷新间隔，10秒
-	cleanupBatchSize    = 1000                         // 每批删除的消息数量
-	cleanupBatchSleep   = 100 * time.Millisecond       // 批处理间的睡眠时间
+	leaderLockPrefix    = "mq_coordinator_leader_lock_" // 全局领导者锁名称前缀
+	lockRefreshInterval = 10 * time.Second              // 锁刷新间隔，10秒
+	cleanupBatchSize    = 1000                          // 每批删除的消息数量
+	cleanupBatchSleep   = 100 * time.Millisecond        // 批处理间的睡眠时间
 )
 
 // CoordinatorConfig 协调器配置结构
 type CoordinatorConfig struct {
+	LockSuffix             string        // 锁后缀，用于区分不同应用的协调器（必填）
 	DB                     repo.DB       // 数据库连接
 	HeartbeatTimeout       time.Duration // 消费者心跳超时时间，超过此时间认为消费者已死亡
 	RebalanceInterval      time.Duration // 重新均衡检查间隔
@@ -38,6 +39,7 @@ type CoordinatorConfig struct {
 // 当它是领导者时，还承担消息保留清理的全局责任
 type Coordinator struct {
 	config   CoordinatorConfig // 协调器配置
+	lockName string            // 完整的锁名称（前缀+后缀）
 	dao      *repo.MqRepo
 	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
 
@@ -75,7 +77,13 @@ type groupSnapshot struct {
 
 // NewCoordinator 创建一个新的协调器
 // 拥有全局领导者锁的协调器还将执行系统级任务，如消息清理
+// LockSuffix 是必填参数，用于区分不同应用的协调器
 func NewCoordinator(config CoordinatorConfig) *Coordinator {
+	// 验证必填参数
+	if config.LockSuffix == "" {
+		panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
+	}
+
 	// 设置默认值
 	if config.RebalanceInterval == 0 {
 		config.RebalanceInterval = 10 * time.Second
@@ -94,12 +102,13 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Coordinator{
 		config:           config,
+		lockName:         leaderLockPrefix + config.LockSuffix,
 		ctx:              ctx,
 		cancel:           cancel,
 		groupSnapshots:   make(map[string]*groupSnapshot),
 		rebalancingLocks: newGroupLocks(),
 		dao:              repo.NewMqRepo(config.DB),
-		logger:           logger.GetLogger().With("component", "coordinator"),
+		logger:           logger.GetLogger().With("component", "coordinator", "lock_suffix", config.LockSuffix),
 	}
 }
 
@@ -162,7 +171,7 @@ func (c *Coordinator) releaseConn(conn *sql.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var released sql.NullInt64
-	if err := conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", leaderLockName).Scan(&released); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", c.lockName).Scan(&released); err != nil {
 		c.logger.Error("Error releasing global leader lock", "error", err)
 	} else if !released.Valid {
 		c.logger.Warn("Release lock returned NULL (lock may not exist)")
@@ -317,7 +326,7 @@ func (c *Coordinator) attemptToBecomeLeader() {
 	defer cancel()
 
 	var result int
-	if err := conn.QueryRowContext(lockCtx, "SELECT GET_LOCK(?, ?)", leaderLockName, timeout).Scan(&result); err != nil {
+	if err := conn.QueryRowContext(lockCtx, "SELECT GET_LOCK(?, ?)", c.lockName, timeout).Scan(&result); err != nil {
 		c.logger.Error("Error executing GET_LOCK", "error", err)
 		return
 	}
