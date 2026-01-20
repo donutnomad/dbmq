@@ -154,8 +154,8 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 	var notificationPartitions []db.PartitionInfo
 	var currentTime = time.Now()
 
-	// 创建 TextMapPropagator 用于注入追踪上下文
-	propagator := otel.GetTextMapPropagator()
+	// 创建 TraceContext propagator 用于注入追踪上下文
+	propagator := propagation.TraceContext{}
 
 	for _, msg := range messages {
 		partitionCount := topicMetadataMap[msg.Topic].PartitionCount
