@@ -81,7 +81,7 @@ type groupSnapshot struct {
 func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	// 验证必填参数
 	if config.LockSuffix == "" {
-		panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
+		//panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
 	}
 
 	// 设置默认值
