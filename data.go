@@ -108,6 +108,7 @@ type ConsumerConfig struct {
 	DB                  repo.DB               // 数据库连接，用于消息拉取和偏移量提交
 	Redis               redis.UniversalClient // Redis连接，用于实时通知（可选）
 	GroupID             string                // 消费组ID，同一消费组内的消费者共同消费Topic
+	ClientID            string                // 用户自定义的稳定标识，为空则自动生成 {hostname}:{mac地址}
 	NotificationEnabled bool                  // 是否启用Redis实时通知优化
 	HeartbeatInterval   time.Duration         // 心跳间隔，用于向协调器报告存活状态
 	Topics              []string              // 要订阅的Topic列表

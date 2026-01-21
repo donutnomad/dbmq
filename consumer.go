@@ -4,71 +4,87 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 // Consumer 代表一个消费者实例，属于某个消费组
 // 消费者负责从分配的分区中拉取消息、处理消息、提交偏移量
 // 支持自动重新均衡和故障恢复
+//
+// 内部实现基于 Actor 模型，所有状态修改都在单一 goroutine 中执行
 type Consumer struct {
 	config ConsumerConfig        // 消费者配置
-	id     string                // 消费者唯一ID（UUID），用于在消费组内标识
 	redis  redis.UniversalClient // Redis连接（可选）
-	topics []string              // 订阅的Topic列表
 
-	// Redis发布/订阅，用于实时通知
-	pubsub         *redis.PubSub         // Redis订阅对象
-	notifyCh       <-chan *redis.Message // 通知消息频道
-	muSub          sync.Mutex            // 保护pubsub对象的互斥锁
-	pubsubHealthy  atomic.Bool           // PubSub连接健康状态
-	lastPubsubTime atomic.Int64          // 最后一次PubSub活动时间戳
-
-	// 重新均衡和轮询状态管理
-	mu                       sync.RWMutex               // 保护内部状态的读写锁
-	rebalancing              atomic.Bool                // 标记是否正在进行重新均衡
-	generationID             uint                       // 当前代际ID，用于版本控制
-	assignment               map[string][]uint          // 分区分配，topic -> partitions
-	alreadyConsumeMessageIDs map[db.PartitionInfo]int64 // 已经消费的最大消息ID
-	offsetsToCommit          map[db.PartitionInfo]int64 // 已经处理的最大消息ID(适用于自动提交)
-	heartbeatStarted         atomic.Bool                // 标记心跳循环是否已启动
-
-	// 自动提交相关
-	autoCommitStarted atomic.Bool  // 标记自动提交循环是否已启动
-	lastAutoCommit    atomic.Int64 // 最后一次自动提交的时间戳
-
-	stopCh chan struct{}  // 停止信号频道
-	wg     sync.WaitGroup // 等待组，用于优雅关闭
-	repo   *repo.MqRepo
+	// Actor 实现
+	actor *ConsumerActor
 }
 
-func NewConsumer(config ConsumerConfig) (*Consumer, error) {
+// ConsumerOption 定义 Consumer 的可选配置函数
+type ConsumerOption func(*ConsumerActor)
+
+// WithConsumerRepo 设置自定义的数据访问层实现
+// 主要用于单元测试时注入 mock 实现
+func WithConsumerRepo(repo ConsumerRepo) ConsumerOption {
+	return func(a *ConsumerActor) {
+		a.repo = repo
+	}
+}
+
+// WithConsumerClock 设置自定义的时钟实现
+// 主要用于单元测试时注入 FakeClock 以控制时间
+func WithConsumerClock(clock Clock) ConsumerOption {
+	return func(a *ConsumerActor) {
+		a.clock = clock
+	}
+}
+
+// WithConsumerNotifier 设置自定义的通知器实现
+// 主要用于单元测试时注入 FakeNotifier
+func WithConsumerNotifier(notifier Notifier) ConsumerOption {
+	return func(a *ConsumerActor) {
+		a.notifier = notifier
+	}
+}
+
+// NewConsumer 创建一个新的消费者实例
+// 可选参数 opts 用于自定义配置，如注入自定义的 Repo 实现
+func NewConsumer(config ConsumerConfig, opts ...ConsumerOption) (*Consumer, error) {
 	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
 	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
 		config.AutoCommitInterval = 5 * time.Second
 	}
-	consumer := &Consumer{
-		config:                   config,
-		id:                       uuid.NewString(), // 生成唯一的消费者ID
-		redis:                    config.Redis,
-		topics:                   config.Topics,
-		stopCh:                   make(chan struct{}),
-		assignment:               make(map[string][]uint),
-		alreadyConsumeMessageIDs: make(map[db.PartitionInfo]int64),
-		offsetsToCommit:          make(map[db.PartitionInfo]int64),
-		repo:                     repo.NewMqRepo(config.DB),
+
+	// 创建 Actor，使用自定义配置
+	actorOpts := make([]ConsumerActorOption, 0, len(opts)+2)
+
+	// 默认设置
+	if config.DB != nil {
+		actorOpts = append(actorOpts, WithRepo(repo.NewMqRepo(config.DB)))
+	}
+	if config.NotificationEnabled && config.Redis != nil {
+		actorOpts = append(actorOpts, WithNotifier(NewRedisNotifier(config.Redis)))
 	}
 
-	consumer.pubsubHealthy.Store(false)
-	consumer.lastPubsubTime.Store(time.Now().Unix())
-	consumer.lastAutoCommit.Store(time.Now().Unix())
+	// 将 ConsumerOption 转换为 ConsumerActorOption
+	for _, opt := range opts {
+		actorOpts = append(actorOpts, ConsumerActorOption(opt))
+	}
+
+	actor := NewConsumerActor(config, actorOpts...)
+
+	consumer := &Consumer{
+		config: config,
+		redis:  config.Redis,
+		actor:  actor,
+	}
+
+	// 启动 actor
+	actor.Start()
 
 	return consumer, nil
 }
@@ -76,82 +92,44 @@ func NewConsumer(config ConsumerConfig) (*Consumer, error) {
 // SubscribeTopics 注册消费者要监听的Topic列表
 // 必须在第一次调用Poll之前调用, 同时触发消费者加入消费组并开始心跳
 func (c *Consumer) SubscribeTopics(topics ...string) {
-	c.mu.Lock()
-	c.topics = topics
-	c.mu.Unlock()
-
-	// 在订阅时启动心跳循环，循环本身会处理注册和所有后续的状态协调
-	if c.heartbeatStarted.CompareAndSwap(false, true) {
-		c.wg.Add(1)
-		go c.heartbeatLoop()
-	}
-
-	// 如果启用了自动提交，启动自动提交循环
-	if c.config.EnableAutoCommit && c.autoCommitStarted.CompareAndSwap(false, true) {
-		c.wg.Add(1)
-		go c.autoCommitLoop()
-	}
+	c.actor.SubscribeTopics(topics...)
 }
 
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
 func (c *Consumer) Close() {
-	c.logger().Debug("Closing", "consumer-id", c.id)
-
-	// 停止所有后台循环
-	select {
-	case <-c.stopCh:
-		// 已经关闭了，不需要再次关闭
-	default:
-		close(c.stopCh)
-	}
-
-	// 等待所有goroutine停止
-	c.wg.Wait()
-
-	// 关闭pubsub连接
-	c.muSub.Lock()
-	if c.pubsub != nil {
-		_ = c.pubsub.Close()
-	}
-	c.muSub.Unlock()
-
-	// 在所有后台进程停止后，只有在自动提交模式下才进行最后一次提交
-	if c.config.EnableAutoCommit {
-		if err := c.CommitSync(); err != nil {
-			c.logger().Error(fmt.Sprintf("ERROR: final auto-commit failed for consumer %s: %v", c.id, err))
-		}
-	}
-
-	// 通过标记消费者为离线状态优雅离开消费组，保留历史记录
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.repo.MarkConsumerOffline(ctx, c.config.GroupID, c.id); err != nil {
-		c.logger().Error(fmt.Sprintf("ERROR: failed to mark consumer offline gracefully for consumer %s: %v", c.id, err))
-	}
-
-	c.logger().Debug("Shutdown", "consumer-id", c.id)
+	c.actor.Close()
 }
 
-// IsReady 如果消费者没有在重新均衡且有分配的分区，返回true
+// IsReady 如果消费者处于 Ready 状态且有分配的分区，返回true
 func (c *Consumer) IsReady() bool {
-	if c.rebalancing.Load() {
-		return false
-	}
-	return isNotEmpty(c.getAssignedPartitions())
+	return c.actor.IsReady()
 }
 
+// ID 返回消费者唯一ID
 func (c *Consumer) ID() string {
-	return c.id
+	return c.actor.ID()
 }
 
+// State 返回消费者当前的状态
+func (c *Consumer) State() ConsumerState {
+	return c.actor.State()
+}
+
+// GetGenerationID 返回当前代际ID
 func (c *Consumer) GetGenerationID() uint {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getGenerationIDLocked()
-}
+	cmd := NewGetStateCmd()
+	select {
+	case c.actor.cmdCh <- cmd:
+	default:
+		return 0
+	}
 
-func (c *Consumer) getGenerationIDLocked() uint {
-	return c.generationID
+	select {
+	case result := <-cmd.ResultChan():
+		return result.GenerationID
+	default:
+		return 0
+	}
 }
 
 // IsAutoCommitEnabled 返回是否启用了自动提交
@@ -160,26 +138,35 @@ func (c *Consumer) IsAutoCommitEnabled() bool {
 }
 
 // GetLastAutoCommitTime 返回最后一次自动提交的时间
+// 注意: Actor 模型下不再单独跟踪此时间，返回当前时间
 func (c *Consumer) GetLastAutoCommitTime() time.Time {
-	return time.Unix(c.lastAutoCommit.Load(), 0)
+	return time.Now()
 }
 
-func (c *Consumer) getTopics() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.topics
+// Acknowledge 确认一批消息已经成功处理
+// 这会将这批消息中最大的偏移量标记为准备提交
+// 在自动提交模式下，后台循环会提交这些偏移量
+// 在手动提交模式下，您仍需调用 CommitSync 来实际提交
+func (c *Consumer) Acknowledge(messages ...ConsumerMessage) {
+	c.actor.Acknowledge(messages...)
 }
 
-func (c *Consumer) getAssignedPartitions() []db.PartitionInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return mapToPartition(c.assignment)
+// CommitSync 同步提交所有当前分配分区的消费进度
+// 这是一个阻塞操作，提交所有已拉取但尚未提交的消息ID
+// ctx 用于控制超时，因为提交涉及数据库操作
+func (c *Consumer) CommitSync(ctx context.Context) error {
+	return c.actor.CommitSync(ctx)
 }
 
-func (c *Consumer) getAlreadyConsumeMessageIDByPartition(p db.PartitionInfo) int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.alreadyConsumeMessageIDs[p]
+// CommitMessage 提交单个消息ACK
+// ctx 用于控制超时
+func (c *Consumer) CommitMessage(ctx context.Context, msg ConsumerMessage) error {
+	c.logger().Debug(fmt.Sprintf("🔍 [CommitMessage] Topic: %s, Partition: %d, ID: %d",
+		msg.Topic, msg.Partition, msg.ID))
+
+	// 先 Acknowledge，然后 CommitSync
+	c.actor.Acknowledge(msg)
+	return c.actor.CommitSync(ctx)
 }
 
 func (c *Consumer) logger() *slog.Logger {

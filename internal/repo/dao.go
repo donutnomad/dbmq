@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,9 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// ErrNotFound 记录未找到错误
+var ErrNotFound = errors.New("record not found")
 
 type DB = interfaces.DB
 

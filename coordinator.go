@@ -601,8 +601,20 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		return nil
 	}
 
-	// 分配分区
-	newAssignments := c.calculateAssignments(activeConsumers, allPartitions)
+	// 获取所有消费者的 ID 列表
+	consumerIDs := make([]string, 0, len(activeConsumers))
+	for _, c := range activeConsumers {
+		consumerIDs = append(consumerIDs, c.ConsumerID)
+	}
+
+	// 查询手动分配配置
+	manualAssignments, err := c.dao.GetManualAssignments(ctx, groupID, consumerIDs)
+	if err != nil {
+		return fmt.Errorf("[LEADER] failed to get manual assignments: %w", err)
+	}
+
+	// 分配分区（传入手动配置）
+	newAssignments := c.calculateAssignments(activeConsumers, allPartitions, manualAssignments)
 
 	// 持久化到数据库中
 	err = c.dao.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
@@ -740,9 +752,14 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 	return allPartitions, partitionHashBuilder.String(), nil
 }
 
-// calculateAssignments 使用稳定的轮询策略在消费者之间分配分区。
-// 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销
-func (c *Coordinator) calculateAssignments(consumers []db.ConsumerHeartbeat, partitions []db.PartitionInfo) map[string][]db.PartitionInfo {
+// calculateAssignments 使用稳定的轮询策略在消费者之间分配分区，支持手动分配覆盖。
+// 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销。
+// manualAssignments 参数允许为特定消费者指定固定的分区分配，这些分区不会参与自动轮询分配。
+func (c *Coordinator) calculateAssignments(
+	consumers []db.ConsumerHeartbeat,
+	partitions []db.PartitionInfo,
+	manualAssignments map[string][]db.PartitionInfo,
+) map[string][]db.PartitionInfo {
 	assignments := make(map[string][]db.PartitionInfo)
 	if len(consumers) == 0 {
 		return assignments
@@ -754,19 +771,48 @@ func (c *Coordinator) calculateAssignments(consumers []db.ConsumerHeartbeat, par
 	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
 	SortPartitionsByTopicAndPartition(partitions)
 
-	// 提取消费者ID列表，并初始化每个消费者的分区分配为空
-	consumerIDs := make([]string, 0, len(consumers))
+	// Step 1: 处理手动分配的消费者
+	// 记录已被手动分配的分区，避免重复分配
+	manualAssignedPartitions := make(map[db.PartitionInfo]struct{})
+	var autoConsumers []db.ConsumerHeartbeat
+
 	for _, consumer := range consumers {
-		consumerIDs = append(consumerIDs, consumer.ConsumerID)
-		assignments[consumer.ConsumerID] = []db.PartitionInfo{}
+		if manualParts, hasManual := manualAssignments[consumer.ConsumerID]; hasManual && len(manualParts) > 0 {
+			// 手动分配：直接分配配置的分区
+			assignments[consumer.ConsumerID] = manualParts
+			for _, p := range manualParts {
+				manualAssignedPartitions[p] = struct{}{}
+			}
+		} else {
+			// 自动模式：加入待分配列表
+			autoConsumers = append(autoConsumers, consumer)
+			assignments[consumer.ConsumerID] = []db.PartitionInfo{}
+		}
 	}
 
-	// 使用轮询算法分配分区
-	// 第i个分区分配给第(i % 消费者数量)个消费者
-	// 这确保了分区的均匀分布，负载均衡效果最优
-	for i, p := range partitions {
-		consumerID := consumerIDs[i%len(consumerIDs)]
-		assignments[consumerID] = append(assignments[consumerID], p)
+	// Step 2: 从分区池中移除已手动分配的分区
+	var remainingPartitions []db.PartitionInfo
+	for _, p := range partitions {
+		if _, isManual := manualAssignedPartitions[p]; !isManual {
+			remainingPartitions = append(remainingPartitions, p)
+		}
+	}
+
+	// Step 3: 剩余分区按轮询策略分配给自动模式的消费者
+	if len(autoConsumers) > 0 && len(remainingPartitions) > 0 {
+		// 提取自动模式消费者的ID列表
+		autoConsumerIDs := make([]string, 0, len(autoConsumers))
+		for _, consumer := range autoConsumers {
+			autoConsumerIDs = append(autoConsumerIDs, consumer.ConsumerID)
+		}
+
+		// 使用轮询算法分配剩余分区
+		// 第i个分区分配给第(i % 消费者数量)个消费者
+		// 这确保了分区的均匀分布，负载均衡效果最优
+		for i, p := range remainingPartitions {
+			consumerID := autoConsumerIDs[i%len(autoConsumerIDs)]
+			assignments[consumerID] = append(assignments[consumerID], p)
+		}
 	}
 
 	return assignments

@@ -6,12 +6,14 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/internal/interfaces"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/repo"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -34,6 +36,7 @@ type RestAPIServer struct {
 	config        RestAPIConfig
 	metricsClient *MetricsClient
 	adminClient   *AdminClient
+	repo          *repo.MqRepo
 	server        *http.Server
 	engine        *gin.Engine
 	startTime     time.Time // 服务启动时间
@@ -65,6 +68,9 @@ func NewRestAPIServer(config RestAPIConfig) (*RestAPIServer, error) {
 	// 创建管理客户端
 	adminClient := NewAdminClient(config.DB)
 
+	// 创建 repo
+	mqRepo := repo.NewMqRepo(config.DB)
+
 	// 创建 Gin 引擎
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -76,6 +82,7 @@ func NewRestAPIServer(config RestAPIConfig) (*RestAPIServer, error) {
 		config:        config,
 		metricsClient: metricsClient,
 		adminClient:   adminClient,
+		repo:          mqRepo,
 		engine:        engine,
 	}, nil
 }
@@ -165,6 +172,11 @@ func (ras *RestAPIServer) registerRoutes() {
 
 	// 新增：扩展的消费组详情API
 	api.GET("/dbmq/consumer-groups/:groupId/extended", ras.getConsumerGroupExtendedHandler)
+
+	// 手动分区分配管理API
+	api.POST("/manual-assignments", ras.createManualAssignmentHandler)
+	api.GET("/manual-assignments", ras.listManualAssignmentsHandler)
+	api.DELETE("/manual-assignments/:id", ras.deleteManualAssignmentHandler)
 }
 
 // 健康检查处理器
@@ -1002,4 +1014,75 @@ func (ras *RestAPIServer) dashboardHandler(c *gin.Context) {
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, html)
+}
+
+// CreateManualAssignmentRequest 创建手动分配请求
+type CreateManualAssignmentRequest struct {
+	GroupID           string `json:"group_id" binding:"required"`
+	ConsumerIDPattern string `json:"consumer_id_pattern" binding:"required"`
+	Topic             string `json:"topic" binding:"required"`
+	Partition         uint   `json:"partition"`
+}
+
+// 创建手动分区分配处理器
+func (ras *RestAPIServer) createManualAssignmentHandler(c *gin.Context) {
+	var req CreateManualAssignmentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ras.writeErrorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+		return
+	}
+
+	assignment := &db.ManualPartitionAssignment{
+		GroupID:           req.GroupID,
+		ConsumerIDPattern: req.ConsumerIDPattern,
+		Topic:             req.Topic,
+		Partition:         req.Partition,
+	}
+
+	if err := ras.repo.CreateManualAssignment(c, assignment); err != nil {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to create manual assignment", err)
+		return
+	}
+
+	ras.writeSuccessResponse(c, assignment)
+}
+
+// 查询手动分区分配列表处理器
+func (ras *RestAPIServer) listManualAssignmentsHandler(c *gin.Context) {
+	groupID := c.Query("group_id")
+	if groupID == "" {
+		ras.writeErrorResponse(c, http.StatusBadRequest, "group_id is required", nil)
+		return
+	}
+
+	assignments, err := ras.repo.GetManualAssignmentsByGroup(c, groupID)
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to list manual assignments", err)
+		return
+	}
+
+	ras.writeSuccessResponse(c, assignments)
+}
+
+// 删除手动分区分配处理器
+func (ras *RestAPIServer) deleteManualAssignmentHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		ras.writeErrorResponse(c, http.StatusBadRequest, "Invalid id", err)
+		return
+	}
+
+	if err := ras.repo.DeleteManualAssignment(c, id); err != nil {
+		if err == repo.ErrNotFound {
+			ras.writeErrorResponse(c, http.StatusNotFound, "Manual assignment not found", nil)
+			return
+		}
+		ras.writeErrorResponse(c, http.StatusInternalServerError, "Failed to delete manual assignment", err)
+		return
+	}
+
+	ras.writeSuccessResponse(c, map[string]string{
+		"message": "Manual assignment deleted successfully",
+	})
 }

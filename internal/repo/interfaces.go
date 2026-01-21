@@ -81,6 +81,19 @@ type ConsumerOffsetRepo interface {
 	GetConsumerGroupLowWatermarks(ctx context.Context) (map[db.PartitionInfo]int64, error)
 }
 
+// ManualAssignmentRepo 手动分区分配配置管理接口
+type ManualAssignmentRepo interface {
+	// CreateManualAssignment 创建手动分区分配配置
+	CreateManualAssignment(ctx context.Context, assignment *db.ManualPartitionAssignment) error
+	// GetManualAssignmentsByGroup 获取消费组的所有手动分配配置
+	GetManualAssignmentsByGroup(ctx context.Context, groupID string) ([]db.ManualPartitionAssignment, error)
+	// DeleteManualAssignment 删除手动分区分配配置
+	DeleteManualAssignment(ctx context.Context, id int64) error
+	// GetManualAssignments 获取消费组的手动分配配置
+	// 根据 pattern 匹配 consumerIDs，返回 map[consumerID][]PartitionInfo
+	GetManualAssignments(ctx context.Context, groupID string, consumerIDs []string) (map[string][]db.PartitionInfo, error)
+}
+
 // Repo 聚合所有子接口的完整仓储接口
 type Repo interface {
 	// DB 获取底层数据库连接
@@ -91,6 +104,7 @@ type Repo interface {
 	ConsumerHeartbeatRepo
 	ConsumerGroupRepo
 	ConsumerOffsetRepo
+	ManualAssignmentRepo
 }
 
 // 编译时接口实现检查

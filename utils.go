@@ -1,9 +1,10 @@
 package dbmq
 
 import (
+	"sort"
+
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/samber/lo"
-	"sort"
 )
 
 func mapToPartition(assignment map[string][]uint) (ret []db.PartitionInfo) {
@@ -56,4 +57,25 @@ func SortPartitionsByTopicAndPartition(partitions []db.PartitionInfo) {
 		}
 		return partitions[i].Partition < partitions[j].Partition
 	})
+}
+
+// subtract 计算集合差集 A - B（返回在 a 中但不在 b 中的元素）
+func subtract[T comparable](a, b []T) []T {
+	aMap := make(map[T]struct{}, len(a))
+	for _, p := range a {
+		aMap[p] = struct{}{}
+	}
+
+	bMap := make(map[T]struct{}, len(b))
+	for _, p := range b {
+		bMap[p] = struct{}{}
+	}
+
+	var diff []T
+	for p := range aMap {
+		if _, ok := bMap[p]; !ok {
+			diff = append(diff, p)
+		}
+	}
+	return diff
 }

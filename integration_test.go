@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,14 +52,14 @@ func TestIntegration_FullFlow(t *testing.T) {
 	producer, err := NewProducer(producerConf)
 	require.NoError(t, err)
 
-	testKey := []byte("test-key")
+	testKey := "test-key"
 	testValue := []byte("hello world")
 	sentMsg := &ProducerMessage{
 		Topic: topicReq.Name,
 		Key:   testKey,
 		Value: testValue,
 	}
-	log.Printf("Sending message: key=%s, value=%s", string(testKey), string(testValue))
+	log.Printf("Sending message: key=%s, value=%s", testKey, string(testValue))
 	sendResult, err := producer.Send(context.Background(), *sentMsg)
 	require.NoError(t, err)
 	assert.Equal(t, uint(0), sendResult.Partition)
@@ -106,7 +107,8 @@ func TestIntegration_FullFlow(t *testing.T) {
 	assert.Equal(t, sendResult.Offset, receivedMsg.ID)
 
 	// 6. Commit the offset
-	err = consumer.CommitSync()
+	consumer.Acknowledge(receivedMsg)
+	err = consumer.CommitSync(ctx)
 	require.NoError(t, err)
 
 	// 7. Verify the commit in the database
@@ -224,7 +226,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	for _, msg := range messages {
 		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
-			Key:   []byte(msg.key),
+			Key:   msg.key,
 			Value: []byte(msg.value),
 		})
 		require.NoError(t, err)
@@ -241,7 +243,8 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		allMessages = append(allMessages, receivedMsgs...)
 
 		if len(receivedMsgs) > 0 {
-			err = consumer.CommitSync()
+			consumer.Acknowledge(receivedMsgs...)
+			err = consumer.CommitSync(ctx)
 			require.NoError(t, err)
 		}
 	}
@@ -312,7 +315,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
-			Key:   []byte(fmt.Sprintf("key-%d", i)),
+			Key:   fmt.Sprintf("key-%d", i),
 			Value: []byte(fmt.Sprintf("value-%d", i)),
 		})
 		require.NoError(t, err)
@@ -325,7 +328,8 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	require.NoError(t, err)
 
 	if len(msgs1) > 0 {
-		require.NoError(t, consumer1.CommitSync())
+		consumer1.Acknowledge(msgs1...)
+		require.NoError(t, consumer1.CommitSync(context.Background()))
 	}
 
 	// 6. 启动第二个消费者
@@ -364,7 +368,8 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	assert.True(t, totalMsgs > 0, "应该总共收到一些消息")
 
 	if len(msgs2) > 0 {
-		require.NoError(t, consumer2.CommitSync())
+		consumer2.Acknowledge(msgs2...)
+		require.NoError(t, consumer2.CommitSync(context.Background()))
 	}
 
 	// 10. 验证偏移量记录
@@ -458,7 +463,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	require.NotNil(t, lastOldMessage, "Could not find the last old message in the polled messages")
 
 	// Commit the offset of the last old message
-	err = consumer.CommitMessage(lastOldMessage)
+	err = consumer.CommitMessage(context.Background(), lastOldMessage)
 	require.NoError(t, err, "Failed to commit offset for old messages")
 
 	// 6. Wait for the retention period and cleanup cycle.
@@ -543,7 +548,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	// 5. 发送消息并验证基本功能
 	_, err = producer.Send(context.Background(), ProducerMessage{
 		Topic: topicReq.Name,
-		Key:   []byte("test-key"),
+		Key:   "test-key",
 		Value: []byte("test-value"),
 	})
 	require.NoError(t, err)
@@ -562,11 +567,12 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	assert.True(t, len(receivedMsgs) > 0, "应该收到至少一条消息")
 
 	if len(receivedMsgs) > 0 {
-		assert.Equal(t, "test-key", string(receivedMsgs[0].Key))
+		assert.Equal(t, "test-key", receivedMsgs[0].Key)
 		assert.Equal(t, "test-value", string(receivedMsgs[0].Value))
 
 		// 提交偏移量
-		err = consumer.CommitSync()
+		consumer.Acknowledge(receivedMsgs...)
+		err = consumer.CommitSync(ctx)
 		require.NoError(t, err)
 	}
 
