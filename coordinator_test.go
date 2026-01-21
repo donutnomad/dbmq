@@ -2,6 +2,8 @@ package dbmq
 
 import (
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/pkg/utils"
+
 	"reflect"
 	"testing"
 )
@@ -27,7 +29,7 @@ func makeTestPartitions(topic string, count uint) []db.PartitionInfo {
 // Helper function to sort the results for consistent comparison.
 func sortAssignments(assignments map[string][]db.PartitionInfo) map[string][]db.PartitionInfo {
 	for cid := range assignments {
-		SortPartitionsByTopicAndPartition(assignments[cid])
+		utils.SortPartitionsByTopicAndPartition(assignments[cid])
 	}
 	return assignments
 }

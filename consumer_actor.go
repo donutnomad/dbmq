@@ -12,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/pkg/utils"
 	repoLib "github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
 )
@@ -92,7 +93,7 @@ func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *Consu
 
 	actor := &ConsumerActor{
 		config:                   config,
-		id:                       GenerateConsumerID(config.ClientID),
+		id:                       utils.GenerateConsumerID(config.ClientID),
 		cmdCh:                    make(chan Command, 100), // 带缓冲的命令通道
 		stateMachine:             newConsumerStateMachine(),
 		assignment:               nil,
@@ -443,7 +444,7 @@ func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, new
 // clearAndFetchOffsetsForNewAssignment 清除旧状态并获取新分配的已提交偏移量
 func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context, newGenerationID uint, newPartitions []db.PartitionInfo) error {
 	// 计算被撤销的分区（在 oldPartitions 中但不在 newPartitions 中）
-	revokedPartitions := subtract(a.assignment, newPartitions)
+	revokedPartitions := utils.Subtract(a.assignment, newPartitions)
 
 	// 获取已提交的偏移量
 	fetchedOffsets, err := a.repo.GetCommittedOffsets(ctx, a.config.GroupID, newPartitions)

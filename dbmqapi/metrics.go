@@ -1,14 +1,15 @@
-package dbmq
+package dbmqapi
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"github.com/donutnomad/dbmq/internal/db"
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/samber/lo"
-	"time"
 )
 
 // MetricsConfig 监控指标配置
@@ -45,18 +46,18 @@ type ClusterMetrics struct {
 
 // TopicMetrics Topic级别监控指标
 type TopicMetrics struct {
-	TopicName      string            `json:"topicName"`      // Topic名称
-	PartitionCount int               `json:"partitionCount"` // 分区数量
-	MessageCount   int64             `json:"messageCount"`   // 消息总数
-	LatestOffset   int64             `json:"latestOffset"`   // 最新偏移量
-	SizeBytes      int64             `json:"sizeBytes"`      // 存储大小（字节）
-	Partitions     []PartitionInfo   `json:"partitions"`     // 分区详细信息
-	Config         map[string]string `json:"config"`         // Topic配置
-	CreatedAt      time.Time         `json:"createdAt"`      // 创建时间
+	TopicName      string             `json:"topicName"`      // Topic名称
+	PartitionCount int                `json:"partitionCount"` // 分区数量
+	MessageCount   int64              `json:"messageCount"`   // 消息总数
+	LatestOffset   int64              `json:"latestOffset"`   // 最新偏移量
+	SizeBytes      int64              `json:"sizeBytes"`      // 存储大小（字节）
+	Partitions     []PartitionMetrics `json:"partitions"`     // 分区详细信息
+	Config         map[string]string  `json:"config"`         // Topic配置
+	CreatedAt      time.Time          `json:"createdAt"`      // 创建时间
 }
 
-// PartitionInfo 分区信息
-type PartitionInfo struct {
+// PartitionMetrics 分区信息
+type PartitionMetrics struct {
 	Partition    int   `json:"partition"`    // 分区ID
 	LatestOffset int64 `json:"latestOffset"` // 最新偏移量
 	MessageCount int64 `json:"messageCount"` // 消息数量
@@ -65,19 +66,19 @@ type PartitionInfo struct {
 
 // ConsumerGroupMetrics 消费组监控指标
 type ConsumerGroupMetrics struct {
-	GroupID        string               `json:"groupId"`        // 消费组ID
-	State          string               `json:"state"`          // 状态（Active/Dead）
-	Members        []ConsumerMemberInfo `json:"members"`        // 成员信息
-	Lag            int64                `json:"lag"`            // 总延迟
-	PartitionLags  []PartitionLag       `json:"partitionLags"`  // 分区延迟详情
-	LastHeartbeat  time.Time            `json:"lastHeartbeat"`  // 最后心跳时间
-	GenerationID   int64                `json:"generationId"`   // 代际ID
-	ProtocolType   string               `json:"protocolType"`   // 协议类型
-	AssignedTopics []string             `json:"assignedTopics"` // 分配的Topic
+	GroupID        string                  `json:"groupId"`        // 消费组ID
+	State          string                  `json:"state"`          // 状态（Active/Dead）
+	Members        []ConsumerMemberMetrics `json:"members"`        // 成员信息
+	Lag            int64                   `json:"lag"`            // 总延迟
+	PartitionLags  []PartitionLagMetrics   `json:"partitionLags"`  // 分区延迟详情
+	LastHeartbeat  time.Time               `json:"lastHeartbeat"`  // 最后心跳时间
+	GenerationID   int64                   `json:"generationId"`   // 代际ID
+	ProtocolType   string                  `json:"protocolType"`   // 协议类型
+	AssignedTopics []string                `json:"assignedTopics"` // 分配的Topic
 }
 
-// ConsumerMemberInfo 消费者成员信息
-type ConsumerMemberInfo struct {
+// ConsumerMemberMetrics 消费者成员信息
+type ConsumerMemberMetrics struct {
 	ConsumerID    string             `json:"consumerId"`    // 消费者ID
 	ClientID      string             `json:"clientId"`      // 客户端ID
 	Host          string             `json:"host"`          // 主机地址
@@ -85,8 +86,8 @@ type ConsumerMemberInfo struct {
 	Assignment    []db.PartitionInfo `json:"assignment"`    // 分区分配
 }
 
-// PartitionLag 分区延迟信息
-type PartitionLag struct {
+// PartitionLagMetrics 分区延迟信息
+type PartitionLagMetrics struct {
 	Topic                      string  `json:"topic"`                 // Topic名称
 	Partition                  int     `json:"partition"`             // 分区ID
 	CurrentOffset              int64   `json:"currentOffset"`         // 当前偏移量
@@ -191,7 +192,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 	}
 
 	// 获取分区详细信息
-	partitions := make([]PartitionInfo, topic.PartitionCount)
+	partitions := make([]PartitionMetrics, topic.PartitionCount)
 	var totalMessages int64
 	var totalSize int64
 
@@ -221,7 +222,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 			return nil, fmt.Errorf("failed to get size for partition %d: %w", i, err)
 		}
 
-		partitions[i] = PartitionInfo{
+		partitions[i] = PartitionMetrics{
 			Partition:    int(i),
 			LatestOffset: latestOffset,
 			MessageCount: messageCount,
@@ -249,8 +250,8 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		GroupID:        groupID,
 		ProtocolType:   "consumer",
 		AssignedTopics: []string{},
-		Members:        []ConsumerMemberInfo{},
-		PartitionLags:  []PartitionLag{},
+		Members:        []ConsumerMemberMetrics{},
+		PartitionLags:  []PartitionLagMetrics{},
 	}
 
 	// 获取消费组代际信息
@@ -269,7 +270,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 	var onlineCount = 0
 	for _, item := range consumers {
-		member := ConsumerMemberInfo{
+		member := ConsumerMemberMetrics{
 			ConsumerID:    item.ConsumerID,
 			ClientID:      item.ConsumerID, // DBMQ中ConsumerID就是ClientID
 			Host:          "localhost",     // DBMQ单实例
@@ -365,7 +366,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				continue
 			}
 
-			partitionLag := PartitionLag{
+			partitionLag := PartitionLagMetrics{
 				Topic:                      topic,
 				Partition:                  int(i),
 				CurrentOffset:              currentID,

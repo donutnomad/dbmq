@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/interfaces"
 	"log"
 	"os"
 	"os/signal"
@@ -11,12 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/donutnomad/dbmq/dbmqapi"
+	"github.com/donutnomad/dbmq/internal/interfaces"
+
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-
-	dbmq "github.com/donutnomad/dbmq"
 )
 
 func main() {
@@ -43,14 +43,13 @@ func main() {
 	}
 
 	// 创建REST API服务器
-	apiConfig := dbmq.RestAPIConfig{
-		DB:     db,
-		Port:   8080,
-		Host:   "localhost",
-		Prefix: "/api/v1",
+	apiConfig := dbmqapi.ServerConfig{
+		DB:   db,
+		Port: 8080,
+		Host: "localhost",
 	}
 
-	server, err := dbmq.NewRestAPIServer(apiConfig)
+	server, err := dbmqapi.NewServer(apiConfig)
 	if err != nil {
 		log.Fatalf("❌ 创建REST API服务器失败: %v", err)
 	}
@@ -58,7 +57,7 @@ func main() {
 	// 启动服务器
 	go func() {
 		fmt.Println("🌐 REST API 服务器启动中...")
-		fmt.Println("📊 监控仪表板: http://localhost:8080/api/v1/dashboard")
+		fmt.Println("📊 监控仪表板: http://localhost:8080/api/v1/dashboard/data")
 		fmt.Println("🔧 健康检查: http://localhost:8080/api/v1/health")
 		fmt.Println("📋 API 接口: http://localhost:8080/api/v1/")
 		fmt.Println("")

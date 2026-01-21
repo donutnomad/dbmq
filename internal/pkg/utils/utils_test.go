@@ -1,12 +1,13 @@
-package dbmq
+package utils
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"gorm.io/datatypes"
 	"reflect"
 	"testing"
+
+	"github.com/donutnomad/dbmq/internal/db"
+	"gorm.io/datatypes"
 )
 
 func Test000(t *testing.T) {
@@ -112,7 +113,7 @@ func TestFindRevokedPartitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := subtract(tt.oldPartitions, tt.newPartitions)
+			got := Subtract(tt.oldPartitions, tt.newPartitions)
 
 			// 排序以便比较（因为 map 迭代顺序不确定）
 			SortPartitionsByTopicAndPartition(got)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/pkg/utils"
 	"github.com/donutnomad/dbmq/internal/repo"
 	"github.com/donutnomad/dbmq/logger"
 )
@@ -766,10 +767,10 @@ func (c *Coordinator) calculateAssignments(
 	}
 
 	// 对消费者按ID排序，确保分配顺序的一致性。这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
-	SortConsumersByID(consumers)
+	utils.SortConsumersByID(consumers)
 
 	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
-	SortPartitionsByTopicAndPartition(partitions)
+	utils.SortPartitionsByTopicAndPartition(partitions)
 
 	// Step 1: 处理手动分配的消费者
 	// 记录已被手动分配的分区，避免重复分配
