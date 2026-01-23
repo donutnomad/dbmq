@@ -11,6 +11,7 @@ import (
 	"github.com/donutnomad/dbmq/internal/domain/message"
 	"github.com/donutnomad/dbmq/internal/domain/topic"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
 	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
@@ -28,7 +29,7 @@ type MetricsConfig struct {
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
-	db            interfaces.DB
+	queries       *query.Queries // CQRS 查询层
 	topicRepo     topic.Repo
 	messageRepo   message.Repo
 	heartbeatRepo heartbeat.Repo
@@ -39,7 +40,7 @@ type MetricsClient struct {
 // NewMetricsClient 创建新的监控指标客户端实例
 func NewMetricsClient(db interfaces.DB) (*MetricsClient, error) {
 	return &MetricsClient{
-		db:            db,
+		queries:       query.New(db),
 		topicRepo:     topicrepo.New(db),
 		messageRepo:   messagerepo.New(db),
 		heartbeatRepo: heartbeatrepo.New(db),
@@ -135,51 +136,34 @@ type BrokerMetrics struct {
 // GetClusterMetrics 获取集群级别监控指标
 // 兼容Kafka UI的集群概览页面
 func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics, error) {
-	metrics := &ClusterMetrics{
-		ClusterID:   "dbmq-cluster",
-		BrokerCount: 1, // DBMQ是单实例
-		Timestamp:   time.Now(),
-	}
-
-	// 获取Topic总数和分区总数
-	var topics []topicrepo.TopicPO
-	err := mc.db.WithContext(ctx).Find(&topics).Error
+	// 使用查询层获取集群统计信息
+	clusterStats, err := mc.queries.Cluster.GetClusterStats(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get topics: %w", err)
+		return nil, fmt.Errorf("failed to get cluster stats: %w", err)
 	}
-
-	metrics.TopicCount = len(topics)
-	for _, topic := range topics {
-		metrics.PartitionCount += int(topic.PartitionCount)
-	}
-
-	// 获取消息总数
-	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).Count(&messageCount).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get message count: %w", err)
-	}
-	metrics.MessageCount = messageCount
 
 	// 获取活跃消费组数量
 	activeGroups, err := mc.groupRepo.FindAllActiveGroups(ctx, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active groups: %w", err)
 	}
-	metrics.ConsumerGroups = len(activeGroups)
 
-	// 获取活跃消费者数量
-	var activeConsumers int64
-	cutoff := time.Now().Add(-30 * time.Second)
-	err = mc.db.WithContext(ctx).Model(&heartbeatrepo.HeartbeatPO{}).
-		Where("last_heartbeat > ?", cutoff).
-		Count(&activeConsumers).Error
+	// 使用查询层获取活跃消费者数量
+	activeConsumers, err := mc.queries.Cluster.GetActiveConsumerCount(ctx, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active consumers: %w", err)
 	}
-	metrics.ActiveConsumers = int(activeConsumers)
 
-	return metrics, nil
+	return &ClusterMetrics{
+		ClusterID:       "dbmq-cluster",
+		BrokerCount:     1, // DBMQ是单实例
+		TopicCount:      clusterStats.TopicCount,
+		PartitionCount:  clusterStats.PartitionCount,
+		MessageCount:    clusterStats.MessageCount,
+		ConsumerGroups:  len(activeGroups),
+		ActiveConsumers: activeConsumers,
+		Timestamp:       clusterStats.Timestamp,
+	}, nil
 }
 
 // GetTopicMetrics 获取Topic级别监控指标
@@ -206,54 +190,27 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 		metrics.Config[k] = fmt.Sprintf("%v", v)
 	}
 
-	// 获取分区详细信息
-	partitions := make([]PartitionMetrics, topicEntity.PartitionCount)
-	var totalMessages int64
-	var totalSize int64
+	// 使用查询层获取 Topic 统计信息
+	topicStats, err := mc.queries.Topic.GetTopicStats(ctx, topicName, topicEntity.PartitionCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get topic stats: %w", err)
+	}
 
-	for i := uint(0); i < topicEntity.PartitionCount; i++ {
-		// 获取分区最新偏移量
-		latestOffset, err := mc.messageRepo.GetLatestID(ctx, topicName, i)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get latest offset for partition %d: %w", i, err)
-		}
-
-		// 获取分区消息数量
-		var messageCount int64
-		err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
-			Where("topic = ? AND `partition` = ?", topicName, i).
-			Count(&messageCount).Error
-		if err != nil {
-			return nil, fmt.Errorf("failed to get message count for partition %d: %w", i, err)
-		}
-
-		// 获取分区存储大小（估算）
-		var sizeBytes int64
-		err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
-			Select("COALESCE(SUM(LENGTH(body)), 0)").
-			Where("topic = ? AND `partition` = ?", topicName, i).
-			Scan(&sizeBytes).Error
-		if err != nil {
-			return nil, fmt.Errorf("failed to get size for partition %d: %w", i, err)
-		}
-
+	// 转换分区信息
+	partitions := make([]PartitionMetrics, len(topicStats.Partitions))
+	for i, p := range topicStats.Partitions {
 		partitions[i] = PartitionMetrics{
-			Partition:    int(i),
-			LatestOffset: latestOffset,
-			MessageCount: messageCount,
-			SizeBytes:    sizeBytes,
-		}
-
-		totalMessages += messageCount
-		totalSize += sizeBytes
-		if latestOffset > metrics.LatestOffset {
-			metrics.LatestOffset = latestOffset
+			Partition:    int(p.Partition),
+			LatestOffset: p.LastMessageID,
+			MessageCount: p.MessageCount,
+			SizeBytes:    p.SizeBytes,
 		}
 	}
 
 	metrics.Partitions = partitions
-	metrics.MessageCount = totalMessages
-	metrics.SizeBytes = totalSize
+	metrics.MessageCount = topicStats.TotalMessages
+	metrics.SizeBytes = topicStats.TotalSize
+	metrics.LatestOffset = topicStats.LatestOffset
 
 	return metrics, nil
 }
@@ -275,7 +232,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		return nil, fmt.Errorf("failed to get consumer group generation: %w", err)
 	}
 	if generation != nil {
-		metrics.GenerationID = int64(generation.GenerationID) // 修复类型转换：uint -> int64
+		metrics.GenerationID = int64(generation.GenerationID)
 	}
 
 	// 获取活跃消费者
@@ -292,8 +249,8 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		}
 		member := ConsumerMemberMetrics{
 			ConsumerID:    item.ConsumerID,
-			ClientID:      item.ConsumerID, // DBMQ中ConsumerID就是ClientID
-			Host:          "localhost",     // DBMQ单实例
+			ClientID:      item.ConsumerID,
+			Host:          "localhost",
 			LastHeartbeat: item.LastHeartbeat,
 			Assignment:    assignment,
 		}
@@ -310,23 +267,26 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		metrics.State = "Active"
 	}
 
-	var slices []consumerprogressrepo.ProgressPO
-	mc.db.Model(&consumerprogressrepo.ProgressPO{}).Where("group_id = ?", groupID).Find(&slices)
+	// 使用查询层获取消费进度记录
+	progressRecords, err := mc.queries.Consumer.GetProgressRecords(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
 
-	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item consumerprogressrepo.ProgressPO, index int) string {
+	metrics.AssignedTopics = lo.Uniq(lo.Map(progressRecords, func(item consumerprogressrepo.ProgressPO, _ int) string {
 		return item.Topic
 	}))
 
 	// 计算消费延迟
 	var totalLag int64
-	for _, topic := range metrics.AssignedTopics {
-		topicInfo, err := mc.topicRepo.Get(ctx, topic)
+	for _, topicName := range metrics.AssignedTopics {
+		topicInfo, err := mc.topicRepo.Get(ctx, topicName)
 		if err != nil || topicInfo == nil {
 			continue
 		}
 
-		for i := uint(0); i < topicInfo.PartitionCount; i++ {
-			partition := types.PartitionInfo{Topic: topic, Partition: i}
+		for i := range topicInfo.PartitionCount {
+			partition := types.PartitionInfo{Topic: topicName, Partition: i}
 
 			// 获取已提交ID
 			committedIDs, err := mc.progressRepo.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
@@ -334,7 +294,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				continue
 			}
 			// 获取该Topic+分区的最新的消息ID
-			latestID, err := mc.messageRepo.GetLatestID(ctx, topic, i)
+			latestID, err := mc.messageRepo.GetLatestID(ctx, topicName, i)
 			if err != nil {
 				continue
 			}
@@ -346,62 +306,35 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				updateAt = committedIDs[0].UpdatedAt.UnixMilli()
 			}
 
-			var offsetRecord consumerprogressrepo.ProgressPO
-			err = mc.db.WithContext(ctx).
-				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
-				First(&offsetRecord).
-				Error
+			// 使用查询层获取消费进度
+			progressRecord, err := mc.queries.Consumer.GetProgressRecord(ctx, groupID, topicName, i)
 			if err != nil {
 				continue
 			}
-			watermark := offsetRecord.SubscriptionStartWatermark
-			var lag int64
-			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
-				Where("`partition` = ?", i).
-				Where("id > ?", currentID).Count(&lag).Error
-			if err != nil {
-				continue
-			}
-			var totalMessageCount int64
-			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
-				Where("`partition` = ?", i).
-				Count(&totalMessageCount).Error
-			if err != nil {
-				continue
-			}
-			var consumedMessages int64
-			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
-				Where("`partition` = ?", i).
-				Where("id >= ? AND id < ?", watermark, currentID).
-				Count(&consumedMessages).Error
-			if err != nil {
-				continue
-			}
-			var remainingMessages int64
-			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
-				Where("`partition` = ?", i).
-				Where("(id > ?)", currentID).
-				Count(&remainingMessages).Error
+			watermark := progressRecord.SubscriptionStartWatermark
+
+			// 使用查询层获取分区延迟统计
+			lagStats, err := mc.queries.Consumer.GetPartitionLagStats(ctx, topicName, i, currentID, watermark)
 			if err != nil {
 				continue
 			}
 
 			partitionLag := PartitionLagMetrics{
-				Topic:                      topic,
+				Topic:                      topicName,
 				Partition:                  int(i),
 				CurrentOffset:              currentID,
 				LatestOffset:               latestID,
-				Lag:                        lag,
+				Lag:                        lagStats.Lag,
 				SubscriptionStartWatermark: watermark,
-				TotalMessageCount:          totalMessageCount,
+				TotalMessageCount:          lagStats.TotalMessageCount,
 				LastMessageId:              latestID,
-				ConsumedMessages:           consumedMessages,
-				RemainingMessages:          remainingMessages,
-				ConsumedPercentage:         (float64(consumedMessages) / float64(consumedMessages+remainingMessages)) * 100,
+				ConsumedMessages:           lagStats.ConsumedMessages,
+				RemainingMessages:          lagStats.RemainingMessages,
+				ConsumedPercentage:         lagStats.ConsumedPercentage,
 				UpdatedAt:                  updateAt,
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
-			totalLag += lag
+			totalLag += lagStats.Lag
 		}
 	}
 	metrics.Lag = totalLag
@@ -412,37 +345,24 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 // GetBrokerMetrics 获取Broker监控指标
 // 兼容Kafka UI的Broker页面
 func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, error) {
-	metrics := &BrokerMetrics{
-		BrokerID:     0,
-		Host:         "localhost",
-		Port:         9092, // 默认Kafka端口
-		IsController: true, // DBMQ单实例总是控制器
-		Version:      "dbmq-1.0.0",
-		LastUpdated:  time.Now(),
-		Uptime:       int64(time.Since(time.Now().Add(-24 * time.Hour)).Seconds()), // 模拟运行时间
-	}
-
-	// 获取Topic和分区数量
-	var topics []topicrepo.TopicPO
-	err := mc.db.WithContext(ctx).Find(&topics).Error
+	// 使用查询层获取 Broker 统计信息
+	brokerStats, err := mc.queries.Cluster.GetBrokerStats(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get topics: %w", err)
+		return nil, fmt.Errorf("failed to get broker stats: %w", err)
 	}
 
-	metrics.TopicCount = len(topics)
-	for _, topic := range topics {
-		metrics.PartitionCount += int(topic.PartitionCount)
-	}
-
-	// 获取消息总数
-	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).Count(&messageCount).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get message count: %w", err)
-	}
-	metrics.MessageCount = messageCount
-
-	return metrics, nil
+	return &BrokerMetrics{
+		BrokerID:       0,
+		Host:           "localhost",
+		Port:           9092,
+		IsController:   true,
+		TopicCount:     brokerStats.TopicCount,
+		PartitionCount: brokerStats.PartitionCount,
+		MessageCount:   brokerStats.MessageCount,
+		Version:        "dbmq-1.0.0",
+		LastUpdated:    time.Now(),
+		Uptime:         int64(time.Since(time.Now().Add(-24 * time.Hour)).Seconds()),
+	}, nil
 }
 
 // GetAllTopicsMetrics 获取所有Topic的监控指标
@@ -455,11 +375,11 @@ func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetric
 	}
 
 	var metricsSlice []TopicMetrics
-	for _, topic := range topics {
-		topicMetrics, err := mc.GetTopicMetrics(ctx, topic.Name)
+	for _, t := range topics {
+		topicMetrics, err := mc.GetTopicMetrics(ctx, t.Name)
 		if err != nil {
 			// 记录错误但继续处理其他Topic
-			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", topic.Name, err)
+			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", t.Name, err)
 			continue
 		}
 		metricsSlice = append(metricsSlice, *topicMetrics)

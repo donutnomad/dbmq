@@ -10,6 +10,7 @@ import (
 
 	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +61,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 	deps := &Deps{
 		DB:                   config.DB,
+		Queries:              query.New(config.DB),
 		MetricsClient:        metricsClient,
 		AdminClient:          adminClient,
 		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),

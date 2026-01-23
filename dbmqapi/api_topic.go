@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq"
-	"github.com/donutnomad/dbmq/internal/interfaces"
 )
 
 // TopicAPI Topic 管理 API
@@ -57,7 +56,8 @@ func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, err
 		if req.IncludePartitionStats && topic.PartitionCount > 0 {
 			partitionStats := make([]PartitionStats, topic.PartitionCount)
 			for p := range topic.PartitionCount {
-				stats, err := getPartitionStatsFromDB(ctx, a.deps.DB, topic.TopicName, uint(p))
+				// 使用查询层获取分区统计信息
+				stats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, topic.TopicName, uint(p))
 				if err != nil {
 					partitionStats[p] = PartitionStats{
 						Partition:      uint(p),
@@ -65,7 +65,15 @@ func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, err
 						LastMessageID:  -1,
 					}
 				} else {
-					partitionStats[p] = *stats
+					partitionStats[p] = PartitionStats{
+						Partition:      stats.Partition,
+						FirstMessageID: stats.FirstMessageID,
+						LastMessageID:  stats.LastMessageID,
+						MessageCount:   stats.MessageCount,
+						SizeBytes:      stats.SizeBytes,
+						CreatedAt:      stats.CreatedAt,
+						UpdatedAt:      stats.UpdatedAt,
+					}
 				}
 			}
 			result[i].PartitionStats = partitionStats
@@ -122,42 +130,4 @@ func (a *topicAPI) Delete(ctx context.Context, topicName string) (MessageResp, e
 
 func (a *topicAPI) GetMetrics(ctx context.Context, topicName string) (TopicResp, error) {
 	return a.Get(ctx, topicName)
-}
-
-// getPartitionStatsFromDB 从数据库获取分区统计信息
-func getPartitionStatsFromDB(ctx context.Context, db interfaces.DB, topicName string, partition uint) (*PartitionStats, error) {
-	var stats struct {
-		FirstMessageID int64  `gorm:"column:first_message_id"`
-		LastMessageID  int64  `gorm:"column:last_message_id"`
-		MessageCount   int64  `gorm:"column:message_count"`
-		SizeBytes      int64  `gorm:"column:size_bytes"`
-		CreatedAt      string `gorm:"column:created_at"`
-		UpdatedAt      string `gorm:"column:updated_at"`
-	}
-
-	sql := `
-		SELECT
-			COALESCE(MIN(id), -1) AS first_message_id,
-			COALESCE(MAX(id), -1) AS last_message_id,
-			COUNT(*) AS message_count,
-			COALESCE(SUM(LENGTH(body)), 0) AS size_bytes,
-			COALESCE(MIN(created_at), '') AS created_at,
-			COALESCE(MAX(created_at), '') AS updated_at
-		FROM mq_messages
-		WHERE topic = ? AND ` + "`partition`" + ` = ?`
-
-	err := db.WithContext(ctx).Raw(sql, topicName, partition).Scan(&stats).Error
-	if err != nil {
-		return nil, err
-	}
-
-	return &PartitionStats{
-		Partition:      partition,
-		FirstMessageID: stats.FirstMessageID,
-		LastMessageID:  stats.LastMessageID,
-		MessageCount:   stats.MessageCount,
-		SizeBytes:      stats.SizeBytes,
-		CreatedAt:      stats.CreatedAt,
-		UpdatedAt:      stats.UpdatedAt,
-	}, nil
 }

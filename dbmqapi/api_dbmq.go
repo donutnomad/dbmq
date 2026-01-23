@@ -2,14 +2,11 @@ package dbmqapi
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
-
-	"gorm.io/gorm"
+	"github.com/donutnomad/dbmq/internal/query"
 )
 
 // DBMQAPI DBMQ 专用 API
@@ -75,38 +72,27 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 		limit = 50
 	}
 
-	var messages []messagerepo.MessagePO
-	query := a.deps.DB.WithContext(ctx).Where("topic = ?", topicName)
-
+	// 使用查询层搜索消息
+	searchReq := query.MessageSearchRequest{
+		Topic:    topicName,
+		Offset:   req.Offset,
+		Limit:    limit,
+		Search:   req.Search,
+		FromTime: query.ParseTime(req.FromTime),
+		ToTime:   query.ParseTime(req.ToTime),
+	}
 	if req.Partition != nil {
-		query = query.Where("`partition` = ?", *req.Partition)
+		searchReq.Partition = req.Partition
 	}
 
-	if req.FromTime != "" {
-		if t, err := time.Parse(time.RFC3339, req.FromTime); err == nil {
-			query = query.Where("created_at >= ?", t)
-		}
-	}
-	if req.ToTime != "" {
-		if t, err := time.Parse(time.RFC3339, req.ToTime); err == nil {
-			query = query.Where("created_at <= ?", t)
-		}
-	}
-
-	if req.Search != "" {
-		query = query.Where("(message_key LIKE ? OR body LIKE ?)", "%"+req.Search+"%", "%"+req.Search+"%")
-	}
-
-	var total int64
-	query.Model(&messagerepo.MessagePO{}).Count(&total)
-
-	err := query.Order("created_at DESC").Offset(int(req.Offset)).Limit(limit).Find(&messages).Error
+	result, err := a.deps.Queries.Message.Search(ctx, searchReq)
 	if err != nil {
 		return TopicMessagesResp{}, err
 	}
 
-	messageDTOs := make([]MessageDTO, len(messages))
-	for i, msg := range messages {
+	// 转换为 API 响应格式
+	messageDTOs := make([]MessageDTO, len(result.Messages))
+	for i, msg := range result.Messages {
 		messageDTOs[i] = MessageDTO{
 			ID:        msg.ID,
 			Topic:     msg.Topic,
@@ -116,7 +102,7 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 			Value:     string(msg.Body),
 			Timestamp: msg.CreatedAt.Format(time.RFC3339),
 			Size:      len(msg.Body),
-			Headers:   msg.Headers.Data(),
+			Headers:   msg.Headers,
 		}
 	}
 
@@ -132,16 +118,25 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 		Limit:     limit,
 		Search:    req.Search,
 		Messages:  messageDTOs,
-		Total:     total,
+		Total:     result.Total,
 	}, nil
 }
 
 func (a *dbmqAPI) GetPartitionStats(ctx context.Context, topicName string, partitionId uint) (PartitionStats, error) {
-	stats, err := getPartitionStatsFromDB(ctx, a.deps.DB, topicName, partitionId)
+	// 使用查询层获取分区统计信息
+	stats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, topicName, partitionId)
 	if err != nil {
 		return PartitionStats{}, err
 	}
-	return *stats, nil
+	return PartitionStats{
+		Partition:      stats.Partition,
+		FirstMessageID: stats.FirstMessageID,
+		LastMessageID:  stats.LastMessageID,
+		MessageCount:   stats.MessageCount,
+		SizeBytes:      stats.SizeBytes,
+		CreatedAt:      stats.CreatedAt,
+		UpdatedAt:      stats.UpdatedAt,
+	}, nil
 }
 
 func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) (ConsumerGroupExtendedResp, error) {
@@ -150,58 +145,16 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 		return ConsumerGroupExtendedResp{}, err
 	}
 
-	var generationInfo struct {
-		GenerationID int       `json:"generationId"`
-		LeaderID     string    `json:"leaderId"`
-		UpdatedAt    time.Time `json:"updatedAt"`
-	}
-	err = a.deps.DB.Table("mq_consumer_group_generations").
-		Select("generation_id, leader_id, updated_at").
-		Where("group_id = ?", groupId).
-		First(&generationInfo).Error
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return ConsumerGroupExtendedResp{}, err
-	}
-
-	var members []struct {
-		ConsumerID         string     `json:"consumerId"`
-		GenerationID       int        `json:"generationId"`
-		SubscribedTopics   string     `json:"subscribedTopics"`
-		AssignedPartitions string     `json:"assignedPartitions"`
-		Offline            bool       `json:"offline"`
-		LastHeartbeat      time.Time  `json:"lastHeartbeat"`
-		OfflineAt          *time.Time `json:"offlineAt"`
-	}
-	err = a.deps.DB.Table("mq_consumer_heartbeats").
-		Select("consumer_id, generation_id, subscribed_topics, assigned_partitions, offline, last_heartbeat, offline_at").
-		Where("group_id = ?", groupId).
-		Order("offline ASC, last_heartbeat DESC").
-		Find(&members).Error
-	if err != nil {
-		return ConsumerGroupExtendedResp{}, err
-	}
-
-	var offsets []struct {
-		Topic                 string        `json:"topic"`
-		Partition             int           `json:"partition"`
-		CommittedOffset       int64         `json:"committedOffset"`
-		GenerationID          int           `json:"generationId"`
-		Metadata              string        `json:"metadata"`
-		UpdatedAt             time.Time     `json:"updatedAt"`
-		InitialTopicWatermark sql.NullInt64 `json:"initialTopicWatermark"`
-	}
-	err = a.deps.DB.Table("mq_consumer_group_consumption_progress").
-		Select("topic, `partition`, last_consumed_message_id as committed_offset, generation_id, metadata, updated_at, subscription_start_watermark as initial_topic_watermark").
-		Where("group_id = ?", groupId).
-		Find(&offsets).Error
+	// 使用查询层获取消费组扩展信息
+	extended, err := a.deps.Queries.Consumer.GetConsumerGroupExtended(ctx, groupId)
 	if err != nil {
 		return ConsumerGroupExtendedResp{}, err
 	}
 
 	heartbeatTimeout := 30 * time.Second
-	enhancedMembers := make([]ConsumerMemberDTO, 0, len(members))
+	enhancedMembers := make([]ConsumerMemberDTO, 0, len(extended.Members))
 
-	for _, detail := range members {
+	for _, detail := range extended.Members {
 		memberDTO := ConsumerMemberDTO{
 			MemberID:      detail.ConsumerID,
 			ClientID:      detail.ConsumerID,
@@ -259,7 +212,8 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 			Lag:           lag.Lag,
 		}
 
-		partitionStats, err := getPartitionStatsFromDB(ctx, a.deps.DB, lag.Topic, uint(lag.Partition))
+		// 使用查询层获取分区统计信息
+		partitionStats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, lag.Topic, uint(lag.Partition))
 		if err == nil && partitionStats != nil {
 			lagExt.FirstMessageID = partitionStats.FirstMessageID
 			lagExt.LastMessageID = partitionStats.LastMessageID
@@ -275,13 +229,14 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 			}
 		}
 
-		for _, offset := range offsets {
-			if offset.Topic == lag.Topic && offset.Partition == lag.Partition {
-				lagExt.Metadata = offset.Metadata
-				lagExt.UpdatedAt = offset.UpdatedAt.Format(time.RFC3339)
-				lagExt.GenerationID = offset.GenerationID
-				if offset.InitialTopicWatermark.Valid {
-					lagExt.InitialTopicWatermark = &offset.InitialTopicWatermark.Int64
+		// 从查询层获取的 progress 中查找对应的元数据
+		for _, progress := range extended.SubscribedProgress {
+			if progress.Topic == lag.Topic && progress.Partition == lag.Partition {
+				lagExt.Metadata = progress.Metadata
+				lagExt.UpdatedAt = progress.UpdatedAt.Format(time.RFC3339)
+				lagExt.GenerationID = progress.GenerationID
+				if progress.SubscriptionStartWatermark != nil {
+					lagExt.InitialTopicWatermark = progress.SubscriptionStartWatermark
 				}
 				break
 			}
@@ -293,8 +248,8 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 	return ConsumerGroupExtendedResp{
 		Members:            enhancedMembers,
 		PartitionLags:      enhancedLags,
-		GenerationID:       generationInfo.GenerationID,
-		LastActivity:       generationInfo.UpdatedAt.Format(time.RFC3339),
+		GenerationID:       extended.GenerationID,
+		LastActivity:       extended.UpdatedAt.Format(time.RFC3339),
 		Coordinator:        "coordinator",
 		CommitMode:         "manual",
 		AssignmentStrategy: "range",
