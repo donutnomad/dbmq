@@ -3,7 +3,7 @@ package dbmqapi
 import (
 	"context"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/manualassignment"
 )
 
 // ManualAssignmentAPI 手动分区分配 API
@@ -22,22 +22,22 @@ type ManualAssignmentAPI interface {
 }
 
 type manualAssignmentAPI struct {
-	deps *Deps
+	repo manualassignment.Repo
 }
 
 func NewManualAssignmentAPI(deps *Deps) ManualAssignmentAPI {
-	return &manualAssignmentAPI{deps: deps}
+	return &manualAssignmentAPI{repo: deps.ManualAssignmentRepo}
 }
 
 func (a *manualAssignmentAPI) Create(ctx context.Context, req CreateManualAssignmentReq) (ManualAssignmentResp, error) {
-	assignment := &db.ManualPartitionAssignment{
+	assignment := &manualassignment.Assignment{
 		GroupID:           req.GroupID,
 		ConsumerIDPattern: req.ConsumerIDPattern,
 		Topic:             req.Topic,
 		Partition:         req.Partition,
 	}
 
-	if err := a.deps.Repo.CreateManualAssignment(ctx, assignment); err != nil {
+	if err := a.repo.Create(ctx, assignment); err != nil {
 		return ManualAssignmentResp{}, err
 	}
 
@@ -53,7 +53,7 @@ func (a *manualAssignmentAPI) Create(ctx context.Context, req CreateManualAssign
 }
 
 func (a *manualAssignmentAPI) List(ctx context.Context, req ListManualAssignmentsReq) ([]ManualAssignmentResp, error) {
-	assignments, err := a.deps.Repo.GetManualAssignmentsByGroup(ctx, req.GroupID)
+	assignments, err := a.repo.GetByGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (a *manualAssignmentAPI) List(ctx context.Context, req ListManualAssignment
 }
 
 func (a *manualAssignmentAPI) Delete(ctx context.Context, id int64) (MessageResp, error) {
-	if err := a.deps.Repo.DeleteManualAssignment(ctx, id); err != nil {
+	if err := a.repo.Delete(ctx, id); err != nil {
 		return MessageResp{}, err
 	}
 

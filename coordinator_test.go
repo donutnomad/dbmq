@@ -1,33 +1,34 @@
 package dbmq
 
 import (
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
 	"github.com/donutnomad/dbmq/internal/pkg/utils"
+	"github.com/donutnomad/dbmq/internal/types"
 
 	"reflect"
 	"testing"
 )
 
 // Helper function to create a slice of consumer heartbeats for testing.
-func makeTestConsumers(ids ...string) []db.ConsumerHeartbeat {
-	consumers := make([]db.ConsumerHeartbeat, len(ids))
+func makeTestConsumers(ids ...string) []*heartbeat.Heartbeat {
+	consumers := make([]*heartbeat.Heartbeat, len(ids))
 	for i, id := range ids {
-		consumers[i] = db.ConsumerHeartbeat{ConsumerID: id}
+		consumers[i] = &heartbeat.Heartbeat{ConsumerID: id}
 	}
 	return consumers
 }
 
 // Helper function to create a slice of partition infos for testing.
-func makeTestPartitions(topic string, count uint) []db.PartitionInfo {
-	partitions := make([]db.PartitionInfo, count)
+func makeTestPartitions(topic string, count uint) []types.PartitionInfo {
+	partitions := make([]types.PartitionInfo, count)
 	for i := uint(0); i < count; i++ {
-		partitions[i] = db.PartitionInfo{Topic: topic, Partition: i}
+		partitions[i] = types.PartitionInfo{Topic: topic, Partition: i}
 	}
 	return partitions
 }
 
 // Helper function to sort the results for consistent comparison.
-func sortAssignments(assignments map[string][]db.PartitionInfo) map[string][]db.PartitionInfo {
+func sortAssignments(assignments map[string][]types.PartitionInfo) map[string][]types.PartitionInfo {
 	for cid := range assignments {
 		utils.SortPartitionsByTopicAndPartition(assignments[cid])
 	}
@@ -70,7 +71,7 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 	// a: [topic-1:0, topic-1:3]
 	// b: [topic-1:1, topic-1:4]
 	// c: [topic-1:2, topic-1:5]
-	expectedInitial := map[string][]db.PartitionInfo{
+	expectedInitial := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 3}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 4}},
 		"consumer-c": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 5}},
@@ -86,7 +87,7 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 
 	// The 2 partitions from consumer-c should be redistributed to a and b.
 	// a gets partition 2, b gets partition 5
-	expectedNew := map[string][]db.PartitionInfo{
+	expectedNew := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 4}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 3}, {Topic: "topic-1", Partition: 5}},
 	}
@@ -127,7 +128,7 @@ func TestCalculateAssignments_ManualOnly(t *testing.T) {
 	partitions := makeTestPartitions("topic-1", 6)
 
 	// Manual assignments: each consumer gets specific partitions
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 3}},
 		"consumer-c": {{Topic: "topic-1", Partition: 4}, {Topic: "topic-1", Partition: 5}},
@@ -137,7 +138,7 @@ func TestCalculateAssignments_ManualOnly(t *testing.T) {
 	result = sortAssignments(result)
 
 	// Verify each consumer gets exactly their manual assignment
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 3}},
 		"consumer-c": {{Topic: "topic-1", Partition: 4}, {Topic: "topic-1", Partition: 5}},
@@ -163,7 +164,7 @@ func TestCalculateAssignments_AutoOnly(t *testing.T) {
 	// Expected round-robin distribution:
 	// partition 0 -> consumer-a, partition 1 -> consumer-b, partition 2 -> consumer-c
 	// partition 3 -> consumer-a, partition 4 -> consumer-b, partition 5 -> consumer-c
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 3}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 4}},
 		"consumer-c": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 5}},
@@ -184,7 +185,7 @@ func TestCalculateAssignments_Mixed(t *testing.T) {
 
 	// consumer-a has manual assignment for partitions 0 and 1
 	// consumer-b and consumer-c should get the remaining partitions via round-robin
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 	}
 
@@ -195,7 +196,7 @@ func TestCalculateAssignments_Mixed(t *testing.T) {
 	// Remaining partitions (2, 3, 4, 5) are distributed to consumer-b and consumer-c via round-robin
 	// partition 2 -> consumer-b, partition 3 -> consumer-c
 	// partition 4 -> consumer-b, partition 5 -> consumer-c
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 4}},
 		"consumer-c": {{Topic: "topic-1", Partition: 3}, {Topic: "topic-1", Partition: 5}},
@@ -216,7 +217,7 @@ func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
 	partitions := makeTestPartitions("topic-1", 4)
 
 	// consumer-a manually gets partitions 0 and 2
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}},
 	}
 
@@ -225,7 +226,7 @@ func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
 
 	// consumer-a gets manual partitions (0, 2)
 	// consumer-b should only get remaining partitions (1, 3), NOT partitions 0 or 2
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 3}},
 	}
@@ -235,7 +236,7 @@ func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
 	}
 
 	// Additional verification: ensure no partition appears in both assignments
-	aPartitions := make(map[db.PartitionInfo]bool)
+	aPartitions := make(map[types.PartitionInfo]bool)
 	for _, p := range result["consumer-a"] {
 		aPartitions[p] = true
 	}
@@ -255,7 +256,7 @@ func TestCalculateAssignments_ManualWithEmptySlice(t *testing.T) {
 	partitions := makeTestPartitions("topic-1", 4)
 
 	// consumer-a has an empty manual assignment (should be treated as auto)
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {},
 	}
 
@@ -263,7 +264,7 @@ func TestCalculateAssignments_ManualWithEmptySlice(t *testing.T) {
 	result = sortAssignments(result)
 
 	// Both consumers should participate in round-robin
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}},
 		"consumer-b": {{Topic: "topic-1", Partition: 1}, {Topic: "topic-1", Partition: 3}},
 	}
@@ -280,7 +281,7 @@ func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
 	consumers := makeTestConsumers("consumer-a", "consumer-b")
 
 	// Create partitions for two topics
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic-1", Partition: 0},
 		{Topic: "topic-1", Partition: 1},
 		{Topic: "topic-2", Partition: 0},
@@ -288,7 +289,7 @@ func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
 	}
 
 	// consumer-a manually gets topic-1:0 and topic-2:0
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {
 			{Topic: "topic-1", Partition: 0},
 			{Topic: "topic-2", Partition: 0},
@@ -299,7 +300,7 @@ func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
 	result = sortAssignments(result)
 
 	// consumer-b should get the remaining partitions
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {
 			{Topic: "topic-1", Partition: 0},
 			{Topic: "topic-2", Partition: 0},
@@ -325,7 +326,7 @@ func TestCalculateAssignments_AllManualNoRemainingPartitions(t *testing.T) {
 
 	// consumer-a and consumer-b get all partitions manually
 	// consumer-c has no manual assignment but no partitions remain
-	manualAssignments := map[string][]db.PartitionInfo{
+	manualAssignments := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 3}},
 	}
@@ -334,7 +335,7 @@ func TestCalculateAssignments_AllManualNoRemainingPartitions(t *testing.T) {
 	result = sortAssignments(result)
 
 	// consumer-c should have an empty assignment (no partitions left)
-	expected := map[string][]db.PartitionInfo{
+	expected := map[string][]types.PartitionInfo{
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 3}},
 		"consumer-c": {},

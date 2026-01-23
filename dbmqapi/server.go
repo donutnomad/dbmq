@@ -10,7 +10,7 @@ import (
 
 	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/interfaces"
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,18 +53,17 @@ func NewServer(config ServerConfig) (*Server, error) {
 	}
 
 	adminClient := dbmq.NewAdminClient(config.DB)
-	mqRepo := repo.NewMqRepo(config.DB)
 
 	s := &Server{
 		config: config,
 	}
 
 	deps := &Deps{
-		DB:            config.DB,
-		MetricsClient: metricsClient,
-		AdminClient:   adminClient,
-		Repo:          mqRepo,
-		StartTime:     func() int64 { return s.startTime.Unix() },
+		DB:                   config.DB,
+		MetricsClient:        metricsClient,
+		AdminClient:          adminClient,
+		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),
+		StartTime:            func() int64 { return s.startTime.Unix() },
 	}
 
 	s.deps = deps

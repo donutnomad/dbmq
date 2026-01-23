@@ -11,9 +11,14 @@ import (
 	"time"
 
 	"github.com/cockroachdb/errors"
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/message"
 	"github.com/donutnomad/dbmq/internal/pkg/utils"
-	repoLib "github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/donutnomad/dbmq/logger"
 )
 
@@ -33,16 +38,18 @@ type ConsumerActor struct {
 	// 状态（只在 actor 内访问，无锁）
 	stateMachine             *consumerStateMachine
 	generationID             uint
-	assignment               []db.PartitionInfo
-	alreadyConsumeMessageIDs map[db.PartitionInfo]int64
-	offsetsToCommit          map[db.PartitionInfo]int64
+	assignment               []types.PartitionInfo
+	alreadyConsumeMessageIDs map[types.PartitionInfo]int64
+	offsetsToCommit          map[types.PartitionInfo]int64
 	topics                   []string
 
 	// 依赖（接口）
-	repo     ConsumerRepo
-	clock    Clock
-	notifier Notifier
-	waiter   Waiter // 等待接口，封装通知或超时等待逻辑
+	heartbeatRepo heartbeat.Repo
+	progressRepo  consumerprogress.Repo
+	messageRepo   message.Repo
+	clock         Clock
+	notifier      Notifier
+	waiter        Waiter // 等待接口，封装通知或超时等待逻辑
 
 	// 生命周期
 	stopCh chan struct{}
@@ -52,11 +59,24 @@ type ConsumerActor struct {
 // ConsumerActorOption 定义 ConsumerActor 的可选配置函数
 type ConsumerActorOption func(*ConsumerActor)
 
-// WithRepo 设置自定义的数据访问层实现
-// 主要用于单元测试时注入 mock 实现
-func WithRepo(repo ConsumerRepo) ConsumerActorOption {
+// WithHeartbeatRepo 设置自定义的心跳仓储实现
+func WithHeartbeatRepo(repo heartbeat.Repo) ConsumerActorOption {
 	return func(a *ConsumerActor) {
-		a.repo = repo
+		a.heartbeatRepo = repo
+	}
+}
+
+// WithProgressRepo 设置自定义的消费进度仓储实现
+func WithProgressRepo(repo consumerprogress.Repo) ConsumerActorOption {
+	return func(a *ConsumerActor) {
+		a.progressRepo = repo
+	}
+}
+
+// WithMessageRepo 设置自定义的消息仓储实现
+func WithMessageRepo(repo message.Repo) ConsumerActorOption {
+	return func(a *ConsumerActor) {
+		a.messageRepo = repo
 	}
 }
 
@@ -97,8 +117,8 @@ func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *Consu
 		cmdCh:                    make(chan Command, 100), // 带缓冲的命令通道
 		stateMachine:             newConsumerStateMachine(),
 		assignment:               nil,
-		alreadyConsumeMessageIDs: make(map[db.PartitionInfo]int64),
-		offsetsToCommit:          make(map[db.PartitionInfo]int64),
+		alreadyConsumeMessageIDs: make(map[types.PartitionInfo]int64),
+		offsetsToCommit:          make(map[types.PartitionInfo]int64),
 		topics:                   config.Topics,
 		clock:                    NewRealClock(),
 		stopCh:                   make(chan struct{}),
@@ -106,7 +126,9 @@ func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *Consu
 
 	// 如果配置了数据库，创建默认 repo
 	if config.DB != nil {
-		actor.repo = repoLib.NewMqRepo(config.DB)
+		actor.heartbeatRepo = heartbeatrepo.New(config.DB)
+		actor.progressRepo = consumerprogressrepo.New(config.DB)
+		actor.messageRepo = messagerepo.New(config.DB)
 	}
 
 	// 如果配置了 Redis 且启用了通知，创建默认 notifier
@@ -298,12 +320,12 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 	}
 
 	// 注册/更新心跳
-	if err := a.repo.UpsertConsumerHeartbeat(ctx, a.config.GroupID, a.id, a.topics); err != nil {
+	if err := a.heartbeatRepo.Upsert(ctx, a.config.GroupID, a.id, a.topics); err != nil {
 		return errors.Wrap(err, "upsert heartbeat")
 	}
 
 	// 从数据库获取我们自己的状态
-	hb, err := a.repo.GetConsumerHeartbeat(ctx, a.config.GroupID, a.id)
+	hb, err := a.heartbeatRepo.Get(ctx, a.config.GroupID, a.id)
 	if err != nil {
 		return errors.Wrap(err, "get heartbeat")
 	}
@@ -317,7 +339,7 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 	}
 
 	// 执行重平衡
-	return a.doRebalance(ctx, hb.GenerationID, slices.Clone(hb.AssignedPartitions))
+	return a.doRebalance(ctx, hb.GenerationID, hb.AssignedPartitions)
 }
 
 // handlePoll 处理 Poll 命令
@@ -358,17 +380,17 @@ func (a *ConsumerActor) handlePoll(ctx context.Context, timeout time.Duration) P
 	fetchCtx, cancel := context.WithTimeout(ctx, a.config.GetPollFetchTimeout())
 	defer cancel()
 
-	requests := make([]repoLib.PartitionRequest, len(assignedPartitions))
+	requests := make([]message.FetchRequest, len(assignedPartitions))
 	for i, p := range assignedPartitions {
-		requests[i] = repoLib.PartitionRequest{
+		requests[i] = message.FetchRequest{
 			Topic:     p.Topic,
 			Partition: p.Partition,
-			ID:        a.alreadyConsumeMessageIDs[p],
+			AfterID:   a.alreadyConsumeMessageIDs[p],
 			Limit:     a.config.GetPollFetchLimit(),
 		}
 	}
 
-	allMessages, err := a.repo.FetchMessagesBatch(fetchCtx, requests)
+	allMessages, err := a.messageRepo.FetchBatch(fetchCtx, requests)
 	if err != nil {
 		if stderrors.Is(err, context.DeadlineExceeded) || stderrors.Is(err, context.Canceled) {
 			return PollResult{Err: err}
@@ -376,12 +398,12 @@ func (a *ConsumerActor) handlePoll(ctx context.Context, timeout time.Duration) P
 		return PollResult{Err: &ErrFailedFetchMessage{err}}
 	}
 
-	messages := new(ConsumerMessages).FromMessages(allMessages)
+	messages := new(ConsumerMessages).FromDomainMessages(allMessages)
 	return PollResult{Messages: messages}
 }
 
 // waitForNotification 等待通知或超时
-func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration, _ []db.PartitionInfo) error {
+func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration, _ []types.PartitionInfo) error {
 	select {
 	case <-a.waiter.Wait(ctx, timeout):
 		if ctx.Err() != nil {
@@ -399,12 +421,12 @@ func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Du
 }
 
 // handleRebalance 处理重平衡命令
-func (a *ConsumerActor) handleRebalance(ctx context.Context, newGeneration uint, newPartitions []db.PartitionInfo) error {
+func (a *ConsumerActor) handleRebalance(ctx context.Context, newGeneration uint, newPartitions []types.PartitionInfo) error {
 	return a.doRebalance(ctx, newGeneration, newPartitions)
 }
 
 // doRebalance 执行重平衡逻辑
-func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, newPartitions []db.PartitionInfo) error {
+func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, newPartitions []types.PartitionInfo) error {
 	prevState := a.stateMachine.Get()
 
 	// 状态转换到 Rebalancing
@@ -442,19 +464,22 @@ func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, new
 }
 
 // clearAndFetchOffsetsForNewAssignment 清除旧状态并获取新分配的已提交偏移量
-func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context, newGenerationID uint, newPartitions []db.PartitionInfo) error {
+func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context, newGenerationID uint, newPartitions []types.PartitionInfo) error {
 	// 计算被撤销的分区（在 oldPartitions 中但不在 newPartitions 中）
 	revokedPartitions := utils.Subtract(a.assignment, newPartitions)
 
 	// 获取已提交的偏移量
-	fetchedOffsets, err := a.repo.GetCommittedOffsets(ctx, a.config.GroupID, newPartitions)
+	fetchedOffsets, err := a.progressRepo.GetCommittedOffsets(ctx, a.config.GroupID, newPartitions)
 	if err != nil {
 		return errors.Wrap(err, "get committed offsets")
 	}
-	fetchedOffsetsMap := fetchedOffsets.ToMap()
+	fetchedOffsetsMap := make(map[types.PartitionInfo]int64)
+	for _, p := range fetchedOffsets {
+		fetchedOffsetsMap[types.PartitionInfo{Topic: p.Topic, Partition: p.Partition}] = p.LastConsumedMessageID
+	}
 
 	// 筛选出新增的分区
-	var addedPartitions []db.PartitionInfo
+	var addedPartitions []types.PartitionInfo
 	for _, p := range newPartitions {
 		if _, exists := fetchedOffsetsMap[p]; !exists {
 			addedPartitions = append(addedPartitions, p)
@@ -463,9 +488,9 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 
 	// 为新增分区确定起始消息ID
 	partitionMaxIDMap := a.determineStartMessageID(ctx, addedPartitions)
-	initialProgressWithWatermarks := make(map[db.PartitionInfo]repoLib.ConsumptionProgressWithWatermark)
+	initialProgressWithWatermarks := make(map[types.PartitionInfo]consumerprogress.ProgressWithWatermark)
 	for k, startID := range partitionMaxIDMap {
-		initialProgressWithWatermarks[k] = repoLib.ConsumptionProgressWithWatermark{
+		initialProgressWithWatermarks[k] = consumerprogress.ProgressWithWatermark{
 			LastConsumedMessageID:      startID - 1,
 			SubscriptionStartWatermark: startID,
 		}
@@ -473,7 +498,7 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 
 	// 为新增分区注册订阅信息
 	if len(initialProgressWithWatermarks) > 0 {
-		if err := a.repo.BatchCommitOffsetsWithInitialWatermark(ctx, a.config.GroupID, newGenerationID, initialProgressWithWatermarks); err != nil {
+		if err := a.progressRepo.BatchCommitOffsetsWithWatermark(ctx, a.config.GroupID, newGenerationID, initialProgressWithWatermarks); err != nil {
 			return errors.Wrap(err, "batch commit initial watermark")
 		}
 	}
@@ -491,7 +516,7 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 
 	// 更新已有分区的消费位置
 	for _, item := range fetchedOffsets {
-		a.alreadyConsumeMessageIDs[db.PartitionInfo{Topic: item.Topic, Partition: item.Partition}] = item.LastConsumedMessageID
+		a.alreadyConsumeMessageIDs[types.PartitionInfo{Topic: item.Topic, Partition: item.Partition}] = item.LastConsumedMessageID
 	}
 
 	// 更新 generation 和分配
@@ -502,10 +527,10 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 }
 
 // determineStartMessageID 根据消费策略确定起始消息ID
-func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions []db.PartitionInfo) map[db.PartitionInfo]int64 {
-	ret := make(map[db.PartitionInfo]int64)
+func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions []types.PartitionInfo) map[types.PartitionInfo]int64 {
+	ret := make(map[types.PartitionInfo]int64)
 
-	var needFetchFromDB []db.PartitionInfo
+	var needFetchFromDB []types.PartitionInfo
 	for _, partition := range partitions {
 		ret[partition] = firstMessageId
 		if a.config.ConsumeStrategy == ConsumeFromLatest {
@@ -514,7 +539,7 @@ func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions 
 	}
 
 	if len(needFetchFromDB) > 0 {
-		byPartitions, err := a.repo.GetTopicsLatestIDsByPartitions(ctx, needFetchFromDB)
+		byPartitions, err := a.messageRepo.GetLatestIDs(ctx, needFetchFromDB)
 		if err == nil {
 			maps.Copy(ret, byPartitions)
 		}
@@ -540,7 +565,7 @@ func (a *ConsumerActor) handleClose() error {
 	// 标记消费者为离线
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := a.repo.MarkConsumerOffline(ctx, a.config.GroupID, a.id); err != nil {
+	if err := a.heartbeatRepo.MarkOffline(ctx, a.config.GroupID, a.id); err != nil {
 		a.logger().Warn("标记消费者离线失败", "error", err, "consumer-id", a.id)
 	}
 
@@ -595,7 +620,7 @@ func (a *ConsumerActor) commitOffsetsInternal(ctx context.Context) error {
 	commitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := a.repo.BatchCommitLastConsumeMessageID(commitCtx, a.config.GroupID, a.generationID, a.offsetsToCommit); err != nil {
+	if err := a.progressRepo.BatchCommitOffsets(commitCtx, a.config.GroupID, a.generationID, a.offsetsToCommit); err != nil {
 		return errors.Wrap(err, "batch commit offsets")
 	}
 
@@ -609,7 +634,7 @@ func (a *ConsumerActor) commitOffsetsInternal(ctx context.Context) error {
 }
 
 // handleUpdateOffsets 处理更新偏移量命令
-func (a *ConsumerActor) handleUpdateOffsets(offsets map[db.PartitionInfo]int64) struct{} {
+func (a *ConsumerActor) handleUpdateOffsets(offsets map[types.PartitionInfo]int64) struct{} {
 	for partition, offset := range offsets {
 		a.offsetsToCommit[partition] = max(offset, a.offsetsToCommit[partition])
 	}
@@ -706,7 +731,7 @@ func (a *ConsumerActor) Acknowledge(messages ...ConsumerMessage) {
 	}
 
 	// 按分区分组消息
-	offsets := make(map[db.PartitionInfo]int64)
+	offsets := make(map[types.PartitionInfo]int64)
 	for _, msg := range messages {
 		p := msg.PartitionInfo()
 		offsets[p] = max(msg.ID, offsets[p])

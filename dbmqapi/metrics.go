@@ -2,13 +2,21 @@ package dbmqapi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/domain/topic"
 	"github.com/donutnomad/dbmq/internal/interfaces"
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/samber/lo"
 )
 
@@ -20,15 +28,23 @@ type MetricsConfig struct {
 // MetricsClient 监控指标客户端，提供兼容Kafka UI的统计接口
 // 模仿Kafka的监控指标设计模式
 type MetricsClient struct {
-	db  repo.DB
-	dao *repo.MqRepo
+	db            interfaces.DB
+	topicRepo     topic.Repo
+	messageRepo   message.Repo
+	heartbeatRepo heartbeat.Repo
+	groupRepo     consumergroup.Repo
+	progressRepo  consumerprogress.Repo
 }
 
 // NewMetricsClient 创建新的监控指标客户端实例
-func NewMetricsClient(db repo.DB) (*MetricsClient, error) {
+func NewMetricsClient(db interfaces.DB) (*MetricsClient, error) {
 	return &MetricsClient{
-		db:  db,
-		dao: repo.NewMqRepo(db),
+		db:            db,
+		topicRepo:     topicrepo.New(db),
+		messageRepo:   messagerepo.New(db),
+		heartbeatRepo: heartbeatrepo.New(db),
+		groupRepo:     consumergrouprepo.New(db),
+		progressRepo:  consumerprogressrepo.New(db),
 	}, nil
 }
 
@@ -79,11 +95,11 @@ type ConsumerGroupMetrics struct {
 
 // ConsumerMemberMetrics 消费者成员信息
 type ConsumerMemberMetrics struct {
-	ConsumerID    string             `json:"consumerId"`    // 消费者ID
-	ClientID      string             `json:"clientId"`      // 客户端ID
-	Host          string             `json:"host"`          // 主机地址
-	LastHeartbeat time.Time          `json:"lastHeartbeat"` // 最后心跳
-	Assignment    []db.PartitionInfo `json:"assignment"`    // 分区分配
+	ConsumerID    string                `json:"consumerId"`    // 消费者ID
+	ClientID      string                `json:"clientId"`      // 客户端ID
+	Host          string                `json:"host"`          // 主机地址
+	LastHeartbeat time.Time             `json:"lastHeartbeat"` // 最后心跳
+	Assignment    []types.PartitionInfo `json:"assignment"`    // 分区分配
 }
 
 // PartitionLagMetrics 分区延迟信息
@@ -126,7 +142,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 	}
 
 	// 获取Topic总数和分区总数
-	var topics []db.Topic
+	var topics []topicrepo.TopicPO
 	err := mc.db.WithContext(ctx).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topics: %w", err)
@@ -139,14 +155,14 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 
 	// 获取消息总数
 	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&db.Message{}).Count(&messageCount).Error
+	err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).Count(&messageCount).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get message count: %w", err)
 	}
 	metrics.MessageCount = messageCount
 
 	// 获取活跃消费组数量
-	activeGroups, err := mc.dao.FindAllActiveGroups(ctx, 30*time.Second)
+	activeGroups, err := mc.groupRepo.FindAllActiveGroups(ctx, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active groups: %w", err)
 	}
@@ -155,7 +171,7 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 	// 获取活跃消费者数量
 	var activeConsumers int64
 	cutoff := time.Now().Add(-30 * time.Second)
-	err = mc.db.WithContext(ctx).Model(&db.ConsumerHeartbeat{}).
+	err = mc.db.WithContext(ctx).Model(&heartbeatrepo.HeartbeatPO{}).
 		Where("last_heartbeat > ?", cutoff).
 		Count(&activeConsumers).Error
 	if err != nil {
@@ -170,42 +186,41 @@ func (mc *MetricsClient) GetClusterMetrics(ctx context.Context) (*ClusterMetrics
 // 兼容Kafka UI的Topic详情页面
 func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) (*TopicMetrics, error) {
 	// 获取Topic基本信息
-	var topic db.Topic
-	err := mc.db.WithContext(ctx).Where("topic_name = ?", topicName).First(&topic).Error
+	topicEntity, err := mc.topicRepo.Get(ctx, topicName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topic %s: %w", topicName, err)
 	}
+	if topicEntity == nil {
+		return nil, fmt.Errorf("topic %s not found", topicName)
+	}
 
 	metrics := &TopicMetrics{
-		TopicName:      topic.TopicName,
-		PartitionCount: int(topic.PartitionCount),
-		CreatedAt:      topic.CreatedAt,
+		TopicName:      topicEntity.Name,
+		PartitionCount: int(topicEntity.PartitionCount),
+		CreatedAt:      topicEntity.CreatedAt,
 		Config:         make(map[string]string),
 	}
 
 	// 解析Topic配置
-	var config map[string]any
-	if err := json.Unmarshal(topic.Configs, &config); err == nil {
-		for k, v := range config {
-			metrics.Config[k] = fmt.Sprintf("%v", v)
-		}
+	for k, v := range topicEntity.Configs {
+		metrics.Config[k] = fmt.Sprintf("%v", v)
 	}
 
 	// 获取分区详细信息
-	partitions := make([]PartitionMetrics, topic.PartitionCount)
+	partitions := make([]PartitionMetrics, topicEntity.PartitionCount)
 	var totalMessages int64
 	var totalSize int64
 
-	for i := uint(0); i < topic.PartitionCount; i++ {
+	for i := uint(0); i < topicEntity.PartitionCount; i++ {
 		// 获取分区最新偏移量
-		latestOffset, err := mc.dao.GetTopicLatestIDByPartition(ctx, topicName, i)
+		latestOffset, err := mc.messageRepo.GetLatestID(ctx, topicName, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get latest offset for partition %d: %w", i, err)
 		}
 
 		// 获取分区消息数量
 		var messageCount int64
-		err = mc.db.WithContext(ctx).Model(&db.Message{}).
+		err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
 			Where("topic = ? AND `partition` = ?", topicName, i).
 			Count(&messageCount).Error
 		if err != nil {
@@ -214,7 +229,7 @@ func (mc *MetricsClient) GetTopicMetrics(ctx context.Context, topicName string) 
 
 		// 获取分区存储大小（估算）
 		var sizeBytes int64
-		err = mc.db.WithContext(ctx).Model(&db.Message{}).
+		err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
 			Select("COALESCE(SUM(LENGTH(body)), 0)").
 			Where("topic = ? AND `partition` = ?", topicName, i).
 			Scan(&sizeBytes).Error
@@ -255,7 +270,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取消费组代际信息
-	generation, err := mc.dao.GetConsumerGroupGeneration(ctx, groupID)
+	generation, err := mc.groupRepo.GetGeneration(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get consumer group generation: %w", err)
 	}
@@ -264,18 +279,23 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 	}
 
 	// 获取活跃消费者
-	consumers, err := repo.NewMqRepo(mc.db).FindAllConsumers(ctx, groupID, 30*time.Second)
+	consumers, err := mc.heartbeatRepo.FindAll(ctx, groupID, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	var onlineCount = 0
 	for _, item := range consumers {
+		// 转换 heartbeatrepo.PartitionInfo 到 types.PartitionInfo
+		assignment := make([]types.PartitionInfo, len(item.AssignedPartitions))
+		for i, p := range item.AssignedPartitions {
+			assignment[i] = types.PartitionInfo{Topic: p.Topic, Partition: p.Partition}
+		}
 		member := ConsumerMemberMetrics{
 			ConsumerID:    item.ConsumerID,
 			ClientID:      item.ConsumerID, // DBMQ中ConsumerID就是ClientID
 			Host:          "localhost",     // DBMQ单实例
 			LastHeartbeat: item.LastHeartbeat,
-			Assignment:    item.AssignedPartitions,
+			Assignment:    assignment,
 		}
 		metrics.Members = append(metrics.Members, member)
 		if item.Offline {
@@ -290,31 +310,31 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 		metrics.State = "Active"
 	}
 
-	var slices []db.ConsumerGroupConsumptionProgress
-	mc.db.Model(&db.ConsumerGroupConsumptionProgress{}).Where("group_id = ?", groupID).Find(&slices)
+	var slices []consumerprogressrepo.ProgressPO
+	mc.db.Model(&consumerprogressrepo.ProgressPO{}).Where("group_id = ?", groupID).Find(&slices)
 
-	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item db.ConsumerGroupConsumptionProgress, index int) string {
+	metrics.AssignedTopics = lo.Uniq(lo.Map(slices, func(item consumerprogressrepo.ProgressPO, index int) string {
 		return item.Topic
 	}))
 
 	// 计算消费延迟
 	var totalLag int64
 	for _, topic := range metrics.AssignedTopics {
-		topicInfo, err := repo.NewMqRepo(mc.db).GetTopic(ctx, topic)
+		topicInfo, err := mc.topicRepo.Get(ctx, topic)
 		if err != nil || topicInfo == nil {
 			continue
 		}
 
 		for i := uint(0); i < topicInfo.PartitionCount; i++ {
-			partition := db.PartitionInfo{Topic: topic, Partition: i}
+			partition := types.PartitionInfo{Topic: topic, Partition: i}
 
 			// 获取已提交ID
-			committedIDs, err := mc.dao.GetCommittedOffsets(ctx, groupID, []db.PartitionInfo{partition})
+			committedIDs, err := mc.progressRepo.GetCommittedOffsets(ctx, groupID, []types.PartitionInfo{partition})
 			if err != nil {
 				continue
 			}
 			// 获取该Topic+分区的最新的消息ID
-			latestID, err := mc.dao.GetTopicLatestIDByPartition(ctx, topic, i)
+			latestID, err := mc.messageRepo.GetLatestID(ctx, topic, i)
 			if err != nil {
 				continue
 			}
@@ -326,7 +346,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				updateAt = committedIDs[0].UpdatedAt.UnixMilli()
 			}
 
-			var offsetRecord db.ConsumerGroupConsumptionProgress
+			var offsetRecord consumerprogressrepo.ProgressPO
 			err = mc.db.WithContext(ctx).
 				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topic, i).
 				First(&offsetRecord).
@@ -336,21 +356,21 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 			}
 			watermark := offsetRecord.SubscriptionStartWatermark
 			var lag int64
-			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("id > ?", currentID).Count(&lag).Error
 			if err != nil {
 				continue
 			}
 			var totalMessageCount int64
-			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Count(&totalMessageCount).Error
 			if err != nil {
 				continue
 			}
 			var consumedMessages int64
-			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("id >= ? AND id < ?", watermark, currentID).
 				Count(&consumedMessages).Error
@@ -358,7 +378,7 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 				continue
 			}
 			var remainingMessages int64
-			err = mc.db.Model(&db.Message{}).Where("topic = ?", topic).
+			err = mc.db.Model(&messagerepo.MessagePO{}).Where("topic = ?", topic).
 				Where("`partition` = ?", i).
 				Where("(id > ?)", currentID).
 				Count(&remainingMessages).Error
@@ -403,7 +423,7 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 	}
 
 	// 获取Topic和分区数量
-	var topics []db.Topic
+	var topics []topicrepo.TopicPO
 	err := mc.db.WithContext(ctx).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get topics: %w", err)
@@ -416,7 +436,7 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 
 	// 获取消息总数
 	var messageCount int64
-	err = mc.db.WithContext(ctx).Model(&db.Message{}).Count(&messageCount).Error
+	err = mc.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).Count(&messageCount).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get message count: %w", err)
 	}
@@ -429,17 +449,17 @@ func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*BrokerMetrics, 
 // 兼容Kafka UI的Topic列表页面
 func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error) {
 	// 获取所有Topic
-	topics, err := mc.dao.GetAllTopics(ctx)
+	topics, err := mc.topicRepo.GetAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all topics: %w", err)
 	}
 
 	var metricsSlice []TopicMetrics
 	for _, topic := range topics {
-		topicMetrics, err := mc.GetTopicMetrics(ctx, topic.TopicName)
+		topicMetrics, err := mc.GetTopicMetrics(ctx, topic.Name)
 		if err != nil {
 			// 记录错误但继续处理其他Topic
-			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", topic.TopicName, err)
+			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", topic.Name, err)
 			continue
 		}
 		metricsSlice = append(metricsSlice, *topicMetrics)
@@ -452,7 +472,7 @@ func (mc *MetricsClient) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetric
 // 兼容Kafka UI的消费组列表页面
 func (mc *MetricsClient) GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error) {
 	// 获取所有消费组（包括活跃和非活跃的）
-	allGroups, err := mc.dao.FindAllGroups(ctx)
+	allGroups, err := mc.groupRepo.FindAllGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all groups: %w", err)
 	}

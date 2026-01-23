@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/internal/repo"
-	"gorm.io/gorm"
 	"time"
+
+	"github.com/donutnomad/dbmq/internal/db/migration"
+	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
+	"gorm.io/gorm"
 )
 
 // AdminClient 管理客户端，用于Topic和分区的管理操作
@@ -24,7 +28,7 @@ func NewAdminClient(db repo.DB) *AdminClient {
 }
 
 func (ac *AdminClient) InitDB() error {
-	return db.ApplySchemas(ac.db)
+	return migration.ApplySchemas(ac.db)
 }
 
 func (ac *AdminClient) CreateTopicIfNotExist(ctx context.Context, req NewTopicRequest) error {
@@ -82,7 +86,7 @@ func (ac *AdminClient) CreateTopics(ctx context.Context, requests []NewTopicRequ
 // ListTopics 列出所有Topic
 func (ac *AdminClient) ListTopics(ctx context.Context) ([]string, error) {
 	var topicNames []string
-	err := ac.db.WithContext(ctx).Model(&db.Topic{}).Select("topic_name").Scan(&topicNames).Error
+	err := ac.db.WithContext(ctx).Model(&topicrepo.TopicPO{}).Select("topic_name").Scan(&topicNames).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list topics: %w", err)
 	}
@@ -96,7 +100,7 @@ func (ac *AdminClient) DescribeTopics(ctx context.Context, topicNames []string) 
 		return make(map[string]*TopicDescription), nil
 	}
 
-	var topics []db.Topic
+	var topics []topicrepo.TopicPO
 	err := ac.db.WithContext(ctx).Where("topic_name IN ?", topicNames).Find(&topics).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe topics: %w", err)
@@ -141,17 +145,17 @@ func (ac *AdminClient) DeleteTopics(ctx context.Context, topicNames []string) er
 		// 删除Topic相关的所有数据
 		for _, topicName := range topicNames {
 			// 1. 删除消息
-			if err := tx.Where("topic = ?", topicName).Delete(&db.Message{}).Error; err != nil {
+			if err := tx.Where("topic = ?", topicName).Delete(&messagerepo.MessagePO{}).Error; err != nil {
 				return fmt.Errorf("failed to delete messages for topic %s: %w", topicName, err)
 			}
 
 			// 2. 删除消费组偏移量
-			if err := tx.Where("topic = ?", topicName).Delete(&db.ConsumerGroupConsumptionProgress{}).Error; err != nil {
+			if err := tx.Where("topic = ?", topicName).Delete(&consumerprogressrepo.ProgressPO{}).Error; err != nil {
 				return fmt.Errorf("failed to delete offsets for topic %s: %w", topicName, err)
 			}
 
 			// 3. 删除Topic本身
-			result := tx.Where("topic_name = ?", topicName).Delete(&db.Topic{})
+			result := tx.Where("topic_name = ?", topicName).Delete(&topicrepo.TopicPO{})
 			if result.Error != nil {
 				return fmt.Errorf("failed to delete topic %s: %w", topicName, result.Error)
 			}
@@ -188,7 +192,7 @@ func (ac *AdminClient) validateTopicRequest(req NewTopicRequest) error {
 
 	// 检查Topic是否已存在
 	var count int64
-	err := ac.db.Model(&db.Topic{}).Where("topic_name = ?", req.Name).Count(&count).Error
+	err := ac.db.Model(&topicrepo.TopicPO{}).Where("topic_name = ?", req.Name).Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("failed to check topic existence: %w", err)
 	}
@@ -201,7 +205,7 @@ func (ac *AdminClient) validateTopicRequest(req NewTopicRequest) error {
 
 // createTopicInDB 在数据库中创建Topic
 func (ac *AdminClient) createTopicInDB(ctx context.Context, req NewTopicRequest) error {
-	topic := &db.Topic{
+	topic := &topicrepo.TopicPO{
 		TopicName:      req.Name,
 		PartitionCount: uint(req.NumPartitions),
 		Configs:        []byte("{}"),

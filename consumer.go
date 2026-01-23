@@ -6,7 +6,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/redis/go-redis/v9"
 )
@@ -27,11 +32,13 @@ type Consumer struct {
 // ConsumerOption 定义 Consumer 的可选配置函数
 type ConsumerOption func(*ConsumerActor)
 
-// WithConsumerRepo 设置自定义的数据访问层实现
+// WithConsumerRepos 设置自定义的数据访问层实现
 // 主要用于单元测试时注入 mock 实现
-func WithConsumerRepo(repo ConsumerRepo) ConsumerOption {
+func WithConsumerRepos(heartbeatRepo heartbeat.Repo, progressRepo consumerprogress.Repo, messageRepo message.Repo) ConsumerOption {
 	return func(a *ConsumerActor) {
-		a.repo = repo
+		a.heartbeatRepo = heartbeatRepo
+		a.progressRepo = progressRepo
+		a.messageRepo = messageRepo
 	}
 }
 
@@ -64,7 +71,11 @@ func NewConsumer(config ConsumerConfig, opts ...ConsumerOption) (*Consumer, erro
 
 	// 默认设置
 	if config.DB != nil {
-		actorOpts = append(actorOpts, WithRepo(repo.NewMqRepo(config.DB)))
+		actorOpts = append(actorOpts,
+			WithHeartbeatRepo(heartbeatrepo.New(config.DB)),
+			WithProgressRepo(consumerprogressrepo.New(config.DB)),
+			WithMessageRepo(messagerepo.New(config.DB)),
+		)
 	}
 	if config.NotificationEnabled && config.Redis != nil {
 		actorOpts = append(actorOpts, WithNotifier(NewRedisNotifier(config.Redis)))

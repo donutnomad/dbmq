@@ -7,189 +7,251 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// ========== Mock ConsumerRepo Implementation ==========
+// ========== Mock Heartbeat Repo Implementation ==========
 
-// heartbeatCall records a call to UpsertConsumerHeartbeat
-type heartbeatCall struct {
+// mockHeartbeatRepo implements heartbeat.Repo for testing
+type mockHeartbeatRepo struct {
+	mu sync.Mutex
+
+	// Call records
+	upsertCalls      []heartbeatUpsertCall
+	getCalls         []heartbeatGetCall
+	markOfflineCalls []markOfflineCall
+
+	// Return value controls
+	upsertErr      error
+	heartbeat      *heartbeat.Heartbeat
+	getErr         error
+	markOfflineErr error
+}
+
+type heartbeatUpsertCall struct {
 	groupID    string
 	consumerID string
 	topics     []string
 }
 
-// getHeartbeatCall records a call to GetConsumerHeartbeat
-type getHeartbeatCall struct {
+type heartbeatGetCall struct {
 	groupID    string
 	consumerID string
 }
 
-// markOfflineCall records a call to MarkConsumerOffline
 type markOfflineCall struct {
 	groupID    string
 	consumerID string
 }
 
-// getCommittedOffsetsCall records a call to GetCommittedOffsets
-type getCommittedOffsetsCall struct {
-	groupID    string
-	partitions []db.PartitionInfo
+func newMockHeartbeatRepo() *mockHeartbeatRepo {
+	return &mockHeartbeatRepo{}
 }
 
-// batchCommitCall records a call to BatchCommitLastConsumeMessageID
-type batchCommitCall struct {
-	groupID      string
-	generationID uint
-	consumedIds  map[db.PartitionInfo]int64
-}
-
-// fetchMessagesCall records a call to FetchMessagesBatch
-type fetchMessagesCall struct {
-	requests []repo.PartitionRequest
-}
-
-// mockConsumerRepo is a mock implementation of ConsumerRepo for testing
-type mockConsumerRepo struct {
-	mu sync.Mutex
-
-	// Call records
-	heartbeatCalls           []heartbeatCall
-	getHeartbeatCalls        []getHeartbeatCall
-	markOfflineCalls         []markOfflineCall
-	getCommittedOffsetsCalls []getCommittedOffsetsCall
-	batchCommitCalls         []batchCommitCall
-	fetchMessagesCalls       []fetchMessagesCall
-
-	// Return value controls
-	upsertHeartbeatErr error
-	heartbeat          *db.ConsumerHeartbeat
-	getHeartbeatErr    error
-	markOfflineErr     error
-
-	committedOffsets    db.ConsumerGroupConsumptionProgressSlice
-	getCommittedErr     error
-	batchCommitErr      error
-	batchCommitWaterErr error
-
-	latestIDs        map[db.PartitionInfo]int64
-	latestIDsErr     error
-	fetchedMessages  []db.Message
-	fetchMessagesErr error
-}
-
-func newMockConsumerRepo() *mockConsumerRepo {
-	return &mockConsumerRepo{
-		latestIDs: make(map[db.PartitionInfo]int64),
-	}
-}
-
-func (m *mockConsumerRepo) UpsertConsumerHeartbeat(ctx context.Context, groupID, consumerID string, subscribedTopics []string) error {
+func (m *mockHeartbeatRepo) Get(ctx context.Context, groupID, consumerID string) (*heartbeat.Heartbeat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.heartbeatCalls = append(m.heartbeatCalls, heartbeatCall{
-		groupID:    groupID,
-		consumerID: consumerID,
-		topics:     subscribedTopics,
-	})
-	return m.upsertHeartbeatErr
+	m.getCalls = append(m.getCalls, heartbeatGetCall{groupID: groupID, consumerID: consumerID})
+	return m.heartbeat, m.getErr
 }
 
-func (m *mockConsumerRepo) GetConsumerHeartbeat(ctx context.Context, groupID, consumerID string) (*db.ConsumerHeartbeat, error) {
+func (m *mockHeartbeatRepo) Upsert(ctx context.Context, groupID, consumerID string, subscribedTopics []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.getHeartbeatCalls = append(m.getHeartbeatCalls, getHeartbeatCall{
-		groupID:    groupID,
-		consumerID: consumerID,
-	})
-	return m.heartbeat, m.getHeartbeatErr
+	m.upsertCalls = append(m.upsertCalls, heartbeatUpsertCall{groupID: groupID, consumerID: consumerID, topics: subscribedTopics})
+	return m.upsertErr
 }
 
-func (m *mockConsumerRepo) MarkConsumerOffline(ctx context.Context, groupID, consumerID string) error {
+func (m *mockHeartbeatRepo) MarkOffline(ctx context.Context, groupID, consumerID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.markOfflineCalls = append(m.markOfflineCalls, markOfflineCall{
-		groupID:    groupID,
-		consumerID: consumerID,
-	})
+	m.markOfflineCalls = append(m.markOfflineCalls, markOfflineCall{groupID: groupID, consumerID: consumerID})
 	return m.markOfflineErr
 }
 
-func (m *mockConsumerRepo) GetCommittedOffsets(ctx context.Context, groupID string, partitions []db.PartitionInfo) (db.ConsumerGroupConsumptionProgressSlice, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.getCommittedOffsetsCalls = append(m.getCommittedOffsetsCalls, getCommittedOffsetsCall{
-		groupID:    groupID,
-		partitions: partitions,
-	})
-	return m.committedOffsets, m.getCommittedErr
+func (m *mockHeartbeatRepo) Delete(ctx context.Context, groupID, consumerID string) error {
+	return nil
 }
 
-func (m *mockConsumerRepo) BatchCommitOffsetsWithInitialWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[db.PartitionInfo]repo.ConsumptionProgressWithWatermark) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.batchCommitWaterErr
+func (m *mockHeartbeatRepo) FindActive(ctx context.Context, groupID string, timeout time.Duration) ([]*heartbeat.Heartbeat, error) {
+	return nil, nil
 }
 
-func (m *mockConsumerRepo) BatchCommitLastConsumeMessageID(ctx context.Context, groupID string, generationID uint, consumedIds map[db.PartitionInfo]int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.batchCommitCalls = append(m.batchCommitCalls, batchCommitCall{
-		groupID:      groupID,
-		generationID: generationID,
-		consumedIds:  consumedIds,
-	})
-	return m.batchCommitErr
+func (m *mockHeartbeatRepo) FindAll(ctx context.Context, groupID string, timeout time.Duration) ([]*heartbeat.Heartbeat, error) {
+	return nil, nil
 }
 
-func (m *mockConsumerRepo) GetTopicsLatestIDsByPartitions(ctx context.Context, topicPartitions []db.PartitionInfo) (map[db.PartitionInfo]int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.latestIDs, m.latestIDsErr
-}
-
-func (m *mockConsumerRepo) FetchMessagesBatch(ctx context.Context, requests []repo.PartitionRequest) ([]db.Message, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.fetchMessagesCalls = append(m.fetchMessagesCalls, fetchMessagesCall{
-		requests: requests,
-	})
-	return m.fetchedMessages, m.fetchMessagesErr
-}
-
-// Helper methods for testing
-func (m *mockConsumerRepo) getHeartbeatCallCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.heartbeatCalls)
-}
-
-func (m *mockConsumerRepo) getMarkOfflineCallCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.markOfflineCalls)
-}
-
-func (m *mockConsumerRepo) setHeartbeat(hb *db.ConsumerHeartbeat) {
+func (m *mockHeartbeatRepo) setHeartbeat(hb *heartbeat.Heartbeat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.heartbeat = hb
 }
 
-// Compile-time check that mockConsumerRepo implements ConsumerRepo
-var _ ConsumerRepo = (*mockConsumerRepo)(nil)
+func (m *mockHeartbeatRepo) getMarkOfflineCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.markOfflineCalls)
+}
+
+// ========== Mock Progress Repo Implementation ==========
+
+// mockProgressRepo implements consumerprogress.Repo for testing
+type mockProgressRepo struct {
+	mu sync.Mutex
+
+	// Call records
+	getCommittedOffsetsCalls []getCommittedOffsetsCall
+	batchCommitCalls         []batchCommitCall
+
+	// Return value controls
+	committedOffsets    []*consumerprogress.Progress
+	getCommittedErr     error
+	batchCommitErr      error
+	batchCommitWaterErr error
+}
+
+type getCommittedOffsetsCall struct {
+	groupID    string
+	partitions []types.PartitionInfo
+}
+
+type batchCommitCall struct {
+	groupID      string
+	generationID uint
+	consumedIds  map[types.PartitionInfo]int64
+}
+
+func newMockProgressRepo() *mockProgressRepo {
+	return &mockProgressRepo{}
+}
+
+func (m *mockProgressRepo) GetCommittedOffsets(ctx context.Context, groupID string, partitions []types.PartitionInfo) ([]*consumerprogress.Progress, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getCommittedOffsetsCalls = append(m.getCommittedOffsetsCalls, getCommittedOffsetsCall{groupID: groupID, partitions: partitions})
+	return m.committedOffsets, m.getCommittedErr
+}
+
+func (m *mockProgressRepo) CommitOffset(ctx context.Context, groupID string, generationID uint, partition types.PartitionInfo, lastConsumedMessageID int64) error {
+	return nil
+}
+
+func (m *mockProgressRepo) BatchCommitOffsets(ctx context.Context, groupID string, generationID uint, consumedIDs map[types.PartitionInfo]int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.batchCommitCalls = append(m.batchCommitCalls, batchCommitCall{groupID: groupID, generationID: generationID, consumedIds: consumedIDs})
+	return m.batchCommitErr
+}
+
+func (m *mockProgressRepo) BatchCommitOffsetsWithWatermark(ctx context.Context, groupID string, generationID uint, progressWithWatermarks map[types.PartitionInfo]consumerprogress.ProgressWithWatermark) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.batchCommitWaterErr
+}
+
+func (m *mockProgressRepo) CommitWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, partition types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error {
+	return nil
+}
+
+func (m *mockProgressRepo) GetLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error) {
+	return nil, nil
+}
+
+// ========== Mock Message Repo Implementation ==========
+
+// mockMessageRepo implements message.Repo for testing
+type mockMessageRepo struct {
+	mu sync.Mutex
+
+	// Call records
+	fetchBatchCalls []fetchBatchCall
+
+	// Return value controls
+	latestIDs        map[types.PartitionInfo]int64
+	latestIDsErr     error
+	fetchedMessages  []*message.Message
+	fetchMessagesErr error
+}
+
+type fetchBatchCall struct {
+	requests []message.FetchRequest
+}
+
+func newMockMessageRepo() *mockMessageRepo {
+	return &mockMessageRepo{
+		latestIDs: make(map[types.PartitionInfo]int64),
+	}
+}
+
+func (m *mockMessageRepo) CreateBatch(ctx context.Context, messages []*message.Message) error {
+	return nil
+}
+
+func (m *mockMessageRepo) Fetch(ctx context.Context, topic string, partition uint, afterID int64, limit int) ([]*message.Message, error) {
+	return nil, nil
+}
+
+func (m *mockMessageRepo) FetchBatch(ctx context.Context, requests []message.FetchRequest) ([]*message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fetchBatchCalls = append(m.fetchBatchCalls, fetchBatchCall{requests: requests})
+	return m.fetchedMessages, m.fetchMessagesErr
+}
+
+func (m *mockMessageRepo) GetLatestID(ctx context.Context, topic string, partition uint) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockMessageRepo) GetLatestIDs(ctx context.Context, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.latestIDs, m.latestIDsErr
+}
+
+func (m *mockMessageRepo) DeleteConsumed(ctx context.Context, topic string, partition uint, maxID int64, retentionDate time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockMessageRepo) DeleteExpired(ctx context.Context, topic string, partition uint, retentionDate time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
+// ========== Combined Mock for backward compatibility ==========
+
+type mockConsumerRepos struct {
+	heartbeat *mockHeartbeatRepo
+	progress  *mockProgressRepo
+	message   *mockMessageRepo
+}
+
+func newMockConsumerRepos() *mockConsumerRepos {
+	return &mockConsumerRepos{
+		heartbeat: newMockHeartbeatRepo(),
+		progress:  newMockProgressRepo(),
+		message:   newMockMessageRepo(),
+	}
+}
+
+// Compile-time check that mocks implement interfaces
+var (
+	_ heartbeat.Repo        = (*mockHeartbeatRepo)(nil)
+	_ consumerprogress.Repo = (*mockProgressRepo)(nil)
+	_ message.Repo          = (*mockMessageRepo)(nil)
+)
 
 // ========== Test Cases ==========
 
 func TestConsumerActor_NewConsumerActor(t *testing.T) {
 	t.Run("creates actor with default values", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
 
 		require.NotNil(t, actor)
 		assert.NotEmpty(t, actor.ID())
@@ -200,11 +262,11 @@ func TestConsumerActor_NewConsumerActor(t *testing.T) {
 	t.Run("creates actor with custom clock and notifier", func(t *testing.T) {
 		fakeClock := NewFakeClock(time.Now())
 		fakeNotifier := NewFakeNotifier()
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock), WithNotifier(fakeNotifier))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithNotifier(fakeNotifier))
 
 		require.NotNil(t, actor)
 		// Check internal state directly since State() requires actor to be started
@@ -212,23 +274,23 @@ func TestConsumerActor_NewConsumerActor(t *testing.T) {
 	})
 
 	t.Run("sets default auto commit interval when enabled", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:          "test-group",
 			EnableAutoCommit: true,
-		}, WithRepo(mockRepo))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
 
 		require.NotNil(t, actor)
 		assert.Equal(t, 5*time.Second, actor.config.AutoCommitInterval)
 	})
 
 	t.Run("preserves custom auto commit interval", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:            "test-group",
 			EnableAutoCommit:   true,
 			AutoCommitInterval: 10 * time.Second,
-		}, WithRepo(mockRepo))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
 
 		require.NotNil(t, actor)
 		assert.Equal(t, 10*time.Second, actor.config.AutoCommitInterval)
@@ -237,12 +299,12 @@ func TestConsumerActor_NewConsumerActor(t *testing.T) {
 
 func TestConsumerActor_Start_Stop(t *testing.T) {
 	t.Run("start and stop without subscription", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		assert.Equal(t, StateUninitialized, actor.State())
@@ -252,12 +314,12 @@ func TestConsumerActor_Start_Stop(t *testing.T) {
 	})
 
 	t.Run("stop is idempotent", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 
@@ -270,16 +332,16 @@ func TestConsumerActor_Start_Stop(t *testing.T) {
 
 func TestConsumerActor_SubscribeTopics(t *testing.T) {
 	t.Run("subscribing transitions state to Joining", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		// Setup mock to return nil heartbeat initially
-		mockRepo.heartbeat = nil
+		mocks.heartbeat.heartbeat = nil
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -293,13 +355,13 @@ func TestConsumerActor_SubscribeTopics(t *testing.T) {
 	})
 
 	t.Run("subscribing multiple times does not change state", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -315,12 +377,12 @@ func TestConsumerActor_SubscribeTopics(t *testing.T) {
 
 func TestConsumerActor_State(t *testing.T) {
 	t.Run("returns current state", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -332,12 +394,12 @@ func TestConsumerActor_State(t *testing.T) {
 	})
 
 	t.Run("returns Stopped after stop", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		actor.Stop()
@@ -349,18 +411,18 @@ func TestConsumerActor_State(t *testing.T) {
 
 func TestConsumerActor_Heartbeat_StateTransition(t *testing.T) {
 	t.Run("heartbeat triggers state transition to Ready", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 		fakeNotifier := NewFakeNotifier()
 
 		// Setup mock to return heartbeat with assignment
-		mockRepo.heartbeat = &db.ConsumerHeartbeat{
+		mocks.heartbeat.heartbeat = &heartbeat.Heartbeat{
 			GenerationID: 1,
-			AssignedPartitions: []db.PartitionInfo{
+			AssignedPartitions: []types.PartitionInfo{
 				{Topic: "test-topic", Partition: 0},
 			},
 		}
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
 			{
 				Topic:                 "test-topic",
 				Partition:             0,
@@ -371,7 +433,7 @@ func TestConsumerActor_Heartbeat_StateTransition(t *testing.T) {
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock), WithNotifier(fakeNotifier))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithNotifier(fakeNotifier))
 
 		actor.Start()
 		defer actor.Stop()
@@ -398,16 +460,16 @@ func TestConsumerActor_Heartbeat_StateTransition(t *testing.T) {
 	})
 
 	t.Run("heartbeat error does not crash actor", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		// Setup mock to return error on heartbeat
-		mockRepo.upsertHeartbeatErr = errors.New("database connection lost")
+		mocks.heartbeat.upsertErr = errors.New("database connection lost")
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -425,12 +487,12 @@ func TestConsumerActor_Heartbeat_StateTransition(t *testing.T) {
 
 func TestConsumerActor_Poll_NotReady(t *testing.T) {
 	t.Run("Poll returns error when state is Uninitialized", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -447,13 +509,13 @@ func TestConsumerActor_Poll_NotReady(t *testing.T) {
 	})
 
 	t.Run("Poll returns error when state is Joining", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -473,13 +535,13 @@ func TestConsumerActor_Poll_NotReady(t *testing.T) {
 	})
 
 	t.Run("Poll returns error when state is Rebalancing", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -499,12 +561,12 @@ func TestConsumerActor_Poll_NotReady(t *testing.T) {
 	})
 
 	t.Run("Poll returns error when context is cancelled", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -521,7 +583,7 @@ func TestConsumerActor_Poll_NotReady(t *testing.T) {
 
 func TestConsumerActor_Poll_Ready(t *testing.T) {
 	t.Run("Poll returns empty when no messages", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 		fakeNotifier := NewFakeNotifier()
 		fakeNotifier.SetHealthy(false) // Disable notifier to avoid blocking
@@ -529,7 +591,7 @@ func TestConsumerActor_Poll_Ready(t *testing.T) {
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 10 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock), WithNotifier(fakeNotifier))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithNotifier(fakeNotifier))
 
 		actor.Start()
 		defer actor.Stop()
@@ -537,13 +599,13 @@ func TestConsumerActor_Poll_Ready(t *testing.T) {
 		// Manually set up Ready state with assignment
 		actor.stateMachine.forceSetState(StateReady)
 
-		actor.assignment = []db.PartitionInfo{
+		actor.assignment = []types.PartitionInfo{
 			{Topic: "test-topic", Partition: 0},
 		}
 		actor.generationID = 1
 
 		// Setup mock to return empty messages
-		mockRepo.fetchedMessages = []db.Message{}
+		mocks.message.fetchedMessages = []*message.Message{}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
@@ -562,39 +624,39 @@ func TestConsumerActor_Poll_Ready(t *testing.T) {
 
 func TestConsumerActor_Close(t *testing.T) {
 	t.Run("close transitions through Stopping to Stopped", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 
 		actor.Close()
 
 		assert.Equal(t, StateStopped, actor.State())
-		assert.Equal(t, 1, mockRepo.getMarkOfflineCallCount())
+		assert.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
 	})
 
 	t.Run("close with auto commit performs final commit", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{}
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{}
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:            "test-group",
 			EnableAutoCommit:   true,
 			AutoCommitInterval: 10 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 
 		// Manually set up Ready state with some offsets to commit
 		actor.stateMachine.forceSetState(StateReady)
 
-		actor.offsetsToCommit = map[db.PartitionInfo]int64{
+		actor.offsetsToCommit = map[types.PartitionInfo]int64{
 			{Topic: "test-topic", Partition: 0}: 100,
 		}
 		actor.generationID = 1
@@ -602,20 +664,20 @@ func TestConsumerActor_Close(t *testing.T) {
 		actor.Close()
 
 		// Check that commit was called
-		mockRepo.mu.Lock()
-		commitCalls := len(mockRepo.batchCommitCalls)
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Lock()
+		commitCalls := len(mocks.progress.batchCommitCalls)
+		mocks.progress.mu.Unlock()
 
 		assert.GreaterOrEqual(t, commitCalls, 1, "should have called commit at least once")
 	})
 
 	t.Run("close is idempotent", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 
@@ -643,17 +705,17 @@ func TestConsumerActor_Close(t *testing.T) {
 		// Use internal state machine since State() would return StateStopped via stopCh select
 		assert.Equal(t, StateStopped, actor.stateMachine.Get())
 		// MarkConsumerOffline should only be called once
-		assert.Equal(t, 1, mockRepo.getMarkOfflineCallCount())
+		assert.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
 	})
 
 	t.Run("close from Joining state", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 10 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 
@@ -668,12 +730,12 @@ func TestConsumerActor_Close(t *testing.T) {
 
 func TestConsumerActor_Acknowledge(t *testing.T) {
 	t.Run("acknowledge updates offsets to commit", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -690,17 +752,17 @@ func TestConsumerActor_Acknowledge(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Verify offsets are tracked (max per partition)
-		assert.Equal(t, int64(20), actor.offsetsToCommit[db.PartitionInfo{Topic: "test-topic", Partition: 0}])
-		assert.Equal(t, int64(5), actor.offsetsToCommit[db.PartitionInfo{Topic: "test-topic", Partition: 1}])
+		assert.Equal(t, int64(20), actor.offsetsToCommit[types.PartitionInfo{Topic: "test-topic", Partition: 0}])
+		assert.Equal(t, int64(5), actor.offsetsToCommit[types.PartitionInfo{Topic: "test-topic", Partition: 1}])
 	})
 
 	t.Run("acknowledge with empty messages does nothing", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -715,18 +777,18 @@ func TestConsumerActor_Acknowledge(t *testing.T) {
 
 func TestConsumerActor_CommitSync(t *testing.T) {
 	t.Run("commit sync commits pending offsets", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
 
 		// Setup offsets to commit
-		actor.offsetsToCommit = map[db.PartitionInfo]int64{
+		actor.offsetsToCommit = map[types.PartitionInfo]int64{
 			{Topic: "test-topic", Partition: 0}: 100,
 		}
 		actor.generationID = 1
@@ -735,20 +797,20 @@ func TestConsumerActor_CommitSync(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify commit was called
-		mockRepo.mu.Lock()
-		require.Len(t, mockRepo.batchCommitCalls, 1)
-		assert.Equal(t, "test-group", mockRepo.batchCommitCalls[0].groupID)
-		assert.Equal(t, uint(1), mockRepo.batchCommitCalls[0].generationID)
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Lock()
+		require.Len(t, mocks.progress.batchCommitCalls, 1)
+		assert.Equal(t, "test-group", mocks.progress.batchCommitCalls[0].groupID)
+		assert.Equal(t, uint(1), mocks.progress.batchCommitCalls[0].generationID)
+		mocks.progress.mu.Unlock()
 	})
 
 	t.Run("commit sync with no pending offsets succeeds", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -757,24 +819,24 @@ func TestConsumerActor_CommitSync(t *testing.T) {
 		require.NoError(t, err)
 
 		// No commit should be called
-		mockRepo.mu.Lock()
-		assert.Empty(t, mockRepo.batchCommitCalls)
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Lock()
+		assert.Empty(t, mocks.progress.batchCommitCalls)
+		mocks.progress.mu.Unlock()
 	})
 
 	t.Run("commit sync returns error on failure", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
-		mockRepo.batchCommitErr = errors.New("commit failed")
+		mocks := newMockConsumerRepos()
+		mocks.progress.batchCommitErr = errors.New("commit failed")
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
 
-		actor.offsetsToCommit = map[db.PartitionInfo]int64{
+		actor.offsetsToCommit = map[types.PartitionInfo]int64{
 			{Topic: "test-topic", Partition: 0}: 100,
 		}
 
@@ -786,12 +848,12 @@ func TestConsumerActor_CommitSync(t *testing.T) {
 
 func TestConsumerActor_IsReady(t *testing.T) {
 	t.Run("returns false when not in Ready state", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -800,12 +862,12 @@ func TestConsumerActor_IsReady(t *testing.T) {
 	})
 
 	t.Run("returns false when Ready but no partitions assigned", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -817,12 +879,12 @@ func TestConsumerActor_IsReady(t *testing.T) {
 	})
 
 	t.Run("returns true when Ready with partitions assigned", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -830,7 +892,7 @@ func TestConsumerActor_IsReady(t *testing.T) {
 		// Manually set state to Ready with assignments
 		actor.stateMachine.forceSetState(StateReady)
 
-		actor.assignment = []db.PartitionInfo{
+		actor.assignment = []types.PartitionInfo{
 			{Topic: "test-topic", Partition: 0},
 			{Topic: "test-topic", Partition: 1},
 		}
@@ -841,25 +903,25 @@ func TestConsumerActor_IsReady(t *testing.T) {
 
 func TestConsumerActor_Rebalance(t *testing.T) {
 	t.Run("rebalance updates generation and assignment", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 		fakeNotifier := NewFakeNotifier()
 
 		// Setup mock for rebalance - start with generation 1
-		mockRepo.heartbeat = &db.ConsumerHeartbeat{
+		mocks.heartbeat.heartbeat = &heartbeat.Heartbeat{
 			GenerationID: 1,
-			AssignedPartitions: []db.PartitionInfo{
+			AssignedPartitions: []types.PartitionInfo{
 				{Topic: "test-topic", Partition: 0},
 			},
 		}
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 100},
 		}
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock), WithNotifier(fakeNotifier))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithNotifier(fakeNotifier))
 
 		actor.Start()
 		defer actor.Stop()
@@ -874,14 +936,14 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 		assert.Equal(t, StateReady, state)
 
 		// Now update mock to return generation 2
-		mockRepo.setHeartbeat(&db.ConsumerHeartbeat{
+		mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
 			GenerationID: 2,
-			AssignedPartitions: []db.PartitionInfo{
+			AssignedPartitions: []types.PartitionInfo{
 				{Topic: "test-topic", Partition: 0},
 				{Topic: "test-topic", Partition: 1},
 			},
 		})
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 100},
 			{Topic: "test-topic", Partition: 1, LastConsumedMessageID: 200},
 		}
@@ -900,24 +962,24 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 	})
 
 	t.Run("rebalance failure restores state and allows retry", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		// Setup mock - 第一次心跳成功，获得分配
-		mockRepo.heartbeat = &db.ConsumerHeartbeat{
+		mocks.heartbeat.heartbeat = &heartbeat.Heartbeat{
 			GenerationID: 1,
-			AssignedPartitions: []db.PartitionInfo{
+			AssignedPartitions: []types.PartitionInfo{
 				{Topic: "test-topic", Partition: 0},
 			},
 		}
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 100},
 		}
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 1 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -931,16 +993,16 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 		require.Equal(t, uint(1), actor.generationID)
 
 		// 设置 generation 2，但让 GetCommittedOffsets 失败
-		mockRepo.setHeartbeat(&db.ConsumerHeartbeat{
+		mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
 			GenerationID: 2,
-			AssignedPartitions: []db.PartitionInfo{
+			AssignedPartitions: []types.PartitionInfo{
 				{Topic: "test-topic", Partition: 0},
 				{Topic: "test-topic", Partition: 1},
 			},
 		})
-		mockRepo.mu.Lock()
-		mockRepo.getCommittedErr = errors.New("database connection lost")
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Lock()
+		mocks.progress.getCommittedErr = errors.New("database connection lost")
+		mocks.progress.mu.Unlock()
 
 		// 触发心跳，重平衡应该失败
 		fakeClock.Advance(2 * time.Second)
@@ -952,13 +1014,13 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 		assert.Equal(t, uint(1), actor.generationID, "generation 应该保持不变")
 
 		// 现在修复错误，让重平衡成功
-		mockRepo.mu.Lock()
-		mockRepo.getCommittedErr = nil
-		mockRepo.committedOffsets = db.ConsumerGroupConsumptionProgressSlice{
+		mocks.progress.mu.Lock()
+		mocks.progress.getCommittedErr = nil
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 100},
 			{Topic: "test-topic", Partition: 1, LastConsumedMessageID: 200},
 		}
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Unlock()
 
 		// 再次触发心跳，这次重平衡应该成功
 		fakeClock.Advance(2 * time.Second)
@@ -973,13 +1035,13 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 
 func TestConsumerActor_ConcurrentAccess(t *testing.T) {
 	t.Run("concurrent state reads are safe", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID:           "test-group",
 			HeartbeatInterval: 10 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -1002,12 +1064,12 @@ func TestConsumerActor_ConcurrentAccess(t *testing.T) {
 	})
 
 	t.Run("concurrent acknowledge calls are safe", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -1032,15 +1094,15 @@ func TestConsumerActor_ConcurrentAccess(t *testing.T) {
 
 func TestConsumerActor_ID(t *testing.T) {
 	t.Run("returns unique ID", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 
 		actor1 := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
 
 		actor2 := NewConsumerActor(ConsumerConfig{
 			GroupID: "test-group",
-		}, WithRepo(mockRepo))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
 
 		assert.NotEmpty(t, actor1.ID())
 		assert.NotEmpty(t, actor2.ID())
@@ -1050,7 +1112,7 @@ func TestConsumerActor_ID(t *testing.T) {
 
 func TestConsumerActor_AutoCommitLoop(t *testing.T) {
 	t.Run("auto commit loop commits periodically", func(t *testing.T) {
-		mockRepo := newMockConsumerRepo()
+		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
 		actor := NewConsumerActor(ConsumerConfig{
@@ -1058,7 +1120,7 @@ func TestConsumerActor_AutoCommitLoop(t *testing.T) {
 			EnableAutoCommit:   true,
 			AutoCommitInterval: 1 * time.Second,
 			HeartbeatInterval:  10 * time.Second,
-		}, WithRepo(mockRepo), WithClock(fakeClock))
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
 
 		actor.Start()
 		defer actor.Stop()
@@ -1085,9 +1147,9 @@ func TestConsumerActor_AutoCommitLoop(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Verify commit was called
-		mockRepo.mu.Lock()
-		commitCount := len(mockRepo.batchCommitCalls)
-		mockRepo.mu.Unlock()
+		mocks.progress.mu.Lock()
+		commitCount := len(mocks.progress.batchCommitCalls)
+		mocks.progress.mu.Unlock()
 
 		assert.GreaterOrEqual(t, commitCount, 1)
 	})

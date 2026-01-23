@@ -3,14 +3,13 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"github.com/donutnomad/dbmq/internal/db/migration"
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm/logger"
 	"log"
 	"testing"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -55,7 +54,7 @@ func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 	// Apply schemas
 	err = DropAllTables(dbClient)
 	require.NoError(t, err, "Failed to drop old tables")
-	err = db.ApplySchemas(dbClient)
+	err = migration.ApplySchemas(dbClient)
 	require.NoError(t, err, "Failed to apply schemas to test database")
 
 	// Connect to Redis

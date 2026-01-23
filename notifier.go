@@ -7,14 +7,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
 )
 
 // NotifyMessage 表示从 Notifier 接收到的通知消息
 type NotifyMessage struct {
-	Partition db.PartitionInfo
+	Partition types.PartitionInfo
 }
 
 // NoopWaiter 空实现，仅基于超时等待
@@ -68,7 +68,7 @@ func NewRedisNotifier(client redis.UniversalClient) *RedisNotifier {
 }
 
 // Subscribe 订阅指定分区的通知
-func (n *RedisNotifier) Subscribe(partitions []db.PartitionInfo) error {
+func (n *RedisNotifier) Subscribe(partitions []types.PartitionInfo) error {
 	if len(partitions) == 0 {
 		return nil
 	}
@@ -104,7 +104,7 @@ func (n *RedisNotifier) Subscribe(partitions []db.PartitionInfo) error {
 }
 
 // Unsubscribe 取消订阅指定分区的通知
-func (n *RedisNotifier) Unsubscribe(partitions []db.PartitionInfo) error {
+func (n *RedisNotifier) Unsubscribe(partitions []types.PartitionInfo) error {
 	if len(partitions) == 0 {
 		return nil
 	}
@@ -236,14 +236,14 @@ func (n *RedisNotifier) forwardMessages() {
 }
 
 // partitionToChannels 将分区列表转换为 Redis channel 名称列表
-func partitionToChannels(partitions []db.PartitionInfo) []string {
-	return lo.Map(partitions, func(p db.PartitionInfo, _ int) string {
+func partitionToChannels(partitions []types.PartitionInfo) []string {
+	return lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
 		return fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition)
 	})
 }
 
 // channelToPartition 将 Redis channel 名称解析为分区信息
-func channelToPartition(channel string) (db.PartitionInfo, error) {
+func channelToPartition(channel string) (types.PartitionInfo, error) {
 	var topic string
 	var partition uint
 	_, err := fmt.Sscanf(channel, "mq_notify:%s:%d", &topic, &partition)
@@ -251,7 +251,7 @@ func channelToPartition(channel string) (db.PartitionInfo, error) {
 		// 尝试更宽松的解析方式
 		n, err := fmt.Sscanf(channel, "mq_notify:%255s", &topic)
 		if err != nil || n == 0 {
-			return db.PartitionInfo{}, fmt.Errorf("invalid channel format: %s", channel)
+			return types.PartitionInfo{}, fmt.Errorf("invalid channel format: %s", channel)
 		}
 		// 查找最后一个冒号来分离 topic 和 partition
 		for i := len(channel) - 1; i >= 0; i-- {
@@ -259,13 +259,13 @@ func channelToPartition(channel string) (db.PartitionInfo, error) {
 				topic = channel[len("mq_notify:"):i]
 				_, err = fmt.Sscanf(channel[i+1:], "%d", &partition)
 				if err != nil {
-					return db.PartitionInfo{}, fmt.Errorf("invalid partition in channel: %s", channel)
+					return types.PartitionInfo{}, fmt.Errorf("invalid partition in channel: %s", channel)
 				}
 				break
 			}
 		}
 	}
-	return db.PartitionInfo{Topic: topic, Partition: partition}, nil
+	return types.PartitionInfo{Topic: topic, Partition: partition}, nil
 }
 
 // FakeNotifier 用于测试的 Notifier 实现
@@ -275,9 +275,9 @@ type FakeNotifier struct {
 	waitCh       chan struct{} // 用于 Wait() 的 channel
 	healthy      atomic.Bool
 	closed       atomic.Bool
-	subscribed   map[string]struct{}  // 已订阅的 channel 集合
-	subscribes   [][]db.PartitionInfo // 记录所有订阅调用
-	unsubscribes [][]db.PartitionInfo // 记录所有取消订阅调用
+	subscribed   map[string]struct{}     // 已订阅的 channel 集合
+	subscribes   [][]types.PartitionInfo // 记录所有订阅调用
+	unsubscribes [][]types.PartitionInfo // 记录所有取消订阅调用
 }
 
 // NewFakeNotifier 创建一个新的 FakeNotifier
@@ -292,7 +292,7 @@ func NewFakeNotifier() *FakeNotifier {
 }
 
 // Subscribe 记录订阅请求
-func (n *FakeNotifier) Subscribe(partitions []db.PartitionInfo) error {
+func (n *FakeNotifier) Subscribe(partitions []types.PartitionInfo) error {
 	if len(partitions) == 0 {
 		return nil
 	}
@@ -315,7 +315,7 @@ func (n *FakeNotifier) Subscribe(partitions []db.PartitionInfo) error {
 }
 
 // Unsubscribe 记录取消订阅请求
-func (n *FakeNotifier) Unsubscribe(partitions []db.PartitionInfo) error {
+func (n *FakeNotifier) Unsubscribe(partitions []types.PartitionInfo) error {
 	if len(partitions) == 0 {
 		return nil
 	}
@@ -386,7 +386,7 @@ func (n *FakeNotifier) Wait(ctx context.Context, timeout time.Duration) <-chan s
 }
 
 // Notify 手动触发通知（用于测试）
-func (n *FakeNotifier) Notify(partition db.PartitionInfo) bool {
+func (n *FakeNotifier) Notify(partition types.PartitionInfo) bool {
 	if n.closed.Load() {
 		return false
 	}
@@ -413,11 +413,11 @@ func (n *FakeNotifier) SetHealthy(healthy bool) {
 }
 
 // GetSubscribed 返回当前已订阅的分区列表（用于测试验证）
-func (n *FakeNotifier) GetSubscribed() []db.PartitionInfo {
+func (n *FakeNotifier) GetSubscribed() []types.PartitionInfo {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	var result []db.PartitionInfo
+	var result []types.PartitionInfo
 	for key := range n.subscribed {
 		var topic string
 		var partition uint
@@ -430,20 +430,20 @@ func (n *FakeNotifier) GetSubscribed() []db.PartitionInfo {
 				break
 			}
 		}
-		result = append(result, db.PartitionInfo{Topic: topic, Partition: partition})
+		result = append(result, types.PartitionInfo{Topic: topic, Partition: partition})
 	}
 	return result
 }
 
 // GetSubscribeCalls 返回所有订阅调用记录（用于测试验证）
-func (n *FakeNotifier) GetSubscribeCalls() [][]db.PartitionInfo {
+func (n *FakeNotifier) GetSubscribeCalls() [][]types.PartitionInfo {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.subscribes
 }
 
 // GetUnsubscribeCalls 返回所有取消订阅调用记录（用于测试验证）
-func (n *FakeNotifier) GetUnsubscribeCalls() [][]db.PartitionInfo {
+func (n *FakeNotifier) GetUnsubscribeCalls() [][]types.PartitionInfo {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.unsubscribes

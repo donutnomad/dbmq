@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +13,7 @@ func TestNotifier_FakeNotifier_Subscribe(t *testing.T) {
 	n := NewFakeNotifier()
 	defer n.Close()
 
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic1", Partition: 0},
 		{Topic: "topic1", Partition: 1},
 		{Topic: "topic2", Partition: 0},
@@ -37,7 +37,7 @@ func TestNotifier_FakeNotifier_Unsubscribe(t *testing.T) {
 	n := NewFakeNotifier()
 	defer n.Close()
 
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic1", Partition: 0},
 		{Topic: "topic1", Partition: 1},
 	}
@@ -47,7 +47,7 @@ func TestNotifier_FakeNotifier_Unsubscribe(t *testing.T) {
 	require.NoError(t, err)
 
 	// 取消订阅部分分区
-	unsubPartitions := []db.PartitionInfo{
+	unsubPartitions := []types.PartitionInfo{
 		{Topic: "topic1", Partition: 0},
 	}
 	err = n.Unsubscribe(unsubPartitions)
@@ -61,14 +61,14 @@ func TestNotifier_FakeNotifier_Unsubscribe(t *testing.T) {
 	// 验证剩余订阅
 	subscribed := n.GetSubscribed()
 	assert.Len(t, subscribed, 1)
-	assert.Equal(t, db.PartitionInfo{Topic: "topic1", Partition: 1}, subscribed[0])
+	assert.Equal(t, types.PartitionInfo{Topic: "topic1", Partition: 1}, subscribed[0])
 }
 
 func TestNotifier_FakeNotifier_Notify(t *testing.T) {
 	n := NewFakeNotifier()
 	defer n.Close()
 
-	partition := db.PartitionInfo{Topic: "test-topic", Partition: 0}
+	partition := types.PartitionInfo{Topic: "test-topic", Partition: 0}
 
 	// 发送通知
 	ok := n.Notify(partition)
@@ -87,7 +87,7 @@ func TestNotifier_FakeNotifier_NotifyMultiple(t *testing.T) {
 	n := NewFakeNotifier()
 	defer n.Close()
 
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic1", Partition: 0},
 		{Topic: "topic1", Partition: 1},
 		{Topic: "topic2", Partition: 0},
@@ -100,7 +100,7 @@ func TestNotifier_FakeNotifier_NotifyMultiple(t *testing.T) {
 	}
 
 	// 接收所有通知
-	received := make([]db.PartitionInfo, 0, len(partitions))
+	received := make([]types.PartitionInfo, 0, len(partitions))
 	for range len(partitions) {
 		select {
 		case msg := <-n.NotifyCh():
@@ -143,11 +143,11 @@ func TestNotifier_FakeNotifier_Close(t *testing.T) {
 	assert.False(t, n.IsHealthy())
 
 	// 订阅应该失败
-	err = n.Subscribe([]db.PartitionInfo{{Topic: "test", Partition: 0}})
+	err = n.Subscribe([]types.PartitionInfo{{Topic: "test", Partition: 0}})
 	assert.Error(t, err)
 
 	// 通知应该失败
-	ok := n.Notify(db.PartitionInfo{Topic: "test", Partition: 0})
+	ok := n.Notify(types.PartitionInfo{Topic: "test", Partition: 0})
 	assert.False(t, ok)
 
 	// 重复关闭应该没问题
@@ -160,7 +160,7 @@ func TestNotifier_FakeNotifier_Reset(t *testing.T) {
 	defer n.Close()
 
 	// 执行一些操作
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic1", Partition: 0},
 	}
 	_ = n.Subscribe(partitions)
@@ -185,7 +185,7 @@ func TestNotifier_FakeNotifier_EmptyPartitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, n.GetSubscribeCalls())
 
-	err = n.Subscribe([]db.PartitionInfo{})
+	err = n.Subscribe([]types.PartitionInfo{})
 	require.NoError(t, err)
 	assert.Empty(t, n.GetSubscribeCalls())
 
@@ -194,7 +194,7 @@ func TestNotifier_FakeNotifier_EmptyPartitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, n.GetUnsubscribeCalls())
 
-	err = n.Unsubscribe([]db.PartitionInfo{})
+	err = n.Unsubscribe([]types.PartitionInfo{})
 	require.NoError(t, err)
 	assert.Empty(t, n.GetUnsubscribeCalls())
 }
@@ -202,26 +202,26 @@ func TestNotifier_FakeNotifier_EmptyPartitions(t *testing.T) {
 func TestNotifier_ChannelConversion(t *testing.T) {
 	testCases := []struct {
 		name      string
-		partition db.PartitionInfo
+		partition types.PartitionInfo
 	}{
 		{
 			name:      "simple topic",
-			partition: db.PartitionInfo{Topic: "test-topic", Partition: 0},
+			partition: types.PartitionInfo{Topic: "test-topic", Partition: 0},
 		},
 		{
 			name:      "topic with numbers",
-			partition: db.PartitionInfo{Topic: "topic123", Partition: 5},
+			partition: types.PartitionInfo{Topic: "topic123", Partition: 5},
 		},
 		{
 			name:      "topic with underscores",
-			partition: db.PartitionInfo{Topic: "my_topic_name", Partition: 10},
+			partition: types.PartitionInfo{Topic: "my_topic_name", Partition: 10},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// 转换为 channel 名称
-			channels := partitionToChannels([]db.PartitionInfo{tc.partition})
+			channels := partitionToChannels([]types.PartitionInfo{tc.partition})
 			require.Len(t, channels, 1)
 
 			// 验证 channel 名称格式

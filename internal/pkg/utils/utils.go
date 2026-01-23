@@ -3,7 +3,9 @@ package utils
 import (
 	"sort"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/types"
 )
 
 type Ordered interface {
@@ -15,7 +17,15 @@ type Ordered interface {
 
 // SortConsumersByID 按消费者ID升序排序消费者列表
 // 确保分配的确定性和一致性
-func SortConsumersByID(consumers []db.ConsumerHeartbeat) {
+func SortConsumersByID(consumers []heartbeatrepo.HeartbeatPO) {
+	sort.Slice(consumers, func(i, j int) bool {
+		return consumers[i].ConsumerID < consumers[j].ConsumerID
+	})
+}
+
+// SortHeartbeatsByID 按消费者ID升序排序心跳列表（domain 实体版本）
+// 确保分配的确定性和一致性
+func SortHeartbeatsByID(consumers []*heartbeat.Heartbeat) {
 	sort.Slice(consumers, func(i, j int) bool {
 		return consumers[i].ConsumerID < consumers[j].ConsumerID
 	})
@@ -23,7 +33,7 @@ func SortConsumersByID(consumers []db.ConsumerHeartbeat) {
 
 // SortPartitionsByTopicAndPartition 按主题名称和分区号排序分区列表
 // 先按主题排序，再按分区号排序，确保分配的逻辑顺序
-func SortPartitionsByTopicAndPartition(partitions []db.PartitionInfo) {
+func SortPartitionsByTopicAndPartition(partitions []types.PartitionInfo) {
 	sort.Slice(partitions, func(i, j int) bool {
 		if partitions[i].Topic != partitions[j].Topic {
 			return partitions[i].Topic < partitions[j].Topic

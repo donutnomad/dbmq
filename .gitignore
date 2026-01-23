@@ -2,3 +2,5 @@ demo
 main
 *.out
 .gocache
+docs/plans
+.claude/settings.local.json

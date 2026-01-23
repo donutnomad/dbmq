@@ -1,10 +1,7 @@
 package topic
 
 import (
-	"encoding/json"
 	"time"
-
-	"github.com/donutnomad/dbmq/internal/db"
 )
 
 // Topic 领域实体
@@ -28,28 +25,4 @@ func (t *Topic) GetConfig(key string) (float64, bool) {
 		return num, true
 	}
 	return 0, false
-}
-
-// FromDB 从数据库模型转换
-func FromDB(topic *db.Topic) *Topic {
-	if topic == nil {
-		return nil
-	}
-	var configs map[string]any
-	_ = json.Unmarshal(topic.Configs, &configs)
-	return &Topic{
-		Name:           topic.TopicName,
-		PartitionCount: topic.PartitionCount,
-		Configs:        configs,
-		CreatedAt:      topic.CreatedAt,
-	}
-}
-
-// FromDBSlice 从数据库模型切片转换
-func FromDBSlice(topics []db.Topic) []*Topic {
-	result := make([]*Topic, len(topics))
-	for i := range topics {
-		result[i] = FromDB(&topics[i])
-	}
-	return result
 }

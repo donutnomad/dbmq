@@ -4,8 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/message"
 	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
@@ -153,8 +155,8 @@ type ConsumerMessage struct {
 	Timestamp time.Time         // 消息时间戳
 }
 
-func (c ConsumerMessage) PartitionInfo() db.PartitionInfo {
-	return db.PartitionInfo{
+func (c ConsumerMessage) PartitionInfo() types.PartitionInfo {
+	return types.PartitionInfo{
 		Topic:     c.Topic,
 		Partition: c.Partition,
 	}
@@ -266,8 +268,8 @@ func (messages ConsumerMessages) StartBatchConsumerSpan(parentCtx context.Contex
 	return ctx, span
 }
 
-func (*ConsumerMessages) FromMessages(messages []db.Message) ConsumerMessages {
-	return lo.Map(messages, func(m db.Message, index int) ConsumerMessage {
+func (*ConsumerMessages) FromMessages(messages []messagerepo.MessagePO) ConsumerMessages {
+	return lo.Map(messages, func(m messagerepo.MessagePO, index int) ConsumerMessage {
 		return ConsumerMessage{
 			Topic:     m.Topic,
 			Partition: m.Partition,
@@ -275,6 +277,20 @@ func (*ConsumerMessages) FromMessages(messages []db.Message) ConsumerMessages {
 			Value:     m.Body,
 			Timestamp: m.CreatedAt,
 			Headers:   m.Headers.Data(),
+			Key:       m.MessageKey,
+		}
+	})
+}
+
+func (*ConsumerMessages) FromDomainMessages(messages []*message.Message) ConsumerMessages {
+	return lo.Map(messages, func(m *message.Message, index int) ConsumerMessage {
+		return ConsumerMessage{
+			Topic:     m.Topic,
+			Partition: m.Partition,
+			ID:        m.ID,
+			Value:     m.Body,
+			Timestamp: m.CreatedAt,
+			Headers:   m.Headers,
 			Key:       m.MessageKey,
 		}
 	})

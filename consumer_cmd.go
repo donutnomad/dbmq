@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/types"
 )
 
 // Command 表示发送给 Consumer Actor 的命令
@@ -52,10 +52,10 @@ func NewPollCmd(ctx context.Context, timeout time.Duration) PollCmd {
 type RebalanceCmd struct {
 	BaseCmd[error]
 	NewGeneration uint
-	NewPartitions []db.PartitionInfo
+	NewPartitions []types.PartitionInfo
 }
 
-func NewRebalanceCmd(ctx context.Context, newGeneration uint, newPartitions []db.PartitionInfo) RebalanceCmd {
+func NewRebalanceCmd(ctx context.Context, newGeneration uint, newPartitions []types.PartitionInfo) RebalanceCmd {
 	return RebalanceCmd{
 		BaseCmd:       NewBaseCmd[error](ctx),
 		NewGeneration: newGeneration,
@@ -72,7 +72,7 @@ func NewCloseCmd() CloseCmd {
 type GetStateResult struct {
 	State        ConsumerState
 	GenerationID uint
-	Assignment   []db.PartitionInfo
+	Assignment   []types.PartitionInfo
 }
 type GetStateCmd struct{ BaseCmd[GetStateResult] }
 
@@ -100,10 +100,10 @@ func NewCommitCmd(ctx context.Context) CommitCmd {
 
 type UpdateOffsetsCmd struct {
 	BaseCmd[struct{}]
-	Offsets map[db.PartitionInfo]int64
+	Offsets map[types.PartitionInfo]int64
 }
 
-func NewUpdateOffsetsCmd(offsets map[db.PartitionInfo]int64) UpdateOffsetsCmd {
+func NewUpdateOffsetsCmd(offsets map[types.PartitionInfo]int64) UpdateOffsetsCmd {
 	return UpdateOffsetsCmd{BaseCmd: NewBaseCmd[struct{}](context.Background()), Offsets: offsets}
 }
 

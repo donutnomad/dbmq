@@ -3,7 +3,7 @@ package message
 import (
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/types"
 	"gorm.io/datatypes"
 )
 
@@ -19,36 +19,11 @@ type Message struct {
 }
 
 // PartitionInfo 返回分区信息
-func (m *Message) PartitionInfo() db.PartitionInfo {
-	return db.PartitionInfo{
+func (m *Message) PartitionInfo() types.PartitionInfo {
+	return types.PartitionInfo{
 		Topic:     m.Topic,
 		Partition: m.Partition,
 	}
-}
-
-// FromDB 从数据库模型转换
-func FromDB(msg *db.Message) *Message {
-	if msg == nil {
-		return nil
-	}
-	return &Message{
-		ID:         msg.ID,
-		Topic:      msg.Topic,
-		Partition:  msg.Partition,
-		MessageKey: msg.MessageKey,
-		Headers:    msg.Headers.Data(),
-		Body:       msg.Body,
-		CreatedAt:  msg.CreatedAt,
-	}
-}
-
-// FromDBSlice 从数据库模型切片转换
-func FromDBSlice(msgs []db.Message) []*Message {
-	result := make([]*Message, len(msgs))
-	for i := range msgs {
-		result[i] = FromDB(&msgs[i])
-	}
-	return result
 }
 
 // FetchRequest 表示单个分区的获取请求

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
 
 	"gorm.io/gorm"
 )
@@ -75,7 +75,7 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 		limit = 50
 	}
 
-	var messages []db.Message
+	var messages []messagerepo.MessagePO
 	query := a.deps.DB.WithContext(ctx).Where("topic = ?", topicName)
 
 	if req.Partition != nil {
@@ -98,7 +98,7 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 	}
 
 	var total int64
-	query.Model(&db.Message{}).Count(&total)
+	query.Model(&messagerepo.MessagePO{}).Count(&total)
 
 	err := query.Order("created_at DESC").Offset(int(req.Offset)).Limit(limit).Find(&messages).Error
 	if err != nil {

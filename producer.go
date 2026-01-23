@@ -9,8 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/domain/topic"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/donutnomad/dbmq/logger"
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
@@ -19,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.28.0"
 	"go.opentelemetry.io/otel/trace"
+	"gorm.io/datatypes"
 )
 
 type contextKey string
@@ -74,11 +78,12 @@ type Producer struct {
 	redis              redis.UniversalClient // Redis连接（可选）
 	topicMetadataCache sync.Map              // Topic元数据缓存，带TTL自动失效
 	roundRobinCounters sync.Map              // 轮询分区计数器，map[string]*atomic.Uint32，用于线程安全的分区轮询
-	dao                *repo.MqRepo
+	topicRepo          topic.Repo            // Topic 仓储
+	messageRepo        message.Repo          // 消息仓储
 }
 
 type cachedTopicMetadata struct {
-	topic     *db.Topic
+	topic     *topic.Topic
 	expiresAt time.Time
 }
 
@@ -88,7 +93,8 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 		redis:              config.Redis,
 		topicMetadataCache: sync.Map{},
 		roundRobinCounters: sync.Map{},
-		dao:                repo.NewMqRepo(config.DB),
+		topicRepo:          topicrepo.New(config.DB),
+		messageRepo:        messagerepo.New(config.DB),
 	}, nil
 }
 
@@ -137,7 +143,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		}
 	}
 
-	topicMetadataMap := make(map[string]*db.Topic)
+	topicMetadataMap := make(map[string]*topic.Topic)
 	for topicName := range lo.GroupBy(messages, func(item ProducerMessage) string {
 		return item.Topic
 	}) {
@@ -150,8 +156,8 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		topicMetadataMap[topicName] = topicMeta
 	}
 
-	var dbMessages []*db.Message
-	var notificationPartitions []db.PartitionInfo
+	var domainMessages []*message.Message
+	var notificationPartitions []types.PartitionInfo
 	var currentTime = time.Now()
 
 	// 创建 TraceContext propagator 用于注入追踪上下文
@@ -172,13 +178,20 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 		}
 		propagator.Inject(ctx, propagation.MapCarrier(msg.Headers))
 
-		dbMsg := db.NewMessage(msg.Topic, partition, msg.Key, msg.Headers, msg.Value, currentTime)
-		dbMessages = append(dbMessages, &dbMsg)
-		notificationPartitions = append(notificationPartitions, db.PartitionInfo{Topic: msg.Topic, Partition: partition})
+		domainMsg := &message.Message{
+			Topic:      msg.Topic,
+			Partition:  partition,
+			MessageKey: msg.Key,
+			Headers:    msg.Headers,
+			Body:       datatypes.JSON(msg.Value),
+			CreatedAt:  currentTime,
+		}
+		domainMessages = append(domainMessages, domainMsg)
+		notificationPartitions = append(notificationPartitions, types.PartitionInfo{Topic: msg.Topic, Partition: partition})
 	}
 
 	// 批量插入消息到数据库
-	if err := p.dao.CreateMessagesBatch(ctx, dbMessages); err != nil {
+	if err := p.messageRepo.CreateBatch(ctx, domainMessages); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to create messages batch in db: %w", err)
@@ -186,13 +199,13 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 
 	// 如果启用了日志记录，打印消息详情
 	if IsLogEnabled(ctx) {
-		for _, dbMsg := range dbMessages {
+		for _, domainMsg := range domainMessages {
 			p.logger().DebugContext(ctx, "producer.send",
-				"topic", dbMsg.Topic,
-				"partition", dbMsg.Partition,
-				"key", dbMsg.MessageKey,
-				"message_id", dbMsg.ID,
-				"headers", dbMsg.Headers.Data(),
+				"topic", domainMsg.Topic,
+				"partition", domainMsg.Partition,
+				"key", domainMsg.MessageKey,
+				"message_id", domainMsg.ID,
+				"headers", domainMsg.Headers,
 			)
 		}
 	}
@@ -201,17 +214,17 @@ func (p *Producer) SendBatch(ctx context.Context, messages ...ProducerMessage) (
 
 	span.SetStatus(codes.Ok, "")
 
-	return lo.Map(dbMessages, func(dbMsg *db.Message, index int) SendResult {
+	return lo.Map(domainMessages, func(domainMsg *message.Message, index int) SendResult {
 		return SendResult{
-			Topic:     dbMsg.Topic,
-			Partition: dbMsg.Partition,
-			Offset:    dbMsg.ID, // 使用数据库自动生成的ID作为offset
+			Topic:     domainMsg.Topic,
+			Partition: domainMsg.Partition,
+			Offset:    domainMsg.ID, // 使用数据库自动生成的ID作为offset
 		}
 	}), nil
 }
 
 // sendBatchNotifications 批量发送通知，去重相同的topic-partition组合
-func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []db.PartitionInfo) {
+func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []types.PartitionInfo) {
 	if p.redis == nil || !p.config.NotificationEnabled {
 		return
 	}
@@ -248,7 +261,7 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 
 // getTopicMetadata 获取Topic元数据，带内存缓存优化
 // 缓存可以显著减少数据库查询，提高性能
-func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.Topic, error) {
+func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*topic.Topic, error) {
 	// 首先检查缓存
 	if entry, ok := p.topicMetadataCache.Load(topicName); ok {
 		cached := entry.(*cachedTopicMetadata)
@@ -260,7 +273,7 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.
 	}
 
 	// 缓存未命中，从数据库查询
-	topics, err := p.dao.FindTopicsByNames(ctx, []string{topicName})
+	topics, err := p.topicRepo.FindByNames(ctx, []string{topicName})
 	if err != nil {
 		return nil, fmt.Errorf("failed to find topic '%s': %w", topicName, err)
 	}
@@ -269,12 +282,12 @@ func (p *Producer) getTopicMetadata(ctx context.Context, topicName string) (*db.
 	}
 
 	// 缓存查询结果并设置TTL
-	topic := &topics[0]
+	t := topics[0]
 	p.topicMetadataCache.Store(topicName, &cachedTopicMetadata{
-		topic:     topic,
+		topic:     t,
 		expiresAt: time.Now().Add(p.config.GetTopicMetadataTTL()),
 	})
-	return topic, nil
+	return t, nil
 }
 
 // nextRoundRobinPartition 使用轮询策略选择下一个分区

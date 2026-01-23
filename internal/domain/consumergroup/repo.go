@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/types"
 )
 
 // Repo 消费组仓储接口
@@ -14,7 +14,7 @@ type Repo interface {
 	// IncrementGenerationID 递增并获取代际 ID
 	IncrementGenerationID(ctx context.Context, groupID string) (uint, error)
 	// UpdateAssignments 更新分区分配
-	UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]db.PartitionInfo) error
+	UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error
 	// FindAllActiveGroups 查找活跃消费组
 	FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error)
 	// FindAllGroups 查找所有消费组

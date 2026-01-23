@@ -6,12 +6,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"gorm.io/datatypes"
 )
 
 func Test000(t *testing.T) {
-	dd := datatypes.NewJSONSlice([]db.PartitionInfo{
+	dd := datatypes.NewJSONSlice([]types.PartitionInfo{
 		//{
 		//	Topic:     "aaa",
 		//	Partition: 1,
@@ -25,7 +26,7 @@ func Test000(t *testing.T) {
 }
 
 func TestSortConsumersByID(t *testing.T) {
-	consumers := []db.ConsumerHeartbeat{
+	consumers := []heartbeatrepo.HeartbeatPO{
 		{ConsumerID: "consumer-c"},
 		{ConsumerID: "consumer-a"},
 		{ConsumerID: "consumer-b"},
@@ -33,7 +34,7 @@ func TestSortConsumersByID(t *testing.T) {
 
 	SortConsumersByID(consumers)
 
-	expected := []db.ConsumerHeartbeat{
+	expected := []heartbeatrepo.HeartbeatPO{
 		{ConsumerID: "consumer-a"},
 		{ConsumerID: "consumer-b"},
 		{ConsumerID: "consumer-c"},
@@ -45,7 +46,7 @@ func TestSortConsumersByID(t *testing.T) {
 }
 
 func TestSortPartitionsByTopicAndPartition(t *testing.T) {
-	partitions := []db.PartitionInfo{
+	partitions := []types.PartitionInfo{
 		{Topic: "topic-b", Partition: 1},
 		{Topic: "topic-a", Partition: 2},
 		{Topic: "topic-b", Partition: 0},
@@ -54,7 +55,7 @@ func TestSortPartitionsByTopicAndPartition(t *testing.T) {
 
 	SortPartitionsByTopicAndPartition(partitions)
 
-	expected := []db.PartitionInfo{
+	expected := []types.PartitionInfo{
 		{Topic: "topic-a", Partition: 1},
 		{Topic: "topic-a", Partition: 2},
 		{Topic: "topic-b", Partition: 0},
@@ -69,45 +70,45 @@ func TestSortPartitionsByTopicAndPartition(t *testing.T) {
 func TestFindRevokedPartitions(t *testing.T) {
 	tests := []struct {
 		name          string
-		oldPartitions []db.PartitionInfo
-		newPartitions []db.PartitionInfo
-		wantRevoked   []db.PartitionInfo
+		oldPartitions []types.PartitionInfo
+		newPartitions []types.PartitionInfo
+		wantRevoked   []types.PartitionInfo
 	}{
 		{
 			name:          "空旧分区",
 			oldPartitions: nil,
-			newPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}},
+			newPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}},
 			wantRevoked:   nil,
 		},
 		{
 			name:          "空新分区，全部撤销",
-			oldPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
+			oldPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
 			newPartitions: nil,
-			wantRevoked:   []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
+			wantRevoked:   []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
 		},
 		{
 			name:          "部分撤销",
-			oldPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}, {Topic: "t1", Partition: 2}},
-			newPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 1}},
-			wantRevoked:   []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 2}},
+			oldPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}, {Topic: "t1", Partition: 2}},
+			newPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 1}},
+			wantRevoked:   []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 2}},
 		},
 		{
 			name:          "无撤销",
-			oldPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}},
-			newPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
+			oldPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}},
+			newPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t1", Partition: 1}},
 			wantRevoked:   nil,
 		},
 		{
 			name:          "完全相同",
-			oldPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 1}},
-			newPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 1}},
+			oldPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 1}},
+			newPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 1}},
 			wantRevoked:   nil,
 		},
 		{
 			name:          "跨Topic撤销",
-			oldPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 0}},
-			newPartitions: []db.PartitionInfo{{Topic: "t1", Partition: 0}},
-			wantRevoked:   []db.PartitionInfo{{Topic: "t2", Partition: 0}},
+			oldPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}, {Topic: "t2", Partition: 0}},
+			newPartitions: []types.PartitionInfo{{Topic: "t1", Partition: 0}},
+			wantRevoked:   []types.PartitionInfo{{Topic: "t2", Partition: 0}},
 		},
 	}
 

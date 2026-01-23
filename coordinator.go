@@ -12,9 +12,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/manualassignment"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/domain/topic"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/pkg/utils"
-	"github.com/donutnomad/dbmq/internal/repo"
+	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
+	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/donutnomad/dbmq/logger"
 )
 
@@ -28,7 +40,7 @@ const (
 // CoordinatorConfig 协调器配置结构
 type CoordinatorConfig struct {
 	LockSuffix             string        // 锁后缀，用于区分不同应用的协调器（必填）
-	DB                     repo.DB       // 数据库连接
+	DB                     interfaces.DB // 数据库连接
 	HeartbeatTimeout       time.Duration // 消费者心跳超时时间，超过此时间认为消费者已死亡
 	RebalanceInterval      time.Duration // 重新均衡检查间隔
 	RebalanceTimeout       time.Duration // 重新均衡操作的上下文超时时间
@@ -41,7 +53,16 @@ type CoordinatorConfig struct {
 type Coordinator struct {
 	config   CoordinatorConfig // 协调器配置
 	lockName string            // 完整的锁名称（前缀+后缀）
-	dao      *repo.MqRepo
+
+	// 依赖（domain 层接口）
+	topicRepo            topic.Repo
+	messageRepo          message.Repo
+	heartbeatRepo        heartbeat.Repo
+	groupRepo            consumergroup.Repo
+	progressRepo         consumerprogress.Repo
+	manualAssignmentRepo manualassignment.Repo
+	db                   interfaces.DB
+
 	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
 
 	ctx     context.Context    // 根上下文，控制整个协调器生命周期
@@ -82,7 +103,7 @@ type groupSnapshot struct {
 func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	// 验证必填参数
 	if config.LockSuffix == "" {
-		//panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
+		panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
 	}
 
 	// 设置默认值
@@ -102,14 +123,20 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Coordinator{
-		config:           config,
-		lockName:         leaderLockPrefix + config.LockSuffix,
-		ctx:              ctx,
-		cancel:           cancel,
-		groupSnapshots:   make(map[string]*groupSnapshot),
-		rebalancingLocks: newGroupLocks(),
-		dao:              repo.NewMqRepo(config.DB),
-		logger:           logger.GetLogger().With("component", "coordinator", "lock_suffix", config.LockSuffix),
+		config:               config,
+		lockName:             leaderLockPrefix + config.LockSuffix,
+		ctx:                  ctx,
+		cancel:               cancel,
+		groupSnapshots:       make(map[string]*groupSnapshot),
+		rebalancingLocks:     newGroupLocks(),
+		topicRepo:            topicrepo.New(config.DB),
+		messageRepo:          messagerepo.New(config.DB),
+		heartbeatRepo:        heartbeatrepo.New(config.DB),
+		groupRepo:            consumergrouprepo.New(config.DB),
+		progressRepo:         consumerprogressrepo.New(config.DB),
+		manualAssignmentRepo: manualassignmentrepo.New(config.DB),
+		db:                   config.DB,
+		logger:               logger.GetLogger().With("component", "coordinator", "lock_suffix", config.LockSuffix),
 	}
 }
 
@@ -300,7 +327,7 @@ func (c *Coordinator) attemptToBecomeLeader() {
 		return
 	}
 
-	sqlDb, err := c.dao.DB().DB()
+	sqlDb, err := c.db.DB()
 	if err != nil {
 		c.logger.Error("Error getting database connection for leader election", "error", err)
 		return
@@ -408,21 +435,21 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 	startTime := time.Now()
 
 	// 1. 获取所有Topic以了解它们的保留策略
-	allTopics, err := c.dao.GetAllTopics(ctx)
+	allTopics, err := c.topicRepo.GetAll(ctx)
 	if err != nil {
 		c.logger.Error("Cleanup failed to get topics", "error", err)
 		return
 	}
 	topicConfigMap := make(map[string]time.Duration)
-	for _, topic := range allTopics {
-		retentionMs, _ := topic.GetConfig("retention_ms")
+	for _, t := range allTopics {
+		retentionMs, _ := t.GetConfig("retention_ms")
 		if retentionMs > 0 {
-			topicConfigMap[topic.TopicName] = time.Duration(retentionMs) * time.Millisecond
+			topicConfigMap[t.Name] = time.Duration(retentionMs) * time.Millisecond
 		}
 	}
 
 	// 2. Calculate global low watermark for all consumed partitions
-	watermarks, err := c.dao.GetConsumerGroupLowWatermarks(ctx)
+	watermarks, err := c.progressRepo.GetLowWatermarks(ctx)
 	if err != nil {
 		c.logger.Error("Cleanup failed to get low watermarks", "error", err)
 		return
@@ -432,15 +459,15 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 	var totalDeletedCount int64
 
 	// 3. Iterate through all partitions of all topics and apply deletion logic
-	for _, topic := range allTopics {
+	for _, t := range allTopics {
 		retentionAge := c.config.DefaultRetentionAge
-		if configuredAge, ok := topicConfigMap[topic.TopicName]; ok {
+		if configuredAge, ok := topicConfigMap[t.Name]; ok {
 			retentionAge = configuredAge
 		}
 		retentionDate := time.Now().Add(-retentionAge)
 
-		for i := uint(0); i < topic.PartitionCount; i++ {
-			p := db.PartitionInfo{Topic: topic.TopicName, Partition: i}
+		for i := uint(0); i < t.PartitionCount; i++ {
+			p := types.PartitionInfo{Topic: t.Name, Partition: i}
 			partitionTotalDeleted := int64(0)
 
 			// Loop to delete in batches until no more rows are affected
@@ -450,11 +477,11 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 
 				if lowWatermark, ok := watermarks[p]; ok {
 					// This partition is consumed, so use the low watermark
-					deletedCount, err = c.dao.DeleteMessagesByPartition(ctx, p.Topic, p.Partition, lowWatermark, retentionDate, cleanupBatchSize)
+					deletedCount, err = c.messageRepo.DeleteConsumed(ctx, p.Topic, p.Partition, lowWatermark, retentionDate, cleanupBatchSize)
 				} else {
 					// This partition is not in the watermark map, meaning no group has ever committed an offset for it.
 					// We can only clean it up based on time.
-					deletedCount, err = c.dao.DeleteMessagesByPartitionUnconsumed(ctx, p.Topic, p.Partition, retentionDate, cleanupBatchSize)
+					deletedCount, err = c.messageRepo.DeleteExpired(ctx, p.Topic, p.Partition, retentionDate, cleanupBatchSize)
 				}
 
 				if err != nil {
@@ -501,7 +528,7 @@ func (c *Coordinator) scanAndRebalanceAllGroups(parentCtx context.Context) {
 	defer cancel()
 
 	// 找到活跃的消费组IDs
-	activeGroupIds, err := c.dao.FindAllActiveGroups(ctx, c.config.HeartbeatTimeout)
+	activeGroupIds, err := c.groupRepo.FindAllActiveGroups(ctx, c.config.HeartbeatTimeout)
 	if err != nil {
 		c.logger.Error("[LEADER] Failed to scan for active groups", "error", err)
 		return
@@ -559,7 +586,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	// 查找该消费组中所有活跃的消费者。活跃性通过心跳超时判断：
 	// 如果消费者在HeartbeatTimeout时间内没有发送心跳，则认为已死亡。
 	// 这是重新均衡决策的基础数据。
-	activeConsumers, err := c.dao.FindActiveConsumers(ctx, groupID, c.config.HeartbeatTimeout)
+	activeConsumers, err := c.heartbeatRepo.FindActive(ctx, groupID, c.config.HeartbeatTimeout)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to find active consumers: %w", err)
 	}
@@ -587,14 +614,14 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	// - 新代际ID会使所有旧消费者的请求失效（代际不匹配）
 	// - 防止旧消费者继续处理消息，避免重复消费
 	// - 实现"围栏"效应，确保只有新分配的消费者能工作
-	newGenerationID, err := c.dao.IncrementAndGetGenerationID(ctx, groupID)
+	newGenerationID, err := c.groupRepo.IncrementGenerationID(ctx, groupID)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to increment generation id: %w", err)
 	}
 
 	// 特殊情况：如果没有活跃消费者，只需递增代际并结束
 	if len(activeConsumers) == 0 {
-		if err := c.dao.UpdateAssignments(ctx, groupID, newGenerationID, map[string][]db.PartitionInfo{}); err != nil {
+		if err := c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, map[string][]types.PartitionInfo{}); err != nil {
 			return fmt.Errorf("[LEADER] failed to clear assignments for empty group: %w", err)
 		}
 		c.updateGroupSnapshot(groupID, nil, "")
@@ -609,7 +636,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	}
 
 	// 查询手动分配配置
-	manualAssignments, err := c.dao.GetManualAssignments(ctx, groupID, consumerIDs)
+	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to get manual assignments: %w", err)
 	}
@@ -618,7 +645,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	newAssignments := c.calculateAssignments(activeConsumers, allPartitions, manualAssignments)
 
 	// 持久化到数据库中
-	err = c.dao.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
+	err = c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to update assignments: %w", err)
 	}
@@ -631,7 +658,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 
 // isRebalanceNeeded 检查是否需要对指定消费组进行重新均衡。
 // 除了成员集合外，还会比较每个成员的订阅主题和Topic/Partition元数据哈希。
-func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []db.ConsumerHeartbeat, partitionHash string) bool {
+func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string) bool {
 	c.mu.Lock()
 	snapshot := c.groupSnapshots[groupID]
 	c.mu.Unlock()
@@ -654,7 +681,7 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []db.ConsumerH
 	return snapshot.partitionHash != partitionHash
 }
 
-func (c *Coordinator) updateGroupSnapshot(groupID string, consumers []db.ConsumerHeartbeat, partitionHash string) {
+func (c *Coordinator) updateGroupSnapshot(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string) {
 	snapshot := &groupSnapshot{
 		memberTopics:  make(map[string]string, len(consumers)),
 		partitionHash: partitionHash,
@@ -712,42 +739,42 @@ func (c *Coordinator) getMemberIDs(groupID string) []string {
 // getAllPartitionsForConsumers 收集活跃消费者订阅的所有唯一主题，
 // 并返回这些主题的所有分区列表及一个Topic/Partition哈希。
 // 该哈希用于检测Topic扩容或缩容等元数据变化。
-func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []db.ConsumerHeartbeat) ([]db.PartitionInfo, string, error) {
+func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []*heartbeat.Heartbeat) ([]types.PartitionInfo, string, error) {
 	// 使用map去重，收集所有唯一的订阅主题
 	subscribedTopics := make(map[string]struct{})
 	for _, consumer := range consumers {
 		// 将该消费者的所有订阅主题加入到全局集合中
-		for _, topic := range consumer.SubscribedTopics {
-			subscribedTopics[topic] = struct{}{}
+		for _, topicName := range consumer.SubscribedTopics {
+			subscribedTopics[topicName] = struct{}{}
 		}
 	}
 
 	// 将主题集合转换为切片，便于数据库查询
 	topicNames := make([]string, 0, len(subscribedTopics))
-	for topic := range subscribedTopics {
-		topicNames = append(topicNames, topic)
+	for topicName := range subscribedTopics {
+		topicNames = append(topicNames, topicName)
 	}
 
 	// 从数据库查询主题的元数据信息
-	dbTopics, err := c.dao.FindTopicsByNames(ctx, topicNames)
+	dbTopics, err := c.topicRepo.FindByNames(ctx, topicNames)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to find topics by name: %w", err)
 	}
 
 	// 为每个主题生成所有分区的完整列表
-	var allPartitions []db.PartitionInfo
+	var allPartitions []types.PartitionInfo
 	sort.Slice(dbTopics, func(i, j int) bool {
-		return dbTopics[i].TopicName < dbTopics[j].TopicName
+		return dbTopics[i].Name < dbTopics[j].Name
 	})
 	var partitionHashBuilder strings.Builder
-	for _, topic := range dbTopics {
+	for _, t := range dbTopics {
 		if partitionHashBuilder.Len() > 0 {
 			partitionHashBuilder.WriteString("|")
 		}
-		fmt.Fprintf(&partitionHashBuilder, "%s:%d", topic.TopicName, topic.PartitionCount)
+		fmt.Fprintf(&partitionHashBuilder, "%s:%d", t.Name, t.PartitionCount)
 		// 根据主题的分区数量，生成从0到PartitionCount-1的所有分区
-		for i := uint(0); i < topic.PartitionCount; i++ {
-			allPartitions = append(allPartitions, db.PartitionInfo{Topic: topic.TopicName, Partition: i})
+		for i := uint(0); i < t.PartitionCount; i++ {
+			allPartitions = append(allPartitions, types.PartitionInfo{Topic: t.Name, Partition: i})
 		}
 	}
 	return allPartitions, partitionHashBuilder.String(), nil
@@ -757,25 +784,25 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 // 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销。
 // manualAssignments 参数允许为特定消费者指定固定的分区分配，这些分区不会参与自动轮询分配。
 func (c *Coordinator) calculateAssignments(
-	consumers []db.ConsumerHeartbeat,
-	partitions []db.PartitionInfo,
-	manualAssignments map[string][]db.PartitionInfo,
-) map[string][]db.PartitionInfo {
-	assignments := make(map[string][]db.PartitionInfo)
+	consumers []*heartbeat.Heartbeat,
+	partitions []types.PartitionInfo,
+	manualAssignments map[string][]types.PartitionInfo,
+) map[string][]types.PartitionInfo {
+	assignments := make(map[string][]types.PartitionInfo)
 	if len(consumers) == 0 {
 		return assignments
 	}
 
 	// 对消费者按ID排序，确保分配顺序的一致性。这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
-	utils.SortConsumersByID(consumers)
+	utils.SortHeartbeatsByID(consumers)
 
 	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
 	utils.SortPartitionsByTopicAndPartition(partitions)
 
 	// Step 1: 处理手动分配的消费者
 	// 记录已被手动分配的分区，避免重复分配
-	manualAssignedPartitions := make(map[db.PartitionInfo]struct{})
-	var autoConsumers []db.ConsumerHeartbeat
+	manualAssignedPartitions := make(map[types.PartitionInfo]struct{})
+	var autoConsumers []*heartbeat.Heartbeat
 
 	for _, consumer := range consumers {
 		if manualParts, hasManual := manualAssignments[consumer.ConsumerID]; hasManual && len(manualParts) > 0 {
@@ -787,12 +814,12 @@ func (c *Coordinator) calculateAssignments(
 		} else {
 			// 自动模式：加入待分配列表
 			autoConsumers = append(autoConsumers, consumer)
-			assignments[consumer.ConsumerID] = []db.PartitionInfo{}
+			assignments[consumer.ConsumerID] = []types.PartitionInfo{}
 		}
 	}
 
 	// Step 2: 从分区池中移除已手动分配的分区
-	var remainingPartitions []db.PartitionInfo
+	var remainingPartitions []types.PartitionInfo
 	for _, p := range partitions {
 		if _, isManual := manualAssignedPartitions[p]; !isManual {
 			remainingPartitions = append(remainingPartitions, p)
