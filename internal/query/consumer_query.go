@@ -3,10 +3,15 @@ package query
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"time"
 
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
 	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
+	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
 
@@ -14,14 +19,20 @@ import (
 type ConsumerQuery interface {
 	// GetSubscribedTopics 获取消费组订阅的 Topic 列表
 	GetSubscribedTopics(ctx context.Context, groupID string) ([]string, error)
-	// GetProgressRecords 获取消费组的消费进度记录
+	// GetProgressRecords 获取消费组的消费进度记录 (返回 PO - 保留向后兼容)
 	GetProgressRecords(ctx context.Context, groupID string) ([]consumerprogressrepo.ProgressPO, error)
+	// GetProgressRecordsDTO 获取消费进度记录 (返回 DTO)
+	GetProgressRecordsDTO(ctx context.Context, groupID string) ([]ProgressRecord, error)
 	// GetProgressRecord 获取消费组指定分区的消费进度
 	GetProgressRecord(ctx context.Context, groupID string, topic string, partition uint) (*consumerprogressrepo.ProgressPO, error)
 	// GetPartitionLagStats 获取分区延迟统计
 	GetPartitionLagStats(ctx context.Context, topic string, partition uint, currentOffset int64, watermark int64) (*PartitionLag, error)
 	// GetConsumerGroupExtended 获取消费组扩展信息
 	GetConsumerGroupExtended(ctx context.Context, groupID string) (*ConsumerGroupExtended, error)
+	// GetConsumerGroupMetrics 获取消费组完整监控指标
+	GetConsumerGroupMetrics(ctx context.Context, groupID string) (*ConsumerGroupMetrics, error)
+	// GetAllConsumerGroupsMetrics 获取所有消费组监控指标
+	GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error)
 }
 
 // consumerQueryMySQL 消费组查询 MySQL 实现
@@ -183,4 +194,188 @@ func (q *consumerQueryMySQL) GetConsumerGroupExtended(ctx context.Context, group
 	}
 
 	return result, nil
+}
+
+// GetProgressRecordsDTO 获取消费进度记录 (返回 DTO)
+func (q *consumerQueryMySQL) GetProgressRecordsDTO(ctx context.Context, groupID string) ([]ProgressRecord, error) {
+	records, err := q.GetProgressRecords(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]ProgressRecord, len(records))
+	for i, r := range records {
+		result[i] = ProgressRecord{
+			Topic:                      r.Topic,
+			Partition:                  r.Partition,
+			CommittedOffset:            r.LastConsumedMessageID,
+			GenerationID:               int(r.GenerationID),
+			Metadata:                   r.Metadata,
+			SubscriptionStartWatermark: r.SubscriptionStartWatermark,
+			UpdatedAt:                  r.UpdatedAt,
+		}
+	}
+	return result, nil
+}
+
+// GetConsumerGroupMetrics 获取消费组完整监控指标
+// 从 metrics.go 迁移的核心业务逻辑
+func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupID string) (*ConsumerGroupMetrics, error) {
+	metrics := &ConsumerGroupMetrics{
+		GroupID:        groupID,
+		ProtocolType:   "consumer",
+		AssignedTopics: []string{},
+		Members:        []ConsumerMemberMetrics{},
+		PartitionLags:  []PartitionLagMetrics{},
+	}
+
+	// 获取消费组代际信息
+	var generation struct {
+		GenerationID int `gorm:"column:generation_id"`
+	}
+	err := q.db.WithContext(ctx).Table("mq_consumer_group_generations").
+		Select("generation_id").
+		Where("group_id = ?", groupID).
+		First(&generation).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, fmt.Errorf("failed to get consumer group generation: %w", err)
+	}
+	metrics.GenerationID = int64(generation.GenerationID)
+
+	// 获取活跃消费者
+	var heartbeats []heartbeatrepo.HeartbeatPO
+	heartbeatTimeout := 30 * time.Second
+	cutoff := time.Now().Add(-heartbeatTimeout)
+	err = q.db.WithContext(ctx).Where("group_id = ?", groupID).Find(&heartbeats).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var onlineCount int
+	for _, item := range heartbeats {
+		// 解析分配的分区 - 直接访问 AssignedPartitions 字段
+		var assignment []PartitionInfo
+		for _, p := range item.AssignedPartitions {
+			assignment = append(assignment, PartitionInfo{Topic: p.Topic, Partition: p.Partition})
+		}
+
+		member := ConsumerMemberMetrics{
+			ConsumerID:    item.ConsumerID,
+			ClientID:      item.ConsumerID,
+			Host:          "localhost",
+			LastHeartbeat: item.LastHeartbeat,
+			Assignment:    assignment,
+		}
+		metrics.Members = append(metrics.Members, member)
+
+		if item.Offline || item.LastHeartbeat.Before(cutoff) {
+			continue
+		}
+		onlineCount++
+		metrics.LastHeartbeat = item.LastHeartbeat
+	}
+
+	if onlineCount == 0 {
+		metrics.State = "Dead"
+	} else {
+		metrics.State = "Active"
+	}
+
+	// 获取消费进度记录
+	progressRecords, err := q.GetProgressRecords(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics.AssignedTopics = lo.Uniq(lo.Map(progressRecords, func(item consumerprogressrepo.ProgressPO, _ int) string {
+		return item.Topic
+	}))
+
+	// 计算消费延迟
+	var totalLag int64
+	for _, topicName := range metrics.AssignedTopics {
+		// 获取 Topic 信息
+		var topicPO topicrepo.TopicPO
+		if err := q.db.WithContext(ctx).Where("topic_name = ?", topicName).First(&topicPO).Error; err != nil {
+			continue
+		}
+
+		for i := range topicPO.PartitionCount {
+			// 获取已提交的 offset
+			var progress consumerprogressrepo.ProgressPO
+			err := q.db.WithContext(ctx).
+				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topicName, i).
+				First(&progress).Error
+			if err != nil && err != gorm.ErrRecordNotFound {
+				continue
+			}
+
+			currentID := progress.LastConsumedMessageID
+			updateAt := progress.UpdatedAt.UnixMilli()
+			watermark := progress.SubscriptionStartWatermark
+
+			// 获取该 Topic+分区的最新消息 ID
+			var latestID int64
+			err = q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+				Select("COALESCE(MAX(id), -1)").
+				Where("topic = ? AND `partition` = ?", topicName, i).
+				Scan(&latestID).Error
+			if err != nil {
+				continue
+			}
+
+			// 获取分区延迟统计
+			lagStats, err := q.GetPartitionLagStats(ctx, topicName, i, currentID, watermark)
+			if err != nil {
+				continue
+			}
+
+			partitionLag := PartitionLagMetrics{
+				Topic:                      topicName,
+				Partition:                  int(i),
+				CurrentOffset:              currentID,
+				LatestOffset:               latestID,
+				Lag:                        lagStats.Lag,
+				SubscriptionStartWatermark: watermark,
+				TotalMessageCount:          lagStats.TotalMessageCount,
+				LastMessageId:              latestID,
+				ConsumedMessages:           lagStats.ConsumedMessages,
+				RemainingMessages:          lagStats.RemainingMessages,
+				ConsumedPercentage:         lagStats.ConsumedPercentage,
+				UpdatedAt:                  updateAt,
+			}
+			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
+			totalLag += lagStats.Lag
+		}
+	}
+	metrics.Lag = totalLag
+
+	return metrics, nil
+}
+
+// GetAllConsumerGroupsMetrics 获取所有消费组监控指标
+func (q *consumerQueryMySQL) GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error) {
+	// 获取所有消费组
+	var generations []struct {
+		GroupID string `gorm:"column:group_id"`
+	}
+	err := q.db.WithContext(ctx).Table("mq_consumer_group_generations").
+		Select("DISTINCT group_id").
+		Find(&generations).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all groups: %w", err)
+	}
+
+	var metricsSlice []ConsumerGroupMetrics
+	for _, g := range generations {
+		groupMetrics, err := q.GetConsumerGroupMetrics(ctx, g.GroupID)
+		if err != nil {
+			// 记录错误但继续处理其他消费组
+			fmt.Printf("Warning: failed to get metrics for consumer group %s: %v\n", g.GroupID, err)
+			continue
+		}
+		metricsSlice = append(metricsSlice, *groupMetrics)
+	}
+
+	return metricsSlice, nil
 }

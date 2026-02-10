@@ -45,7 +45,7 @@ func main() {
 	// 创建REST API服务器
 	apiConfig := dbmqapi.ServerConfig{
 		DB:   db,
-		Port: 8080,
+		Port: 8081,
 		Host: "localhost",
 	}
 
@@ -57,9 +57,9 @@ func main() {
 	// 启动服务器
 	go func() {
 		fmt.Println("🌐 REST API 服务器启动中...")
-		fmt.Println("📊 监控仪表板: http://localhost:8080/api/v1/dashboard/data")
-		fmt.Println("🔧 健康检查: http://localhost:8080/api/v1/health")
-		fmt.Println("📋 API 接口: http://localhost:8080/api/v1/")
+		fmt.Println("📊 监控仪表板: http://localhost:8081/api/v1/dashboard/data")
+		fmt.Println("🔧 健康检查: http://localhost:8081/api/v1/health")
+		fmt.Println("📋 API 接口: http://localhost:8081/api/v1/")
 		fmt.Println("")
 		fmt.Println("按 Ctrl+C 停止服务器")
 		fmt.Println(strings.Repeat("=", 50))
@@ -90,7 +90,7 @@ func main() {
 // 初始化数据库连接
 func initDatabase() (interfaces.DB, error) {
 	// 简单的数据库连接字符串
-	dsn := "root:123456@tcp(localhost:3306)/dbmq_demo?charset=utf8mb4&parseTime=True&loc=Local"
+	dsn := "root:CdESwVG3wwPWYw@tcp(localhost:3306)/dbmq_demo?charset=utf8mb4&parseTime=True&loc=Local"
 
 	// 连接到数据库
 	gormDB, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
@@ -107,8 +107,8 @@ func initDatabase() (interfaces.DB, error) {
 func initRedis() redis.UniversalClient {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
-		Password: "", // 没有密码
-		DB:       0,  // 使用默认数据库
+		Password: "123456",
+		DB:       0, // 使用默认数据库
 	})
 
 	// 测试连接

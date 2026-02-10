@@ -10,7 +10,9 @@ import (
 // Deps API 依赖
 type Deps struct {
 	DB                   interfaces.DB
-	Queries              *query.Queries // CQRS 查询层
+	TopicQuery           query.TopicQuery
+	ConsumerQuery        query.ConsumerQuery
+	MessageQuery         query.MessageQuery
 	MetricsClient        *MetricsClient
 	AdminClient          *dbmq.AdminClient
 	ManualAssignmentRepo manualassignment.Repo

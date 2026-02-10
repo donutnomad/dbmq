@@ -18,6 +18,12 @@ type ClusterQuery interface {
 	GetBrokerStats(ctx context.Context) (*BrokerStats, error)
 	// GetActiveConsumerCount 获取活跃消费者数量
 	GetActiveConsumerCount(ctx context.Context, heartbeatTimeout time.Duration) (int, error)
+	// GetActiveGroupCount 获取活跃消费组数量
+	GetActiveGroupCount(ctx context.Context, heartbeatTimeout time.Duration) (int, error)
+	// GetClusterMetrics 获取集群完整监控指标
+	GetClusterMetrics(ctx context.Context) (*ClusterMetrics, error)
+	// GetBrokerMetrics 获取 Broker 完整监控指标
+	GetBrokerMetrics(ctx context.Context, startTime func() int64) (*BrokerMetrics, error)
 }
 
 // clusterQueryMySQL 集群查询 MySQL 实现
@@ -86,4 +92,79 @@ func (q *clusterQueryMySQL) GetActiveConsumerCount(ctx context.Context, heartbea
 		return 0, err
 	}
 	return int(count), nil
+}
+
+// GetActiveGroupCount 获取活跃消费组数量
+func (q *clusterQueryMySQL) GetActiveGroupCount(ctx context.Context, heartbeatTimeout time.Duration) (int, error) {
+	var count int64
+	cutoff := time.Now().Add(-heartbeatTimeout)
+	err := q.db.WithContext(ctx).Model(&heartbeatrepo.HeartbeatPO{}).
+		Where("last_heartbeat > ? AND offline = ?", cutoff, false).
+		Distinct("group_id").
+		Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+// GetClusterMetrics 获取集群完整监控指标
+func (q *clusterQueryMySQL) GetClusterMetrics(ctx context.Context) (*ClusterMetrics, error) {
+	// 获取集群统计信息
+	clusterStats, err := q.GetClusterStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取活跃消费组数量
+	activeGroups, err := q.GetActiveGroupCount(ctx, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取活跃消费者数量
+	activeConsumers, err := q.GetActiveConsumerCount(ctx, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ClusterMetrics{
+		ClusterID:       "dbmq-cluster",
+		BrokerCount:     1, // DBMQ 是单实例
+		TopicCount:      clusterStats.TopicCount,
+		PartitionCount:  clusterStats.PartitionCount,
+		MessageCount:    clusterStats.MessageCount,
+		ConsumerGroups:  activeGroups,
+		ActiveConsumers: activeConsumers,
+		Timestamp:       clusterStats.Timestamp,
+	}, nil
+}
+
+// GetBrokerMetrics 获取 Broker 完整监控指标
+func (q *clusterQueryMySQL) GetBrokerMetrics(ctx context.Context, startTime func() int64) (*BrokerMetrics, error) {
+	brokerStats, err := q.GetBrokerStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var uptime int64
+	if startTime != nil {
+		uptime = time.Now().Unix() - startTime()
+	} else {
+		// 默认 24 小时
+		uptime = int64(24 * time.Hour.Seconds())
+	}
+
+	return &BrokerMetrics{
+		BrokerID:       0,
+		Host:           "localhost",
+		Port:           9092,
+		IsController:   true,
+		TopicCount:     brokerStats.TopicCount,
+		PartitionCount: brokerStats.PartitionCount,
+		MessageCount:   brokerStats.MessageCount,
+		Version:        "dbmq-1.0.0",
+		LastUpdated:    time.Now(),
+		Uptime:         uptime,
+	}, nil
 }

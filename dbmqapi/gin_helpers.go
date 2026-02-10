@@ -29,10 +29,10 @@ func onGinBind(c *gin.Context, val any, typ string) bool {
 // onGinResponse 响应处理
 func onGinResponse[T any](c *gin.Context, data T, err error) {
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, data)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
 // onGinBindErr 绑定错误处理

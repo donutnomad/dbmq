@@ -57,7 +57,7 @@ func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, err
 			partitionStats := make([]PartitionStats, topic.PartitionCount)
 			for p := range topic.PartitionCount {
 				// 使用查询层获取分区统计信息
-				stats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, topic.TopicName, uint(p))
+				stats, err := a.deps.TopicQuery.GetPartitionStats(ctx, topic.TopicName, uint(p))
 				if err != nil {
 					partitionStats[p] = PartitionStats{
 						Partition:      uint(p),

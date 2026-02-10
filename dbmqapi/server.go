@@ -61,7 +61,9 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 	deps := &Deps{
 		DB:                   config.DB,
-		Queries:              query.New(config.DB),
+		TopicQuery:           query.NewTopicQuery(config.DB),
+		ConsumerQuery:        query.NewConsumerQuery(config.DB),
+		MessageQuery:         query.NewMessageQuery(config.DB),
 		MetricsClient:        metricsClient,
 		AdminClient:          adminClient,
 		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),
@@ -90,10 +92,15 @@ func (s *Server) RegisterAPIs() {
 	}
 
 	// 注册各个 API
-	// TODO: 这里将由 gogen 生成的 RegisterXxxAPI 函数替换
-	// RegisterHealthAPI(s.engine, NewHealthAPI(s.deps))
-	// RegisterClusterAPI(s.engine, NewClusterAPI(s.deps))
-	// ...
+	NewHealthAPIWrap(NewHealthAPI(s.deps), nil).BindAll(s.engine)
+	NewDashboardAPIWrap(NewDashboardAPI(s.deps), nil).BindAll(s.engine)
+	NewTopicAPIWrap(NewTopicAPI(s.deps), nil).BindAll(s.engine)
+	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), nil).BindAll(s.engine)
+	NewDBMQAPIWrap(NewDBMQAPI(s.deps), nil).BindAll(s.engine)
+	NewClusterAPIWrap(NewClusterAPI(s.deps), nil).BindAll(s.engine)
+	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), nil).BindAll(s.engine)
+	// TopicProxyAPI 与 TopicAPI 有路由冲突，暂不注册
+	// NewTopicProxyAPIWrap(NewTopicProxyAPI(s.deps), nil).BindAll(s.engine)
 }
 
 // Start 启动服务器

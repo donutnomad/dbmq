@@ -49,11 +49,55 @@ DBMQ是一个基于MySQL和Redis的消息队列系统，旨在与Apache Kafka保
 - 负责重新均衡触发和消息清理任务
 - 使用MySQL全局锁实现领导者选举
 
-**数据访问层 (`internal/dao/`)**
-- `dao.go`: 统一的数据访问接口
-- `message.go`: 消息持久化操作
-- `topic.go`: Topic元数据管理
-- `consumer.go`: 消费者状态和偏移量管理
+**数据访问层 - DDD + 清洁架构**
+
+项目采用 DDD (领域驱动设计) 和清洁架构，数据库访问分为两种模式：
+
+**1. Domain Repository (领域仓储) - 单表/单领域操作**
+- 位置: `internal/domain/<entity>/repo.go` (接口定义)
+- 实现: `internal/repo/<entity>repo/mysql_repo.go`
+- 用途: 本领域内的 CRUD 操作，不涉及跨表查询
+- 特点:
+  - 接口定义在 domain 层，保持领域模型的纯净
+  - 使用 Mapper 进行 PO (Persistence Object) ↔ Entity 转换
+  - 返回领域实体而非数据库模型
+- 示例: `topic.Repo.Get()` 返回 `*topic.Topic` 领域实体
+
+```
+internal/domain/topic/repo.go     # 接口: Repo interface
+internal/repo/topicrepo/
+├── po.go                         # 数据库模型 (TopicPO)
+├── mapper.go                     # PO ↔ Entity 转换
+└── mysql_repo.go                 # MySQL 实现
+```
+
+**2. Query Layer (CQRS 查询层) - 跨表/聚合查询**
+- 位置: `internal/query/`
+- 用途: 复杂的跨表 JOIN 查询、统计聚合、报表数据
+- 特点:
+  - 直接返回 DTO (Data Transfer Object)，无需领域实体转换
+  - 支持复杂 SQL、多表 JOIN、聚合函数
+  - 只读操作，遵循 CQRS 读写分离原则
+- 示例: `ConsumerQuery.GetConsumerGroupExtended()` 聚合多表数据
+
+```
+internal/query/
+├── query.go            # 聚合入口 (Queries struct)
+├── types.go            # DTO 定义
+├── cluster_query.go    # 集群统计查询
+├── topic_query.go      # Topic 统计查询
+├── consumer_query.go   # 消费组聚合查询
+└── message_query.go    # 消息搜索查询
+```
+
+**选择指南:**
+| 场景 | 使用 | 原因 |
+|------|------|------|
+| 单实体 CRUD | Domain Repo | 保持领域模型纯净 |
+| 单表简单查询 | Domain Repo | 返回领域实体 |
+| 多表 JOIN | Query Layer | CQRS 读模型 |
+| 统计/聚合 | Query Layer | 直接返回 DTO |
+| Dashboard/报表 | Query Layer | 复杂查询优化 |
 
 ### 数据模型核心概念
 
@@ -119,6 +163,8 @@ Producer使用Redis Lua脚本实现"从静默到活跃"的一次性通知，避�
 - 消费组重新均衡流程
 - 手动vs自动提交模式差异
 - 协调器领导者选举和故障转移
+- 消费者初始化流程验证
+- 并发消费者初始化和分区分配
 
 ## 配置管理
 
@@ -127,13 +173,13 @@ Producer使用Redis Lua脚本实现"从静默到活跃"的一次性通知，避�
 - `DB`: 数据库连接
 - `Redis`: Redis连接（可选）
 
-### 消费者配置  
+### 消费者配置
 - `GroupID`: 消费组标识
 - `EnableAutoCommit`: 提交模式选择
 - `ConsumeStrategy`: earliest/latest消费策略
 - `PollFetchLimit`: 批量大小
 
-### 协调器配置  
+### 协调器配置
 - `HeartbeatTimeout`: 心跳超时时间
 - `RebalanceInterval`: 重新均衡检查间隔
 - `RetentionCheckInterval`: 消息清理间隔
@@ -158,5 +204,81 @@ Producer使用Redis Lua脚本实现"从静默到活跃"的一次性通知，避�
 ## 监控指标
 
 - **消费者延迟**: `(MAX(per_partition_offset) - committed_offset)` 每分区
-- **消息吞吐率**: `mq_messages`表INSERT速率  
+- **消息吞吐率**: `mq_messages`表INSERT速率
 - **重新均衡频率**: `mq_consumer_group_generations`表UPDATE频率
+
+## 消费者初始化流程
+
+消费者从启动到能够消费消息需要经历以下步骤：
+
+### 正常初始化流程
+
+1. **创建阶段** (`NewConsumer`)
+   - 初始化状态机 (state = Uninitialized)
+   - generation_id = 0
+   - 创建 Actor 和命令通道
+
+2. **订阅阶段** (`SubscribeTopics`)
+   - 状态转换: Uninitialized → Joining
+   - 启动心跳循环 (每 HeartbeatInterval 发送一次)
+   - 启动自动提交循环 (如果启用)
+
+3. **首次心跳** (t = 0s)
+   - Upsert(generation_id=0) 写入数据库
+   - Get() 读取 generation_id=0 (协调器尚未分配)
+   - 比较: 0 == 0 → 无需重新均衡
+
+4. **协调器检测** (t ≈ RebalanceInterval)
+   - 扫描活跃消费者
+   - 检测到新成员
+   - IncrementGenerationID (0→1)
+   - UpdateAssignments 更新分配和 generation_id
+
+5. **第二次心跳** (t = HeartbeatInterval)
+   - Upsert 更新 last_heartbeat (保留 generation_id=1)
+   - Get() 读取 generation_id=1
+   - 比较: 1 != 0 → **触发重新均衡**
+   - doRebalance:
+     - Joining → Rebalancing → Ready
+     - 同步 generation_id=1
+     - 获取分区偏移量
+   - **初始化完成** ✅
+
+6. **就绪阶段**
+   - IsReady() 返回 true
+   - 可以开始 Poll() 消息
+
+### 时间估算
+
+- HeartbeatInterval = 3s, RebalanceInterval = 10s
+- 最坏情况: ~13秒 (首次心跳 + 协调器检测 + 第二次心跳)
+- 最佳情况: ~4秒 (协调器在首次心跳后立即检测)
+
+### 调试初始化问题
+
+如果消费者长时间停留在 Joining 状态：
+
+1. **检查协调器是否运行**
+   ```sql
+   SELECT GET_LOCK('mq_coordinator_leader_lock_XXX', 0);
+   ```
+   如果返回 NULL，说明锁被占用 (协调器在运行)
+
+2. **检查心跳记录**
+   ```sql
+   SELECT * FROM mq_consumer_heartbeats
+   WHERE group_id = 'your-group';
+   ```
+
+3. **检查 generation_id**
+   ```sql
+   SELECT generation_id, assigned_partitions
+   FROM mq_consumer_heartbeats
+   WHERE group_id = 'your-group' AND consumer_id = 'your-consumer';
+   ```
+   应该看到 generation_id > 0 且有分区分配
+
+4. **启用 Debug 日志**
+   关键日志输出：
+   - "检测到 generation 变化，触发重新均衡"
+   - "✅ 消费者初始化完成"

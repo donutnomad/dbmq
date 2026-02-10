@@ -1,28 +1,33 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DashboardData, TopicMetrics, ConsumerGroupMetrics } from '@/lib/types';
+import { DashboardData, TopicMetrics, ConsumerGroupMetrics, DBMQStats } from '@/lib/types';
 import { DBMQAPIClient } from '@/lib/api';
-import { formatNumber, formatUptime } from '@/lib/utils';
+import { formatNumber, formatUptime, formatBytes } from '@/lib/utils';
 import { StatCard } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { 
-  Database, 
-  Users, 
-  MessageSquare, 
-  Clock, 
-  RefreshCw, 
+import {
+  Database,
+  Users,
+  MessageSquare,
+  Clock,
+  RefreshCw,
   Plus,
   Settings,
+  Settings2,
   Send,
   Activity,
-  Zap
+  Zap,
+  Server,
+  HardDrive,
+  Radio,
 } from 'lucide-react';
 import Link from 'next/link';
 
 export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [dbmqStats, setDbmqStats] = useState<DBMQStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -31,8 +36,12 @@ export function Dashboard() {
   // 加载仪表板数据
   const loadData = async () => {
     try {
-      const dashboardData = await DBMQAPIClient.getDashboardData();
+      const [dashboardData, stats] = await Promise.all([
+        DBMQAPIClient.getDashboardData(),
+        DBMQAPIClient.getDBMQStats().catch(() => null),
+      ]);
       setData(dashboardData);
+      setDbmqStats(stats);
       setError(null);
       setLastUpdate(new Date());
     } catch (err) {
@@ -102,6 +111,18 @@ export function Dashboard() {
               </StatusBadge>
             </div>
             <div className="flex items-center space-x-4">
+              <Link href="/clusters">
+                <Button size="sm" variant="outline" className="text-blue-600 hover:text-blue-800">
+                  <Server className="h-4 w-4 mr-1" />
+                  集群管理
+                </Button>
+              </Link>
+              <Link href="/consumers">
+                <Button size="sm" variant="outline" className="text-teal-600 hover:text-teal-800">
+                  <Radio className="h-4 w-4 mr-1" />
+                  消费者管理
+                </Button>
+              </Link>
               <div className="flex items-center">
                 <label className="flex items-center cursor-pointer">
                   <input
@@ -149,6 +170,12 @@ export function Dashboard() {
             className="bg-green-50 border-none"
           />
           <StatCard
+            title="分区总数"
+            value={dbmqStats?.cluster?.partitionCount || 0}
+            icon={<HardDrive className="h-5 w-5 text-cyan-500" />}
+            className="bg-cyan-50 border-none"
+          />
+          <StatCard
             title="总消息数"
             value={formatNumber(totalMessages)}
             icon={<MessageSquare className="h-5 w-5 text-purple-500" />}
@@ -161,18 +188,58 @@ export function Dashboard() {
             className="bg-orange-50 border-none"
           />
           <StatCard
-            title="系统负载"
-            value={'0%'}
-            icon={<Activity className="h-5 w-5 text-rose-500" />}
-            className="bg-rose-50 border-none"
-          />
-          <StatCard
             title="服务状态"
             value={<StatusBadge status="online" className="px-2 py-0.5">运行中</StatusBadge>}
             icon={<Zap className="h-5 w-5 text-indigo-500" />}
             className="bg-indigo-50 border-none"
           />
         </div>
+
+        {/* DBMQ 系统统计面板 */}
+        {dbmqStats && (
+          <div className="bg-white rounded-lg shadow-sm mb-4">
+            <div className="p-4 border-b flex justify-between items-center">
+              <h2 className="text-base font-medium flex items-center">
+                <Activity className="h-4 w-4 mr-2 text-purple-500" />
+                系统详细统计
+              </h2>
+              <Link href="/clusters">
+                <Button size="sm" variant="outline" className="text-gray-600 hover:text-gray-800">
+                  <Server className="h-4 w-4 mr-1" />
+                  查看集群详情
+                </Button>
+              </Link>
+            </div>
+            <div className="p-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">Broker ID</div>
+                  <div className="text-lg font-semibold text-gray-900">{dbmqStats.broker.brokerId}</div>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">主机地址</div>
+                  <div className="text-sm font-semibold text-gray-900">{dbmqStats.broker.host}:{dbmqStats.broker.port}</div>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">系统版本</div>
+                  <div className="text-lg font-semibold text-gray-900">{dbmqStats.system.version}</div>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">分区数量</div>
+                  <div className="text-lg font-semibold text-gray-900">{dbmqStats.cluster.partitionCount}</div>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">存储大小</div>
+                  <div className="text-lg font-semibold text-gray-900">{formatBytes(dbmqStats.cluster.totalSizeBytes)}</div>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">Broker 运行时间</div>
+                  <div className="text-sm font-semibold text-gray-900">{dbmqStats.broker.uptime}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 内容区域 - 更现代的设计 */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -292,6 +359,12 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
           <Users className="h-4 w-4 mr-2 text-blue-500" />
           消费组列表
         </h2>
+        <Link href="/manual-assignments">
+          <Button size="sm" variant="outline" className="text-purple-600 hover:text-purple-800">
+            <Settings2 className="h-4 w-4 mr-1" />
+            手动分配
+          </Button>
+        </Link>
         <Link href="/producer">
           <Button size="sm" variant="outline" className="text-blue-600 hover:text-blue-800">
             <Send className="h-4 w-4 mr-1" />

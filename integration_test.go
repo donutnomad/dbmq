@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -585,4 +586,169 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	}).First(&offset).Error
 	require.NoError(t, err)
 	assert.True(t, offset.LastConsumedMessageID > 0, "偏移量应该已提交")
+}
+
+// TestIntegration_ConsumerInitialization 验证消费者初始化流程
+func TestIntegration_ConsumerInitialization(t *testing.T) {
+	dbClient, redisClient := setupIntegrationTest(t)
+
+	// 创建 Topic
+	admin := NewAdminClient(dbClient)
+	err := admin.CreateTopic(context.Background(), NewTopicRequest{
+		Name:          "init-test-topic",
+		NumPartitions: 3,
+	})
+	require.NoError(t, err)
+
+	// 启动协调器
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockSuffix:        "test-init",
+		DB:                dbClient,
+		HeartbeatTimeout:  5 * time.Second,
+		RebalanceInterval: 1 * time.Second, // 短间隔加快测试
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+
+	// 等待协调器成为领导者
+	require.Eventually(t, coordinator.IsLeader, 10*time.Second, 100*time.Millisecond,
+		"Coordinator should become leader")
+
+	// 创建消费者
+	consumer, err := NewConsumer(ConsumerConfig{
+		DB:                  dbClient,
+		Redis:               redisClient,
+		GroupID:             "init-test-group",
+		NotificationEnabled: false,
+		Topics:              []string{"init-test-topic"},
+		HeartbeatInterval:   500 * time.Millisecond, // 短间隔加快测试
+		ConsumeStrategy:     ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	defer consumer.Close()
+
+	// 订阅主题
+	consumer.SubscribeTopics("init-test-topic")
+
+	// 关键断言 1: 消费者应在合理时间内完成初始化
+	require.Eventually(t, consumer.IsReady, 5*time.Second, 100*time.Millisecond,
+		"Consumer should complete initialization within 5 seconds")
+
+	// 关键断言 2: 验证数据库中有心跳记录
+	var count int64
+	err = dbClient.Model(&heartbeatrepo.HeartbeatPO{}).
+		Where("group_id = ? AND consumer_id = ?", "init-test-group", consumer.ID()).
+		Count(&count).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count, "Heartbeat record should exist in database")
+
+	// 关键断言 3: 验证 generation_id 已被协调器设置
+	var hb heartbeatrepo.HeartbeatPO
+	err = dbClient.Where("group_id = ? AND consumer_id = ?",
+		"init-test-group", consumer.ID()).First(&hb).Error
+	require.NoError(t, err)
+	assert.Greater(t, hb.GenerationID, uint(0),
+		"Generation ID should be set by coordinator")
+
+	// 关键断言 4: 验证有分区分配
+	var partitions []heartbeatrepo.PartitionInfo
+	err = hb.AssignedPartitions.Scan(&partitions)
+	require.NoError(t, err)
+	assert.NotEmpty(t, partitions, "Consumer should have partition assignments")
+}
+
+// TestIntegration_ConcurrentConsumerInitialization 验证多消费者并发初始化
+func TestIntegration_ConcurrentConsumerInitialization(t *testing.T) {
+	dbClient, redisClient := setupIntegrationTest(t)
+
+	// 创建 Topic
+	admin := NewAdminClient(dbClient)
+	err := admin.CreateTopic(context.Background(), NewTopicRequest{
+		Name:          "concurrent-test-topic",
+		NumPartitions: 6,
+	})
+	require.NoError(t, err)
+
+	// 启动协调器
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockSuffix:        "test-concurrent",
+		DB:                dbClient,
+		HeartbeatTimeout:  5 * time.Second,
+		RebalanceInterval: 1 * time.Second,
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+
+	require.Eventually(t, coordinator.IsLeader, 10*time.Second, 100*time.Millisecond)
+
+	// 同时启动 3 个消费者
+	numConsumers := 3
+	consumers := make([]*Consumer, numConsumers)
+	errCh := make(chan error, numConsumers)
+
+	for i := 0; i < numConsumers; i++ {
+		go func(idx int) {
+			consumer, err := NewConsumer(ConsumerConfig{
+				DB:                  dbClient,
+				Redis:               redisClient,
+				GroupID:             "concurrent-test-group",
+				Topics:              []string{"concurrent-test-topic"},
+				HeartbeatInterval:   500 * time.Millisecond,
+				NotificationEnabled: false,
+				ConsumeStrategy:     ConsumeFromEarliest,
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			consumer.SubscribeTopics("concurrent-test-topic")
+			consumers[idx] = consumer
+			errCh <- nil
+		}(i)
+	}
+
+	// 等待所有消费者创建完成
+	for i := 0; i < numConsumers; i++ {
+		err := <-errCh
+		require.NoError(t, err)
+	}
+
+	defer func() {
+		for _, c := range consumers {
+			if c != nil {
+				c.Close()
+			}
+		}
+	}()
+
+	// 验证所有消费者都能完成初始化
+	for i, consumer := range consumers {
+		require.Eventually(t, consumer.IsReady, 10*time.Second, 100*time.Millisecond,
+			fmt.Sprintf("Consumer %d should initialize successfully", i))
+	}
+
+	// 验证分区分配无重复
+	assignmentMap := make(map[string]string) // partition -> consumer_id
+	for _, consumer := range consumers {
+		var hb heartbeatrepo.HeartbeatPO
+		err := dbClient.Where("group_id = ? AND consumer_id = ?",
+			"concurrent-test-group", consumer.ID()).First(&hb).Error
+		require.NoError(t, err)
+
+		var partitions []heartbeatrepo.PartitionInfo
+		err = hb.AssignedPartitions.Scan(&partitions)
+		require.NoError(t, err)
+
+		for _, p := range partitions {
+			key := fmt.Sprintf("%s-%d", p.Topic, p.Partition)
+			if existingConsumerID, exists := assignmentMap[key]; exists {
+				t.Errorf("Partition %s assigned to both %s and %s",
+					key, existingConsumerID, consumer.ID())
+			}
+			assignmentMap[key] = consumer.ID()
+		}
+	}
+
+	// 验证所有分区都被分配
+	assert.Len(t, assignmentMap, 6, "All 6 partitions should be assigned")
 }

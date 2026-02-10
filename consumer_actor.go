@@ -330,13 +330,25 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 		return errors.Wrap(err, "get heartbeat")
 	}
 	if hb == nil {
+		a.logger().Warn("心跳写入后读取失败", "consumer-id", a.id)
 		return nil
 	}
 
-	// 检查是否需要重新均衡
-	if hb.GenerationID == a.generationID {
+	// 检查 generation 变化
+	currentGen := a.generationID
+	dbGen := hb.GenerationID
+
+	if dbGen == currentGen {
 		return nil
 	}
+
+	// Debug 日志
+	a.logger().Debug("检测到 generation 变化，触发重新均衡",
+		"consumer-id", a.id,
+		"current-generation", currentGen,
+		"new-generation", dbGen,
+		"current-state", a.stateMachine.Get().String(),
+	)
 
 	// 执行重平衡
 	return a.doRebalance(ctx, hb.GenerationID, hb.AssignedPartitions)
@@ -428,6 +440,7 @@ func (a *ConsumerActor) handleRebalance(ctx context.Context, newGeneration uint,
 // doRebalance 执行重平衡逻辑
 func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, newPartitions []types.PartitionInfo) error {
 	prevState := a.stateMachine.Get()
+	isInitialJoin := prevState == StateJoining
 
 	// 状态转换到 Rebalancing
 	if err := a.stateMachine.Transition(StateRebalancing); err != nil {
@@ -458,6 +471,23 @@ func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, new
 	// 状态转换到 Ready
 	if err := a.stateMachine.Transition(StateReady); err != nil {
 		return errors.Wrapf(err, "state transition failed: %s -> %s", StateRebalancing, StateReady)
+	}
+
+	// 区分初始化完成和普通重新均衡
+	if isInitialJoin {
+		a.logger().Info("✅ 消费者初始化完成",
+			"consumer-id", a.id,
+			"group-id", a.config.GroupID,
+			"generation-id", a.generationID,
+			"assigned-partitions", len(a.assignment),
+		)
+	} else {
+		a.logger().Info("消费者重新均衡完成",
+			"consumer-id", a.id,
+			"generation-id", a.generationID,
+			"old-partitions", len(oldPartitions),
+			"new-partitions", len(a.assignment),
+		)
 	}
 
 	return nil

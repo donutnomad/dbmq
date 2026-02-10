@@ -147,9 +147,10 @@ export interface Message {
 // Topic创建请求类型
 export interface NewTopicRequest {
   name: string;
-  partitions?: number;
-  replicationFactor?: number;
-  configs?: Record<string, string>;
+  numPartitions: number;
+  config?: {
+    retention_ms?: number;
+  };
 }
 
 // 系统信息类型
@@ -163,4 +164,67 @@ export interface SystemMetrics {
   uptime: number;
   version: string;
   load: number;
+}
+
+// 集群相关类型
+export interface ClusterInfo {
+  clusterId: string;
+  name: string;
+  brokerCount: number;
+  status: string;
+}
+
+export interface ClusterMetricsDetail {
+  topicCount: number;
+  partitionCount: number;
+  consumerGroupCount: number;
+  totalMessages: number;
+  totalSizeBytes: number;
+}
+
+export interface BrokerInfo {
+  brokerId: number;
+  host: string;
+  port: number;
+  version: string;
+  uptime: string;
+}
+
+// DBMQ 统计信息类型
+export interface DBMQStats {
+  cluster: ClusterMetricsDetail;
+  broker: BrokerInfo;
+  system: {
+    uptime: number;
+    version: string;
+  };
+}
+
+// 手动分区分配相关类型
+export interface ManualAssignment {
+  id: number;
+  group_id: string;
+  consumer_id_pattern: string;
+  topic: string;
+  partition: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateManualAssignmentRequest {
+  group_id: string;
+  consumer_id_pattern: string;
+  topic: string;
+  partition: number;
+}
+
+// RMQ 消费者信息
+export interface RMQConsumerInfo {
+  consumerId: string;
+  queueName: string;
+  prefetchCount: number;
+  exclusive: boolean;
+  lastHeartbeat: string;
+  offline: boolean;
+  paused: boolean;
 } 

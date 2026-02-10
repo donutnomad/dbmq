@@ -7,6 +7,7 @@ import (
 
 	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/samber/lo"
 
 	"gorm.io/datatypes"
@@ -45,15 +46,23 @@ func (r *mysqlRepo) Upsert(ctx context.Context, groupID, consumerID string, subs
 		subscribed_topics = VALUES(subscribed_topics),
 		last_heartbeat = VALUES(last_heartbeat),
 		offline = FALSE,
-		offline_at = NULL
+		offline_at = NULL,
+		generation_id = generation_id
 `
-	return r.db.WithContext(ctx).Exec(sql,
+	err := r.db.WithContext(ctx).Exec(sql,
 		groupID,
 		consumerID,
 		datatypes.NewJSONSlice(subscribedTopics),
 		datatypes.NewJSONSlice([]PartitionInfo{}),
 		time.Now(),
 	).Error
+
+	if err != nil {
+		// 添加错误日志
+		return pkgerrors.Wrapf(err, "upsert heartbeat failed for group=%s consumer=%s", groupID, consumerID)
+	}
+
+	return nil
 }
 
 func (r *mysqlRepo) MarkOffline(ctx context.Context, groupID, consumerID string) error {

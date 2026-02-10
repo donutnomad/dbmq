@@ -14,9 +14,7 @@ export default function CreateTopicPage() {
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState<NewTopicRequest>({
     name: '',
-    partitions: 1,
-    replicationFactor: 1,
-    configs: {},
+    numPartitions: 1,
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -86,30 +84,12 @@ export default function CreateTopicPage() {
                   id="partitions"
                   min="1"
                   max="100"
-                  value={formData.partitions}
-                  onChange={(e) => setFormData(prev => ({ ...prev, partitions: parseInt(e.target.value) || 1 }))}
+                  value={formData.numPartitions}
+                  onChange={(e) => setFormData(prev => ({ ...prev, numPartitions: parseInt(e.target.value) || 1 }))}
                   className="w-full px-3 py-2 border border-gray-200 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm"
                 />
                 <p className="mt-1 text-xs text-gray-500">
                   分区数决定了Topic的并行处理能力，建议根据预期的消息量设置
-                </p>
-              </div>
-
-              <div>
-                <label htmlFor="replicationFactor" className="block text-sm font-medium text-gray-700 mb-1">
-                  副本因子
-                </label>
-                <input
-                  type="number"
-                  id="replicationFactor"
-                  min="1"
-                  max="5"
-                  value={formData.replicationFactor}
-                  onChange={(e) => setFormData(prev => ({ ...prev, replicationFactor: parseInt(e.target.value) || 1 }))}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm"
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  副本因子决定了数据的冗余程度，提高数据安全性
                 </p>
               </div>
 

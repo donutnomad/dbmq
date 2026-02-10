@@ -85,7 +85,7 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 		searchReq.Partition = req.Partition
 	}
 
-	result, err := a.deps.Queries.Message.Search(ctx, searchReq)
+	result, err := a.deps.MessageQuery.Search(ctx, searchReq)
 	if err != nil {
 		return TopicMessagesResp{}, err
 	}
@@ -124,7 +124,7 @@ func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req Ge
 
 func (a *dbmqAPI) GetPartitionStats(ctx context.Context, topicName string, partitionId uint) (PartitionStats, error) {
 	// 使用查询层获取分区统计信息
-	stats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, topicName, partitionId)
+	stats, err := a.deps.TopicQuery.GetPartitionStats(ctx, topicName, partitionId)
 	if err != nil {
 		return PartitionStats{}, err
 	}
@@ -146,7 +146,7 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 	}
 
 	// 使用查询层获取消费组扩展信息
-	extended, err := a.deps.Queries.Consumer.GetConsumerGroupExtended(ctx, groupId)
+	extended, err := a.deps.ConsumerQuery.GetConsumerGroupExtended(ctx, groupId)
 	if err != nil {
 		return ConsumerGroupExtendedResp{}, err
 	}
@@ -213,7 +213,7 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 		}
 
 		// 使用查询层获取分区统计信息
-		partitionStats, err := a.deps.Queries.Topic.GetPartitionStats(ctx, lag.Topic, uint(lag.Partition))
+		partitionStats, err := a.deps.TopicQuery.GetPartitionStats(ctx, lag.Topic, uint(lag.Partition))
 		if err == nil && partitionStats != nil {
 			lagExt.FirstMessageID = partitionStats.FirstMessageID
 			lagExt.LastMessageID = partitionStats.LastMessageID

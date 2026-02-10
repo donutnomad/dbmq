@@ -2,9 +2,12 @@ package query
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
+	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
 )
 
 // TopicQuery Topic 查询接口
@@ -17,6 +20,10 @@ type TopicQuery interface {
 	GetPartitionMessageCount(ctx context.Context, topicName string, partition uint) (int64, error)
 	// GetPartitionSizeBytes 获取分区存储大小
 	GetPartitionSizeBytes(ctx context.Context, topicName string, partition uint) (int64, error)
+	// GetTopicMetrics 获取 Topic 完整监控指标
+	GetTopicMetrics(ctx context.Context, topicName string) (*TopicMetrics, error)
+	// GetAllTopicsMetrics 获取所有 Topic 监控指标
+	GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error)
 }
 
 // topicQueryMySQL Topic 查询 MySQL 实现
@@ -105,4 +112,77 @@ func (q *topicQueryMySQL) GetPartitionSizeBytes(ctx context.Context, topicName s
 		Where("topic = ? AND `partition` = ?", topicName, partition).
 		Scan(&sizeBytes).Error
 	return sizeBytes, err
+}
+
+// GetTopicMetrics 获取 Topic 完整监控指标
+func (q *topicQueryMySQL) GetTopicMetrics(ctx context.Context, topicName string) (*TopicMetrics, error) {
+	// 获取 Topic 基本信息
+	var topicPO topicrepo.TopicPO
+	if err := q.db.WithContext(ctx).Where("topic_name = ?", topicName).First(&topicPO).Error; err != nil {
+		return nil, fmt.Errorf("failed to get topic %s: %w", topicName, err)
+	}
+
+	metrics := &TopicMetrics{
+		TopicName:      topicPO.TopicName,
+		PartitionCount: int(topicPO.PartitionCount),
+		CreatedAt:      topicPO.CreatedAt,
+		Config:         make(map[string]string),
+	}
+
+	// 解析 Topic 配置
+	configMap := topicPO.Configs
+	if len(configMap) > 0 {
+		var config map[string]any
+		if err := json.Unmarshal(configMap, &config); err == nil {
+			for k, v := range config {
+				metrics.Config[k] = fmt.Sprintf("%v", v)
+			}
+		}
+	}
+
+	// 获取 Topic 统计信息
+	topicStats, err := q.GetTopicStats(ctx, topicName, topicPO.PartitionCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get topic stats: %w", err)
+	}
+
+	// 转换分区信息
+	partitions := make([]PartitionMetricsDTO, len(topicStats.Partitions))
+	for i, p := range topicStats.Partitions {
+		partitions[i] = PartitionMetricsDTO{
+			Partition:    int(p.Partition),
+			LatestOffset: p.LastMessageID,
+			MessageCount: p.MessageCount,
+			SizeBytes:    p.SizeBytes,
+		}
+	}
+
+	metrics.Partitions = partitions
+	metrics.MessageCount = topicStats.TotalMessages
+	metrics.SizeBytes = topicStats.TotalSize
+	metrics.LatestOffset = topicStats.LatestOffset
+
+	return metrics, nil
+}
+
+// GetAllTopicsMetrics 获取所有 Topic 监控指标
+func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error) {
+	// 获取所有 Topic
+	var topics []topicrepo.TopicPO
+	if err := q.db.WithContext(ctx).Find(&topics).Error; err != nil {
+		return nil, fmt.Errorf("failed to get all topics: %w", err)
+	}
+
+	var metricsSlice []TopicMetrics
+	for _, t := range topics {
+		topicMetrics, err := q.GetTopicMetrics(ctx, t.TopicName)
+		if err != nil {
+			// 记录错误但继续处理其他 Topic
+			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", t.TopicName, err)
+			continue
+		}
+		metricsSlice = append(metricsSlice, *topicMetrics)
+	}
+
+	return metricsSlice, nil
 }

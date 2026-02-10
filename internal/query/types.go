@@ -127,3 +127,108 @@ type MessageRecord struct {
 	Headers    map[string]string // 消息头
 	CreatedAt  time.Time         // 创建时间
 }
+
+// =============================================================================
+// Metrics DTOs (用于 MetricsClient 和 API 层)
+// =============================================================================
+
+// TopicMetrics Topic 监控指标 DTO
+type TopicMetrics struct {
+	TopicName      string                `json:"topicName"`
+	PartitionCount int                   `json:"partitionCount"`
+	MessageCount   int64                 `json:"messageCount"`
+	LatestOffset   int64                 `json:"latestOffset"`
+	SizeBytes      int64                 `json:"sizeBytes"`
+	Partitions     []PartitionMetricsDTO `json:"partitions"`
+	Config         map[string]string     `json:"config"`
+	CreatedAt      time.Time             `json:"createdAt"`
+}
+
+// PartitionMetricsDTO 分区监控指标 DTO
+type PartitionMetricsDTO struct {
+	Partition    int   `json:"partition"`
+	LatestOffset int64 `json:"latestOffset"`
+	MessageCount int64 `json:"messageCount"`
+	SizeBytes    int64 `json:"sizeBytes"`
+}
+
+// ConsumerGroupMetrics 消费组监控指标 DTO
+type ConsumerGroupMetrics struct {
+	GroupID        string                  `json:"groupId"`
+	State          string                  `json:"state"`
+	Members        []ConsumerMemberMetrics `json:"members"`
+	Lag            int64                   `json:"lag"`
+	PartitionLags  []PartitionLagMetrics   `json:"partitionLags"`
+	LastHeartbeat  time.Time               `json:"lastHeartbeat"`
+	GenerationID   int64                   `json:"generationId"`
+	ProtocolType   string                  `json:"protocolType"`
+	AssignedTopics []string                `json:"assignedTopics"`
+}
+
+// ConsumerMemberMetrics 消费者成员 DTO
+type ConsumerMemberMetrics struct {
+	ConsumerID    string          `json:"consumerId"`
+	ClientID      string          `json:"clientId"`
+	Host          string          `json:"host"`
+	LastHeartbeat time.Time       `json:"lastHeartbeat"`
+	Assignment    []PartitionInfo `json:"assignment"`
+}
+
+// PartitionInfo 分区信息
+type PartitionInfo struct {
+	Topic     string `json:"topic"`
+	Partition uint   `json:"partition"`
+}
+
+// PartitionLagMetrics 分区延迟 DTO
+type PartitionLagMetrics struct {
+	Topic                      string  `json:"topic"`
+	Partition                  int     `json:"partition"`
+	CurrentOffset              int64   `json:"currentOffset"`
+	LatestOffset               int64   `json:"latestOffset"`
+	Lag                        int64   `json:"lag"`
+	SubscriptionStartWatermark int64   `json:"initialTopicWatermark"`
+	TotalMessageCount          int64   `json:"totalMessageCount"`
+	LastMessageId              int64   `json:"lastMessageId"`
+	ConsumedMessages           int64   `json:"consumedMessages"`
+	RemainingMessages          int64   `json:"remainingMessages"`
+	ConsumedPercentage         float64 `json:"consumedPercentage"`
+	UpdatedAt                  int64   `json:"updatedAt"`
+}
+
+// ProgressRecord 消费进度记录 DTO (替代返回 PO)
+type ProgressRecord struct {
+	Topic                      string
+	Partition                  uint
+	CommittedOffset            int64
+	GenerationID               int
+	Metadata                   string
+	SubscriptionStartWatermark int64
+	UpdatedAt                  time.Time
+}
+
+// ClusterMetrics 集群级别监控指标 DTO
+type ClusterMetrics struct {
+	ClusterID       string    `json:"clusterId"`
+	BrokerCount     int       `json:"brokerCount"`
+	TopicCount      int       `json:"topicCount"`
+	PartitionCount  int       `json:"partitionCount"`
+	MessageCount    int64     `json:"messageCount"`
+	ConsumerGroups  int       `json:"consumerGroups"`
+	ActiveConsumers int       `json:"activeConsumers"`
+	Timestamp       time.Time `json:"timestamp"`
+}
+
+// BrokerMetrics Broker 监控指标 DTO
+type BrokerMetrics struct {
+	BrokerID       int       `json:"brokerId"`
+	Host           string    `json:"host"`
+	Port           int       `json:"port"`
+	IsController   bool      `json:"isController"`
+	TopicCount     int       `json:"topicCount"`
+	PartitionCount int       `json:"partitionCount"`
+	MessageCount   int64     `json:"messageCount"`
+	Uptime         int64     `json:"uptime"`
+	Version        string    `json:"version"`
+	LastUpdated    time.Time `json:"lastUpdated"`
+}

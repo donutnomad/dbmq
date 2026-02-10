@@ -1,14 +1,14 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats } from './types';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, RMQConsumerInfo } from './types';
 
 // 获取API基础URL
 const getAPIBaseURL = () => {
   if (typeof window !== 'undefined') {
     // 客户端环境
-    return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080';
+    return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8081';
   }
   // 服务端环境
-  return process.env.DBMQ_API_BASE || 'http://localhost:8080';
+  return process.env.DBMQ_API_BASE || 'http://localhost:8081';
 };
 
 const API_PREFIX = '/api/v1';
@@ -35,9 +35,9 @@ export class DBMQAPIClient {
 
   // 获取所有Topics
   static async getTopics(includePartitionStats = false): Promise<TopicMetrics[]> {
-    const url = includePartitionStats 
-      ? '/clusters/dbmq-cluster/topics?includePartitionStats=true'
-      : '/clusters/dbmq-cluster/topics';
+    const url = includePartitionStats
+      ? '/topics?includePartitionStats=true'
+      : '/topics';
     const response = await apiClient.get<APIResponse<TopicMetrics[]>>(url);
     if (response.data.success && response.data.data) {
       return response.data.data;
@@ -47,7 +47,7 @@ export class DBMQAPIClient {
 
   // 获取单个Topic信息
   static async getTopic(topicName: string): Promise<TopicMetrics> {
-    const response = await apiClient.get<APIResponse<TopicMetrics>>(`/clusters/dbmq-cluster/topics/${topicName}`);
+    const response = await apiClient.get<APIResponse<TopicMetrics>>(`/topics/${topicName}`);
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -56,7 +56,7 @@ export class DBMQAPIClient {
 
   // 创建Topic
   static async createTopic(topic: NewTopicRequest): Promise<void> {
-    const response = await apiClient.post<APIResponse>('/clusters/dbmq-cluster/topics', topic);
+    const response = await apiClient.post<APIResponse>('/topics', topic);
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to create topic');
     }
@@ -64,7 +64,7 @@ export class DBMQAPIClient {
 
   // 删除Topic
   static async deleteTopic(topicName: string): Promise<void> {
-    const response = await apiClient.delete<APIResponse>(`/clusters/dbmq-cluster/topics/${topicName}`);
+    const response = await apiClient.delete<APIResponse>(`/topics/${topicName}`);
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to delete topic');
     }
@@ -72,7 +72,7 @@ export class DBMQAPIClient {
 
   // 获取所有消费组
   static async getConsumerGroups(): Promise<ConsumerGroupMetrics[]> {
-    const response = await apiClient.get<APIResponse<ConsumerGroupMetrics[]>>('/clusters/dbmq-cluster/consumer-groups');
+    const response = await apiClient.get<APIResponse<ConsumerGroupMetrics[]>>('/consumer-groups');
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -82,32 +82,24 @@ export class DBMQAPIClient {
   // 获取单个消费组信息
   static async getConsumerGroup(groupId: string): Promise<ConsumerGroupMetrics> {
     try {
-      // 先获取基本信息
-      const response = await apiClient.get<APIResponse<ConsumerGroupMetrics>>(`/clusters/dbmq-cluster/consumer-groups/${groupId}`);
+      // 获取基本信息
+      const response = await apiClient.get<APIResponse<ConsumerGroupMetrics>>(`/consumer-groups/${groupId}`);
       if (!response.data.success || !response.data.data) {
         throw new Error(response.data.error || 'Failed to fetch consumer group');
       }
-      
-      // 获取详细指标信息
-      const metricsResponse = response
-      // 合并基本信息和详细指标
+
       const groupData = response.data.data;
-      if (metricsResponse.data.success && metricsResponse.data.data) {
-        Object.assign(groupData, metricsResponse.data.data);
-      }
-      
+
       // 获取扩展信息（如果有）
       try {
         const extendedResponse = await apiClient.get<APIResponse<any>>(`/dbmq/consumer-groups/${groupId}/extended`);
         if (extendedResponse.data.success && extendedResponse.data.data) {
-          // 合并扩展信息
           Object.assign(groupData, extendedResponse.data.data);
         }
       } catch (extErr) {
-        // 扩展API可能不存在，忽略错误
         console.warn('Extended consumer group API not available:', extErr);
       }
-      
+
       return groupData;
     } catch (err) {
       console.error('Error fetching consumer group details:', err);
@@ -146,18 +138,21 @@ export class DBMQAPIClient {
   }
 
   // 发送消息到Topic
+  // NOTE: 后端暂未实现此 API
   static async sendMessage(topicName: string, data: {
     key?: string | null;
     value: string;
     headers?: Record<string, unknown>;
   }): Promise<void> {
-    const response = await apiClient.post<APIResponse>(
-      `/clusters/dbmq-cluster/topics/${encodeURIComponent(topicName)}/messages`,
-      data
-    );
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Failed to send message');
-    }
+    throw new Error('sendMessage API is not implemented in backend');
+    // 原实现保留供后续实现:
+    // const response = await apiClient.post<APIResponse>(
+    //   `/topics/${encodeURIComponent(topicName)}/messages`,
+    //   data
+    // );
+    // if (!response.data.success) {
+    //   throw new Error(response.data.error || 'Failed to send message');
+    // }
   }
 
   // 获取分区统计信息
@@ -178,6 +173,104 @@ export class DBMQAPIClient {
       return response.data.data as Record<string, unknown>;
     }
     throw new Error(response.data.error || 'Health check failed');
+  }
+
+  // 获取手动分配列表
+  static async getManualAssignments(groupId: string): Promise<ManualAssignment[]> {
+    const response = await apiClient.get<APIResponse<ManualAssignment[]>>(
+      `/manual-assignments/?group_id=${encodeURIComponent(groupId)}`
+    );
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch manual assignments');
+  }
+
+  // 创建手动分配
+  static async createManualAssignment(data: CreateManualAssignmentRequest): Promise<ManualAssignment> {
+    const response = await apiClient.post<APIResponse<ManualAssignment>>('/manual-assignments/', data);
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to create manual assignment');
+  }
+
+  // 删除手动分配
+  static async deleteManualAssignment(id: number): Promise<void> {
+    const response = await apiClient.delete<APIResponse>(`/manual-assignments/${id}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete manual assignment');
+    }
+  }
+
+  // 获取集群列表
+  static async getClusters(): Promise<ClusterInfo[]> {
+    const response = await apiClient.get<APIResponse<ClusterInfo[]>>('/clusters');
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch clusters');
+  }
+
+  // 获取集群指标
+  static async getClusterMetrics(clusterId: string): Promise<ClusterMetricsDetail> {
+    const response = await apiClient.get<APIResponse<ClusterMetricsDetail>>(`/clusters/${clusterId}/metrics`);
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch cluster metrics');
+  }
+
+  // 获取 Broker 列表
+  static async getClusterBrokers(clusterId: string): Promise<BrokerInfo[]> {
+    const response = await apiClient.get<APIResponse<BrokerInfo[]>>(`/clusters/${clusterId}/brokers`);
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch brokers');
+  }
+
+  // 获取 DBMQ 统计信息
+  static async getDBMQStats(): Promise<DBMQStats> {
+    const response = await apiClient.get<APIResponse<DBMQStats>>('/dbmq/stats');
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch DBMQ stats');
+  }
+
+  // 获取 Topic 指标
+  static async getTopicMetrics(topicName: string): Promise<TopicMetrics> {
+    const response = await apiClient.get<APIResponse<TopicMetrics>>(`/topics/${topicName}/metrics`);
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch topic metrics');
+  }
+
+  // 获取 RMQ 消费者列表
+  static async getRMQConsumers(): Promise<RMQConsumerInfo[]> {
+    const response = await apiClient.get<APIResponse<RMQConsumerInfo[]>>('/rmq/consumers');
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch RMQ consumers');
+  }
+
+  // 暂停 RMQ 消费者
+  static async pauseConsumer(consumerId: string): Promise<void> {
+    const response = await apiClient.post<APIResponse>(`/rmq/consumers/${encodeURIComponent(consumerId)}/pause`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to pause consumer');
+    }
+  }
+
+  // 恢复 RMQ 消费者
+  static async resumeConsumer(consumerId: string): Promise<void> {
+    const response = await apiClient.post<APIResponse>(`/rmq/consumers/${encodeURIComponent(consumerId)}/resume`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to resume consumer');
+    }
   }
 }
 
