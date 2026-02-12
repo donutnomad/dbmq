@@ -402,7 +402,13 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                 </td>
               </tr>
             ) : (
-              consumerGroups.map((group) => {
+              [...consumerGroups].sort((a, b) => {
+                const stateA = a.state || a.status || '';
+                const stateB = b.state || b.status || '';
+                const isDeadA = stateA === 'Dead' ? 1 : 0;
+                const isDeadB = stateB === 'Dead' ? 1 : 0;
+                return isDeadA - isDeadB;
+              }).map((group) => {
                 const groupId = group.groupId || group.name || '--';
                 return (
                   <tr key={groupId} className="hover:bg-gray-50 transition-colors group">
