@@ -239,7 +239,7 @@ export default function ManualAssignmentsPage() {
                 <p className="mt-1 text-sm text-red-700">{error}</p>
                 <p className="mt-2 text-xs text-red-600">
                   请检查：
-                  <br />• 后端服务是否运行（http://localhost:8081）
+                  <br />• 后端服务是否正常运行
                   <br />• 浏览器控制台是否有 CORS 错误
                   <br />• API 配置是否正确
                 </p>

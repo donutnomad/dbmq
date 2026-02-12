@@ -105,51 +105,30 @@ func NewServer(config ServerConfig) (*Server, error) {
 	return s, nil
 }
 
-//
-//// RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
-//func RegisterAPIs(handler *gin.Engine, cfg ServerConfig) {
-//	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
-//	dashPath := cfg.DashboardPath
-//	if dashPath == "" {
-//		dashPath = "/dbmq/api/v1/ui"
-//	}
-//	handler.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
-//
-//	// 注册各个 API（有 AccessToken 时通过 APIHandler 注入 token 校验）
-//	h := cfg.APIHandler
-//	if h == nil && cfg.AccessToken != "" {
-//		h = &tokenPreHandler{token: cfg.AccessToken}
-//	}
-//	NewHealthAPIWrap(NewHealthAPI(s.deps), h).BindAll(handler)
-//	NewDashboardAPIWrap(NewDashboardAPI(s.deps), h).BindAll(handler)
-//	NewTopicAPIWrap(NewTopicAPI(s.deps), h).BindAll(handler)
-//	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), h).BindAll(handler)
-//	NewDBMQAPIWrap(NewDBMQAPI(s.deps), h).BindAll(handler)
-//	NewClusterAPIWrap(NewClusterAPI(s.deps), h).BindAll(handler)
-//	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), h).BindAll(handler)
-//}
-
-// RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
-func (s *Server) RegisterAPIs() {
+func RegisterAPIs(handler gin.IRoutes, cfg ServerConfig, deps *Deps) {
 	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
-	dashPath := s.config.DashboardPath
+	dashPath := cfg.DashboardPath
 	if dashPath == "" {
 		dashPath = "/dbmq/api/v1/ui"
 	}
-	s.engine.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
+	handler.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
 
 	// 注册各个 API（有 AccessToken 时通过 APIHandler 注入 token 校验）
-	h := s.config.APIHandler
-	if h == nil && s.config.AccessToken != "" {
-		h = &tokenPreHandler{token: s.config.AccessToken}
+	h := cfg.APIHandler
+	if h == nil && cfg.AccessToken != "" {
+		h = &tokenPreHandler{token: cfg.AccessToken}
 	}
-	NewHealthAPIWrap(NewHealthAPI(s.deps), h).BindAll(s.engine)
-	NewDashboardAPIWrap(NewDashboardAPI(s.deps), h).BindAll(s.engine)
-	NewTopicAPIWrap(NewTopicAPI(s.deps), h).BindAll(s.engine)
-	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), h).BindAll(s.engine)
-	NewDBMQAPIWrap(NewDBMQAPI(s.deps), h).BindAll(s.engine)
-	NewClusterAPIWrap(NewClusterAPI(s.deps), h).BindAll(s.engine)
-	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), h).BindAll(s.engine)
+	NewHealthAPIWrap(NewHealthAPI(deps), h).BindAll(handler)
+	NewDashboardAPIWrap(NewDashboardAPI(deps), h).BindAll(handler)
+	NewTopicAPIWrap(NewTopicAPI(deps), h).BindAll(handler)
+	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(deps), h).BindAll(handler)
+	NewDBMQAPIWrap(NewDBMQAPI(deps), h).BindAll(handler)
+	NewClusterAPIWrap(NewClusterAPI(deps), h).BindAll(handler)
+	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(deps), h).BindAll(handler)
+}
+
+func (s *Server) RegisterAPIs() {
+	RegisterAPIs(s.engine, s.config, s.deps)
 }
 
 // tokenPreHandler 内置的 token 校验 APIPreHandler。

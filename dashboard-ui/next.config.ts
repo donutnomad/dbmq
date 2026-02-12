@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
-// API 配置 - 统一的配置源
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8081';
+// API 配置 - 开发环境 rewrites 代理（仅 npm run dev 时生效）
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 
 const nextConfig: NextConfig = {
   // 注释掉静态导出配置，因为有动态路由
