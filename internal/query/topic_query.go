@@ -172,16 +172,86 @@ func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetri
 	if err := q.db.WithContext(ctx).Find(&topics).Error; err != nil {
 		return nil, fmt.Errorf("failed to get all topics: %w", err)
 	}
+	if len(topics) == 0 {
+		return nil, nil
+	}
 
-	var metricsSlice []TopicMetrics
+	// 一次查询获取所有 topic+partition 的统计信息
+	type partitionStatRow struct {
+		Topic        string `gorm:"column:topic"`
+		Partition    uint   `gorm:"column:partition"`
+		MessageCount int64  `gorm:"column:message_count"`
+		SizeBytes    int64  `gorm:"column:size_bytes"`
+		LastMsgID    int64  `gorm:"column:last_msg_id"`
+	}
+	var rows []partitionStatRow
+	err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+		Select("topic, `partition`, COUNT(*) AS message_count, COALESCE(SUM(LENGTH(body)), 0) AS size_bytes, COALESCE(MAX(id), -1) AS last_msg_id").
+		Group("topic, `partition`").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get partition stats: %w", err)
+	}
+
+	// 按 topic 分组
+	type partStats struct {
+		Partition    uint
+		MessageCount int64
+		SizeBytes    int64
+		LastMsgID    int64
+	}
+	statsByTopic := make(map[string][]partStats)
+	for _, r := range rows {
+		statsByTopic[r.Topic] = append(statsByTopic[r.Topic], partStats{
+			Partition:    r.Partition,
+			MessageCount: r.MessageCount,
+			SizeBytes:    r.SizeBytes,
+			LastMsgID:    r.LastMsgID,
+		})
+	}
+
+	// 组装结果
+	metricsSlice := make([]TopicMetrics, 0, len(topics))
 	for _, t := range topics {
-		topicMetrics, err := q.GetTopicMetrics(ctx, t.TopicName)
-		if err != nil {
-			// 记录错误但继续处理其他 Topic
-			fmt.Printf("Warning: failed to get metrics for topic %s: %v\n", t.TopicName, err)
-			continue
+		metrics := TopicMetrics{
+			TopicName:      t.TopicName,
+			PartitionCount: int(t.PartitionCount),
+			CreatedAt:      t.CreatedAt,
+			Config:         make(map[string]string),
 		}
-		metricsSlice = append(metricsSlice, *topicMetrics)
+
+		// 解析 Topic 配置
+		if len(t.Configs) > 0 {
+			var config map[string]any
+			if err := json.Unmarshal(t.Configs, &config); err == nil {
+				for k, v := range config {
+					metrics.Config[k] = fmt.Sprintf("%v", v)
+				}
+			}
+		}
+
+		// 填充分区指标
+		partitions := make([]PartitionMetricsDTO, t.PartitionCount)
+		for i := range t.PartitionCount {
+			partitions[i] = PartitionMetricsDTO{Partition: int(i), LatestOffset: -1}
+		}
+		for _, ps := range statsByTopic[t.TopicName] {
+			if ps.Partition < t.PartitionCount {
+				partitions[ps.Partition] = PartitionMetricsDTO{
+					Partition:    int(ps.Partition),
+					LatestOffset: ps.LastMsgID,
+					MessageCount: ps.MessageCount,
+					SizeBytes:    ps.SizeBytes,
+				}
+			}
+			metrics.MessageCount += ps.MessageCount
+			metrics.SizeBytes += ps.SizeBytes
+			if ps.LastMsgID > metrics.LatestOffset {
+				metrics.LatestOffset = ps.LastMsgID
+			}
+		}
+		metrics.Partitions = partitions
+		metricsSlice = append(metricsSlice, metrics)
 	}
 
 	return metricsSlice, nil

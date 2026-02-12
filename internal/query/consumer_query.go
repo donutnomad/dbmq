@@ -285,7 +285,7 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 		metrics.State = "Active"
 	}
 
-	// 获取消费进度记录
+	// 获取消费进度记录（已有批量查询，一次取回该 group 的所有 progress）
 	progressRecords, err := q.GetProgressRecords(ctx, groupID)
 	if err != nil {
 		return nil, err
@@ -294,6 +294,46 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 	metrics.AssignedTopics = lo.Uniq(lo.Map(progressRecords, func(item consumerprogressrepo.ProgressPO, _ int) string {
 		return item.Topic
 	}))
+
+	if len(progressRecords) == 0 {
+		return metrics, nil
+	}
+
+	// 将 progress 按 topic+partition 建立索引
+	type tpKey struct {
+		Topic     string
+		Partition uint
+	}
+	progressMap := make(map[tpKey]*consumerprogressrepo.ProgressPO, len(progressRecords))
+	for i := range progressRecords {
+		k := tpKey{Topic: progressRecords[i].Topic, Partition: progressRecords[i].Partition}
+		progressMap[k] = &progressRecords[i]
+	}
+
+	// 一次查询获取所有相关 topic+partition 的最新消息 ID 和总数
+	type msgStatRow struct {
+		Topic      string `gorm:"column:topic"`
+		Partition  uint   `gorm:"column:partition"`
+		LatestID   int64  `gorm:"column:latest_id"`
+		TotalCount int64  `gorm:"column:total_count"`
+	}
+
+	topicNames := metrics.AssignedTopics
+	var msgStats []msgStatRow
+	err = q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+		Select("topic, `partition`, COALESCE(MAX(id), -1) AS latest_id, COUNT(*) AS total_count").
+		Where("topic IN ?", topicNames).
+		Group("topic, `partition`").
+		Find(&msgStats).Error
+	if err != nil {
+		return nil, err
+	}
+
+	msgStatMap := make(map[tpKey]*msgStatRow, len(msgStats))
+	for i := range msgStats {
+		k := tpKey{Topic: msgStats[i].Topic, Partition: msgStats[i].Partition}
+		msgStatMap[k] = &msgStats[i]
+	}
 
 	// 计算消费延迟
 	var totalLag int64
@@ -305,33 +345,55 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 		}
 
 		for i := range topicPO.PartitionCount {
-			// 获取已提交的 offset
-			var progress consumerprogressrepo.ProgressPO
-			err := q.db.WithContext(ctx).
-				Where("group_id = ? AND topic = ? AND `partition` = ?", groupID, topicName, i).
-				First(&progress).Error
-			if err != nil && err != gorm.ErrRecordNotFound {
-				continue
+			k := tpKey{Topic: topicName, Partition: i}
+
+			progress := progressMap[k]
+			var currentID int64 = -1
+			var updateAt int64
+			var watermark int64
+			if progress != nil {
+				currentID = progress.LastConsumedMessageID
+				updateAt = progress.UpdatedAt.UnixMilli()
+				watermark = progress.SubscriptionStartWatermark
 			}
 
-			currentID := progress.LastConsumedMessageID
-			updateAt := progress.UpdatedAt.UnixMilli()
-			watermark := progress.SubscriptionStartWatermark
-
-			// 获取该 Topic+分区的最新消息 ID
-			var latestID int64
-			err = q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
-				Select("COALESCE(MAX(id), -1)").
-				Where("topic = ? AND `partition` = ?", topicName, i).
-				Scan(&latestID).Error
-			if err != nil {
-				continue
+			ms := msgStatMap[k]
+			var latestID int64 = -1
+			var totalMsgCount int64
+			if ms != nil {
+				latestID = ms.LatestID
+				totalMsgCount = ms.TotalCount
 			}
 
-			// 获取分区延迟统计
-			lagStats, err := q.GetPartitionLagStats(ctx, topicName, i, currentID, watermark)
-			if err != nil {
-				continue
+			// 计算 lag：消息 ID > currentID 的数量
+			var lag int64
+			var consumedCount int64
+			if totalMsgCount > 0 && currentID >= 0 {
+				// 使用 latestID 和 currentID 之间的关系计算，避免额外查询
+				// lag = 消息 ID > currentID 的数量
+				// consumed = 消息 ID >= watermark AND < currentID 的数量
+				// 使用一条聚合查询计算
+				var stats struct {
+					ConsumedCount int64 `gorm:"column:consumed_count"`
+					LagCount      int64 `gorm:"column:lag_count"`
+				}
+				err = q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+					Select(`
+						SUM(CASE WHEN id >= ? AND id < ? THEN 1 ELSE 0 END) as consumed_count,
+						SUM(CASE WHEN id > ? THEN 1 ELSE 0 END) as lag_count
+					`, watermark, currentID, currentID).
+					Where("topic = ? AND `partition` = ?", topicName, i).
+					Scan(&stats).Error
+				if err != nil {
+					continue
+				}
+				lag = stats.LagCount
+				consumedCount = stats.ConsumedCount
+			}
+
+			var consumedPercentage float64
+			if consumedCount+lag > 0 {
+				consumedPercentage = float64(consumedCount) / float64(consumedCount+lag) * 100
 			}
 
 			partitionLag := PartitionLagMetrics{
@@ -339,17 +401,17 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 				Partition:                  int(i),
 				CurrentOffset:              currentID,
 				LatestOffset:               latestID,
-				Lag:                        lagStats.Lag,
+				Lag:                        lag,
 				SubscriptionStartWatermark: watermark,
-				TotalMessageCount:          lagStats.TotalMessageCount,
+				TotalMessageCount:          totalMsgCount,
 				LastMessageId:              latestID,
-				ConsumedMessages:           lagStats.ConsumedMessages,
-				RemainingMessages:          lagStats.RemainingMessages,
-				ConsumedPercentage:         lagStats.ConsumedPercentage,
+				ConsumedMessages:           consumedCount,
+				RemainingMessages:          lag,
+				ConsumedPercentage:         consumedPercentage,
 				UpdatedAt:                  updateAt,
 			}
 			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
-			totalLag += lagStats.Lag
+			totalLag += lag
 		}
 	}
 	metrics.Lag = totalLag
@@ -358,27 +420,230 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 }
 
 // GetAllConsumerGroupsMetrics 获取所有消费组监控指标
+// 批量查询优化：将多个 N+1 查询合并为少量批量查询
 func (q *consumerQueryMySQL) GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error) {
-	// 获取所有消费组
-	var generations []struct {
-		GroupID string `gorm:"column:group_id"`
+	// 1. 批量获取所有消费组代际信息
+	type generationRow struct {
+		GroupID      string `gorm:"column:group_id"`
+		GenerationID int    `gorm:"column:generation_id"`
 	}
-	err := q.db.WithContext(ctx).Table("mq_consumer_group_generations").
-		Select("DISTINCT group_id").
-		Find(&generations).Error
-	if err != nil {
+	var allGenerations []generationRow
+	if err := q.db.WithContext(ctx).Table("mq_consumer_group_generations").
+		Select("group_id, generation_id").
+		Find(&allGenerations).Error; err != nil {
 		return nil, fmt.Errorf("failed to get all groups: %w", err)
 	}
+	if len(allGenerations) == 0 {
+		return nil, nil
+	}
 
-	var metricsSlice []ConsumerGroupMetrics
-	for _, g := range generations {
-		groupMetrics, err := q.GetConsumerGroupMetrics(ctx, g.GroupID)
-		if err != nil {
-			// 记录错误但继续处理其他消费组
-			fmt.Printf("Warning: failed to get metrics for consumer group %s: %v\n", g.GroupID, err)
+	generationMap := make(map[string]int, len(allGenerations))
+	groupIDs := make([]string, 0, len(allGenerations))
+	for _, g := range allGenerations {
+		generationMap[g.GroupID] = g.GenerationID
+		groupIDs = append(groupIDs, g.GroupID)
+	}
+
+	// 2. 批量获取所有活跃消费者心跳
+	var allHeartbeats []heartbeatrepo.HeartbeatPO
+	if err := q.db.WithContext(ctx).
+		Where("group_id IN ?", groupIDs).
+		Where("offline = ? AND last_heartbeat > DATE_SUB(NOW(), INTERVAL 1 HOUR)", false).
+		Find(&allHeartbeats).Error; err != nil {
+		return nil, err
+	}
+	heartbeatsByGroup := make(map[string][]heartbeatrepo.HeartbeatPO)
+	for _, hb := range allHeartbeats {
+		heartbeatsByGroup[hb.GroupID] = append(heartbeatsByGroup[hb.GroupID], hb)
+	}
+
+	// 3. 批量获取所有消费进度
+	var allProgress []consumerprogressrepo.ProgressPO
+	if err := q.db.WithContext(ctx).Model(&consumerprogressrepo.ProgressPO{}).
+		Where("group_id IN ?", groupIDs).
+		Find(&allProgress).Error; err != nil {
+		return nil, err
+	}
+	type tpKey struct {
+		Topic     string
+		Partition uint
+	}
+	progressByGroup := make(map[string][]consumerprogressrepo.ProgressPO)
+	allTopicNames := make(map[string]struct{})
+	for _, p := range allProgress {
+		progressByGroup[p.GroupID] = append(progressByGroup[p.GroupID], p)
+		allTopicNames[p.Topic] = struct{}{}
+	}
+
+	// 4. 批量获取所有相关 Topic 信息
+	topicNameList := make([]string, 0, len(allTopicNames))
+	for t := range allTopicNames {
+		topicNameList = append(topicNameList, t)
+	}
+	topicMap := make(map[string]*topicrepo.TopicPO)
+	if len(topicNameList) > 0 {
+		var topics []topicrepo.TopicPO
+		if err := q.db.WithContext(ctx).Where("topic_name IN ?", topicNameList).Find(&topics).Error; err != nil {
+			return nil, err
+		}
+		for i := range topics {
+			topicMap[topics[i].TopicName] = &topics[i]
+		}
+	}
+
+	// 5. 批量获取所有相关 topic+partition 的消息统计
+	type msgStatRow struct {
+		Topic      string `gorm:"column:topic"`
+		Partition  uint   `gorm:"column:partition"`
+		LatestID   int64  `gorm:"column:latest_id"`
+		TotalCount int64  `gorm:"column:total_count"`
+	}
+	msgStatMap := make(map[tpKey]*msgStatRow)
+	if len(topicNameList) > 0 {
+		var msgStats []msgStatRow
+		if err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+			Select("topic, `partition`, COALESCE(MAX(id), -1) AS latest_id, COUNT(*) AS total_count").
+			Where("topic IN ?", topicNameList).
+			Group("topic, `partition`").
+			Find(&msgStats).Error; err != nil {
+			return nil, err
+		}
+		for i := range msgStats {
+			k := tpKey{Topic: msgStats[i].Topic, Partition: msgStats[i].Partition}
+			msgStatMap[k] = &msgStats[i]
+		}
+	}
+
+	// 6. 在内存中组装每个消费组的指标
+	heartbeatTimeout := 30 * time.Second
+	cutoff := time.Now().Add(-heartbeatTimeout)
+
+	metricsSlice := make([]ConsumerGroupMetrics, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		metrics := ConsumerGroupMetrics{
+			GroupID:        groupID,
+			ProtocolType:   "consumer",
+			AssignedTopics: []string{},
+			Members:        []ConsumerMemberMetrics{},
+			PartitionLags:  []PartitionLagMetrics{},
+			GenerationID:   int64(generationMap[groupID]),
+		}
+
+		// 处理心跳/成员
+		var onlineCount int
+		for _, item := range heartbeatsByGroup[groupID] {
+			var assignment []PartitionInfo
+			for _, p := range item.AssignedPartitions {
+				assignment = append(assignment, PartitionInfo{Topic: p.Topic, Partition: p.Partition})
+			}
+			metrics.Members = append(metrics.Members, ConsumerMemberMetrics{
+				ConsumerID:    item.ConsumerID,
+				ClientID:      item.ConsumerID,
+				Host:          "localhost",
+				LastHeartbeat: item.LastHeartbeat,
+				Assignment:    assignment,
+			})
+			if !item.Offline && !item.LastHeartbeat.Before(cutoff) {
+				onlineCount++
+				metrics.LastHeartbeat = item.LastHeartbeat
+			}
+		}
+		if onlineCount == 0 {
+			metrics.State = "Dead"
+		} else {
+			metrics.State = "Active"
+		}
+
+		// 处理消费进度
+		progressRecords := progressByGroup[groupID]
+		metrics.AssignedTopics = lo.Uniq(lo.Map(progressRecords, func(item consumerprogressrepo.ProgressPO, _ int) string {
+			return item.Topic
+		}))
+
+		if len(progressRecords) == 0 {
+			metricsSlice = append(metricsSlice, metrics)
 			continue
 		}
-		metricsSlice = append(metricsSlice, *groupMetrics)
+
+		// 建立 progress 索引
+		progressMap := make(map[tpKey]*consumerprogressrepo.ProgressPO, len(progressRecords))
+		for i := range progressRecords {
+			k := tpKey{Topic: progressRecords[i].Topic, Partition: progressRecords[i].Partition}
+			progressMap[k] = &progressRecords[i]
+		}
+
+		// 计算消费延迟
+		var totalLag int64
+		for _, topicName := range metrics.AssignedTopics {
+			tp := topicMap[topicName]
+			if tp == nil {
+				continue
+			}
+			for i := range tp.PartitionCount {
+				k := tpKey{Topic: topicName, Partition: i}
+
+				progress := progressMap[k]
+				var currentID int64 = -1
+				var updateAt int64
+				var watermark int64
+				if progress != nil {
+					currentID = progress.LastConsumedMessageID
+					updateAt = progress.UpdatedAt.UnixMilli()
+					watermark = progress.SubscriptionStartWatermark
+				}
+
+				ms := msgStatMap[k]
+				var latestID int64 = -1
+				var totalMsgCount int64
+				if ms != nil {
+					latestID = ms.LatestID
+					totalMsgCount = ms.TotalCount
+				}
+
+				var lag int64
+				var consumedCount int64
+				if totalMsgCount > 0 && currentID >= 0 {
+					var stats struct {
+						ConsumedCount int64 `gorm:"column:consumed_count"`
+						LagCount      int64 `gorm:"column:lag_count"`
+					}
+					if err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+						Select(`
+							SUM(CASE WHEN id >= ? AND id < ? THEN 1 ELSE 0 END) as consumed_count,
+							SUM(CASE WHEN id > ? THEN 1 ELSE 0 END) as lag_count
+						`, watermark, currentID, currentID).
+						Where("topic = ? AND `partition` = ?", topicName, i).
+						Scan(&stats).Error; err != nil {
+						continue
+					}
+					lag = stats.LagCount
+					consumedCount = stats.ConsumedCount
+				}
+
+				var consumedPercentage float64
+				if consumedCount+lag > 0 {
+					consumedPercentage = float64(consumedCount) / float64(consumedCount+lag) * 100
+				}
+
+				metrics.PartitionLags = append(metrics.PartitionLags, PartitionLagMetrics{
+					Topic:                      topicName,
+					Partition:                  int(i),
+					CurrentOffset:              currentID,
+					LatestOffset:               latestID,
+					Lag:                        lag,
+					SubscriptionStartWatermark: watermark,
+					TotalMessageCount:          totalMsgCount,
+					LastMessageId:              latestID,
+					ConsumedMessages:           consumedCount,
+					RemainingMessages:          lag,
+					ConsumedPercentage:         consumedPercentage,
+					UpdatedAt:                  updateAt,
+				})
+				totalLag += lag
+			}
+		}
+		metrics.Lag = totalLag
+		metricsSlice = append(metricsSlice, metrics)
 	}
 
 	return metricsSlice, nil
