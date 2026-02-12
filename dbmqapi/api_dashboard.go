@@ -3,6 +3,8 @@ package dbmqapi
 import (
 	"context"
 	"time"
+
+	"github.com/donutnomad/dbmq"
 )
 
 // DashboardAPI 仪表板 API
@@ -71,7 +73,7 @@ func (a *dashboardAPI) GetDashboardData(ctx context.Context) (DashboardDataResp,
 		ConsumerGroups: groupResps,
 		System: SystemInfoResp{
 			Uptime:  uptime,
-			Version: "1.0.0",
+			Version: dbmq.Version(),
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
 	}, nil

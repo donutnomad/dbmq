@@ -163,7 +163,7 @@ func (q *clusterQueryMySQL) GetBrokerMetrics(ctx context.Context, startTime func
 		TopicCount:     brokerStats.TopicCount,
 		PartitionCount: brokerStats.PartitionCount,
 		MessageCount:   brokerStats.MessageCount,
-		Version:        "dbmq-1.0.0",
+		Version:        "",
 		LastUpdated:    time.Now(),
 		Uptime:         uptime,
 	}, nil

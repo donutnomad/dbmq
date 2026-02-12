@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/donutnomad/dbmq"
 )
 
 // HealthAPI 健康检查 API
@@ -61,11 +63,11 @@ func (a *healthAPI) ActuatorInfo(ctx context.Context) (InfoResp, error) {
 		App: AppInfo{
 			Name:        "DBMQ",
 			Description: "Database-based Message Queue",
-			Version:     "1.0.0",
+			Version:     dbmq.Version(),
 		},
 		Build: BuildInfo{
 			Time:    time.Now().Format(time.RFC3339),
-			Version: "1.0.0",
+			Version: dbmq.Version(),
 		},
 	}, nil
 }

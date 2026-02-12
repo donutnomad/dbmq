@@ -3,6 +3,7 @@ package dbmqapi
 import (
 	"context"
 
+	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/query"
 )
@@ -61,7 +62,12 @@ func (mc *MetricsClient) GetConsumerGroupMetrics(ctx context.Context, groupID st
 // GetBrokerMetrics 获取Broker监控指标
 // 兼容Kafka UI的Broker页面
 func (mc *MetricsClient) GetBrokerMetrics(ctx context.Context) (*query.BrokerMetrics, error) {
-	return mc.clusterQuery.GetBrokerMetrics(ctx, mc.startTime)
+	result, err := mc.clusterQuery.GetBrokerMetrics(ctx, mc.startTime)
+	if err != nil {
+		return nil, err
+	}
+	result.Version = dbmq.Version()
+	return result, nil
 }
 
 // GetAllTopicsMetrics 获取所有Topic的监控指标
