@@ -27,7 +27,13 @@ func (r *mysqlRepo) CreateBatch(ctx context.Context, messages []*message.Message
 	for _, po := range pos {
 		po.Fix()
 	}
-	return r.db.WithContext(ctx).CreateInBatches(pos, 100).Error
+	if err := r.db.WithContext(ctx).CreateInBatches(pos, 100).Error; err != nil {
+		return err
+	}
+	for i, po := range pos {
+		messages[i].ID = po.ID
+	}
+	return nil
 }
 
 func (r *mysqlRepo) Fetch(ctx context.Context, topic string, partition uint, afterID int64, limit int) ([]*message.Message, error) {

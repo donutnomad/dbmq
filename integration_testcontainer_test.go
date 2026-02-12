@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/db/migration"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,7 +83,7 @@ func TestMain(m *testing.M) {
 	env.DB = dbClient
 
 	// 应用schema
-	if err := db.ApplySchemas(dbClient); err != nil {
+	if err := migration.ApplySchemas(dbClient); err != nil {
 		log.Fatalf("Failed to apply schemas: %v", err)
 	}
 
@@ -435,7 +437,7 @@ func TestTC_AssignedButNotConsuming(t *testing.T) {
 	t.Logf("Active consumer consumed %d messages", activeCount)
 
 	// 验证懒消费者的分区消息未被消费
-	var records []db.ConsumerGroupConsumptionProgress
+	var records []consumerprogressrepo.ProgressPO
 	globalEnv.DB.Where("group_id = ?", "lazy-group").Find(&records)
 	t.Logf("Found %d offset records for lazy-group", len(records))
 
@@ -665,7 +667,7 @@ func TestTC_GenerationIDIsolation(t *testing.T) {
 	require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
 
 	// 记录初始 generation
-	var gen1 db.ConsumerGroupGeneration
+	var gen1 consumergrouprepo.GenerationPO
 	globalEnv.DB.Where("group_id = ?", "gen-group").First(&gen1)
 	t.Logf("Initial generation: %d", gen1.GenerationID)
 
@@ -682,7 +684,7 @@ func TestTC_GenerationIDIsolation(t *testing.T) {
 	// 等待重平衡完成
 	time.Sleep(1 * time.Second)
 
-	var gen2 db.ConsumerGroupGeneration
+	var gen2 consumergrouprepo.GenerationPO
 	globalEnv.DB.Where("group_id = ?", "gen-group").First(&gen2)
 	t.Logf("After c2 joins generation: %d", gen2.GenerationID)
 
@@ -892,7 +894,7 @@ func TestTC_HeartbeatTimeout(t *testing.T) {
 	require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
 
 	// 记录初始 generation
-	var gen1 db.ConsumerGroupGeneration
+	var gen1 consumergrouprepo.GenerationPO
 	globalEnv.DB.Where("group_id = ?", "heartbeat-group").First(&gen1)
 	initialGen := gen1.GenerationID
 	t.Logf("Initial generation: %d", initialGen)
@@ -955,7 +957,7 @@ func TestTC_HeartbeatTimeout(t *testing.T) {
 	t.Logf("c2 consumed %d messages", c2Consumed)
 
 	// 验证 generation 增加
-	var gen2 db.ConsumerGroupGeneration
+	var gen2 consumergrouprepo.GenerationPO
 	globalEnv.DB.Where("group_id = ?", "heartbeat-group").First(&gen2)
 	t.Logf("Final generation: %d", gen2.GenerationID)
 	assert.Greater(t, gen2.GenerationID, initialGen)
@@ -1946,4 +1948,907 @@ func TestTC_CommitMessage(t *testing.T) {
 		}())
 	}
 	assert.Equal(t, 2, len(newMsgs), "Should receive only uncommitted messages (2)")
+}
+
+// =============================================================================
+// 测试场景27: Producer.SendBatch 批量发送
+// =============================================================================
+
+func TestTC_ProducerSendBatch(t *testing.T) {
+	t.Run("EmptyMessages", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		p, err := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		require.NoError(t, err)
+
+		results, err := p.SendBatch(ctx)
+		assert.NoError(t, err)
+		assert.Nil(t, results)
+	})
+
+	t.Run("CrossTopicBatch", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "batch-topic-a", NumPartitions: 2}))
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "batch-topic-b", NumPartitions: 3}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		var messages []ProducerMessage
+		for i := range 5 {
+			messages = append(messages, ProducerMessage{
+				Topic: "batch-topic-a",
+				Key:   fmt.Sprintf("ka%d", i),
+				Value: jsonValue(fmt.Sprintf("a-%d", i)),
+			})
+		}
+		for i := range 5 {
+			messages = append(messages, ProducerMessage{
+				Topic: "batch-topic-b",
+				Key:   fmt.Sprintf("kb%d", i),
+				Value: jsonValue(fmt.Sprintf("b-%d", i)),
+			})
+		}
+
+		results, err := p.SendBatch(ctx, messages...)
+		require.NoError(t, err)
+		assert.Len(t, results, 10)
+
+		for _, r := range results {
+			assert.True(t, r.Topic == "batch-topic-a" || r.Topic == "batch-topic-b")
+			assert.True(t, r.Offset > 0)
+		}
+
+		var countA, countB int64
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_messages WHERE topic = ?", "batch-topic-a").Scan(&countA)
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_messages WHERE topic = ?", "batch-topic-b").Scan(&countB)
+		assert.Equal(t, int64(5), countA)
+		assert.Equal(t, int64(5), countB)
+	})
+
+	t.Run("NonexistentTopic", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "batch-exist", NumPartitions: 1}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		messages := []ProducerMessage{
+			{Topic: "batch-exist", Key: "k1", Value: jsonValue("ok")},
+			{Topic: "batch-ghost", Key: "k2", Value: jsonValue("fail")},
+		}
+		_, err := p.SendBatch(ctx, messages...)
+		assert.Error(t, err, "SendBatch should fail when batch contains nonexistent topic")
+		t.Logf("SendBatch with nonexistent topic: err=%v", err)
+	})
+
+	t.Run("EmptyTopicName", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		_, err := p.SendBatch(ctx, ProducerMessage{Topic: "", Key: "k1", Value: jsonValue("msg")})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot be empty")
+	})
+}
+
+// =============================================================================
+// 测试场景28: 分区路由算法
+// =============================================================================
+
+func TestTC_PartitionRouting(t *testing.T) {
+	t.Run("HashConsistency", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "hash-route-topic", NumPartitions: 8}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		var partitions []uint
+		for range 20 {
+			result, err := p.Send(ctx, ProducerMessage{
+				Topic: "hash-route-topic",
+				Key:   "fixed-key",
+				Value: jsonValue("data"),
+			})
+			require.NoError(t, err)
+			partitions = append(partitions, result.Partition)
+		}
+
+		// 所有消息应路由到同一分区
+		for i := 1; i < len(partitions); i++ {
+			assert.Equal(t, partitions[0], partitions[i],
+				"Same key should always route to same partition, got partition %d at index %d, expected %d",
+				partitions[i], i, partitions[0])
+		}
+		t.Logf("All 20 messages with key 'fixed-key' routed to partition %d", partitions[0])
+	})
+
+	t.Run("DifferentKeysDistribution", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "dist-route-topic", NumPartitions: 8}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		usedPartitions := make(map[uint]bool)
+		for i := range 100 {
+			result, err := p.Send(ctx, ProducerMessage{
+				Topic: "dist-route-topic",
+				Key:   fmt.Sprintf("unique-key-%d", i),
+				Value: jsonValue("data"),
+			})
+			require.NoError(t, err)
+			usedPartitions[result.Partition] = true
+		}
+
+		t.Logf("100 different keys used %d out of 8 partitions", len(usedPartitions))
+		assert.GreaterOrEqual(t, len(usedPartitions), 2, "100 different keys should use at least 2 partitions")
+	})
+
+	t.Run("RoundRobinUniformDistribution", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "rr-route-topic", NumPartitions: 8}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		partitionCounts := make(map[uint]int)
+		for range 80 {
+			result, err := p.Send(ctx, ProducerMessage{
+				Topic: "rr-route-topic",
+				Key:   "", // 空Key走轮询
+				Value: jsonValue("data"),
+			})
+			require.NoError(t, err)
+			partitionCounts[result.Partition]++
+		}
+
+		t.Logf("Round-robin distribution: %v", partitionCounts)
+		// 每个分区应恰好10条 (80/8=10)
+		for partition, count := range partitionCounts {
+			assert.Equal(t, 10, count, "Partition %d should have exactly 10 messages, got %d", partition, count)
+		}
+	})
+
+	t.Run("ConcurrentRoundRobinSafety", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "conc-rr-topic", NumPartitions: 8}))
+
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+
+		var wg sync.WaitGroup
+		var totalSent atomic.Int32
+		partitionCounts := sync.Map{}
+
+		for g := range 8 {
+			wg.Add(1)
+			go func(goroutineID int) {
+				defer wg.Done()
+				for i := range 10 {
+					result, err := p.Send(ctx, ProducerMessage{
+						Topic: "conc-rr-topic",
+						Key:   "",
+						Value: jsonValue(fmt.Sprintf("g%d-m%d", goroutineID, i)),
+					})
+					if err == nil {
+						totalSent.Add(1)
+						partitionCounts.Store(result.Partition, true)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(80), totalSent.Load(), "All 80 messages should be sent successfully")
+
+		var usedPartitions int
+		partitionCounts.Range(func(_, _ any) bool {
+			usedPartitions++
+			return true
+		})
+		t.Logf("Concurrent round-robin used %d partitions", usedPartitions)
+		assert.Greater(t, usedPartitions, 0, "Should have used at least 1 partition")
+
+		var dbTotal int64
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_messages WHERE topic = ?", "conc-rr-topic").Scan(&dbTotal)
+		assert.Equal(t, int64(80), dbTotal, "Database should have 80 messages")
+	})
+}
+
+// =============================================================================
+// 测试场景29: PollLoop 和 PollLoopTimeout
+// =============================================================================
+
+func TestTC_PollLoop(t *testing.T) {
+	t.Run("PollLoopNormalConsumeAndExit", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "pollloop-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-pollloop",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		// 发送10条消息
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 10 {
+			_, err := p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("k%d", i), Value: jsonValue(fmt.Sprintf("msg-%d", i))})
+			require.NoError(t, err)
+		}
+
+		consumer, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "pollloop-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+		consumer.SubscribeTopics(topicName)
+		require.Eventually(t, consumer.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer consumer.Close()
+
+		pollCtx, cancel := context.WithCancel(ctx)
+		var consumed atomic.Int32
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- consumer.PollLoop(pollCtx, 1*time.Second, func(messages []ConsumerMessage) {
+				for _, msg := range messages {
+					consumer.Acknowledge(msg)
+				}
+				consumer.CommitSync(pollCtx)
+				consumed.Add(int32(len(messages)))
+				if consumed.Load() >= 10 {
+					cancel()
+				}
+			})
+		}()
+
+		// 等待 PollLoop 退出
+		select {
+		case err := <-errCh:
+			assert.ErrorIs(t, err, context.Canceled, "PollLoop should return context.Canceled")
+		case <-time.After(15 * time.Second):
+			cancel()
+			t.Fatal("PollLoop did not exit in time")
+		}
+
+		assert.Equal(t, int32(10), consumed.Load(), "Should consume all 10 messages")
+		t.Logf("PollLoop consumed %d messages", consumed.Load())
+	})
+
+	t.Run("PollLoopTimeoutDynamic", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "pollloop-timeout-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-pollloop-to",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		// 发送5条消息
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 5 {
+			_, err := p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("k%d", i), Value: jsonValue(fmt.Sprintf("msg-%d", i))})
+			require.NoError(t, err)
+		}
+
+		consumer, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "pollloop-to-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+		consumer.SubscribeTopics(topicName)
+		require.Eventually(t, consumer.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer consumer.Close()
+
+		pollCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		var consumed atomic.Int32
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- consumer.PollLoopTimeout(pollCtx,
+				func(c *Consumer, lastMessageCount int64) time.Duration {
+					if lastMessageCount > 0 {
+						return 100 * time.Millisecond
+					}
+					return 2 * time.Second
+				},
+				func(messages []ConsumerMessage) {
+					for _, msg := range messages {
+						consumer.Acknowledge(msg)
+					}
+					consumer.CommitSync(pollCtx)
+					consumed.Add(int32(len(messages)))
+				})
+		}()
+
+		// 等待消费到所有消息或超时
+		require.Eventually(t, func() bool {
+			return consumed.Load() >= 5
+		}, 10*time.Second, 200*time.Millisecond, "Should consume all 5 messages via PollLoopTimeout")
+		cancel()
+
+		<-errCh
+		t.Logf("PollLoopTimeout consumed %d messages", consumed.Load())
+		assert.GreaterOrEqual(t, consumed.Load(), int32(5))
+	})
+}
+
+// =============================================================================
+// 测试场景30: 手动分区分配 (ManualAssignment)
+// =============================================================================
+
+// createManualAssignment 在数据库中插入手动分配规则
+func createManualAssignment(t *testing.T, groupID, pattern, topicName string, partition uint) {
+	t.Helper()
+	err := globalEnv.DB.Exec(
+		"INSERT INTO mq_manual_partition_assignments (group_id, consumer_id_pattern, topic, `partition`) VALUES (?, ?, ?, ?)",
+		groupID, pattern, topicName, partition,
+	).Error
+	require.NoError(t, err, "Failed to insert manual assignment")
+}
+
+func TestTC_ManualPartitionAssignment(t *testing.T) {
+	t.Run("ExactMatch", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "manual-exact-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-manual-exact",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		c1, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "manual-exact-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+
+		// 插入精确匹配规则
+		createManualAssignment(t, "manual-exact-group", c1.ID(), topicName, 0)
+		createManualAssignment(t, "manual-exact-group", c1.ID(), topicName, 1)
+
+		c1.SubscribeTopics(topicName)
+		require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer c1.Close()
+
+		// 向所有4个分区发送消息
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 4 {
+			for j := range 3 {
+				// 使用 SendBatch 并指定分区（通过构造 key 使其落在特定分区）
+				p.Send(ctx, ProducerMessage{
+					Topic: topicName,
+					Key:   fmt.Sprintf("p%d-%d", i, j),
+					Value: jsonValue(fmt.Sprintf("partition%d-msg%d", i, j)),
+				})
+			}
+		}
+
+		// c1 消费
+		consumedPartitions := make(map[uint]int)
+		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		for {
+			msgs, err := c1.Poll(pollCtx, 500*time.Millisecond)
+			if err != nil {
+				break
+			}
+			for _, msg := range msgs {
+				consumedPartitions[msg.Partition]++
+				c1.Acknowledge(msg)
+			}
+			c1.CommitSync(pollCtx)
+		}
+		cancel()
+
+		t.Logf("c1 consumed from partitions: %v", consumedPartitions)
+		// c1 应只消费到 partition 0 和 1 的消息
+		for partition := range consumedPartitions {
+			assert.True(t, partition == 0 || partition == 1,
+				"c1 should only consume from partition 0 and 1, but consumed from partition %d", partition)
+		}
+	})
+
+	t.Run("PrefixMatch", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "manual-prefix-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-manual-prefix",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		c1, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "manual-prefix-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+
+		// Consumer ID 通常格式为 hostname:mac, 提取前缀
+		consumerID := c1.ID()
+		prefix := consumerID[:min(8, len(consumerID))]
+		createManualAssignment(t, "manual-prefix-group", prefix+"*", topicName, 2)
+
+		c1.SubscribeTopics(topicName)
+		require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer c1.Close()
+
+		// 发送消息到所有分区
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 20 {
+			p.Send(ctx, ProducerMessage{
+				Topic: topicName,
+				Key:   fmt.Sprintf("k%d", i),
+				Value: jsonValue(fmt.Sprintf("msg-%d", i)),
+			})
+		}
+
+		// c1 消费
+		consumedPartitions := make(map[uint]int)
+		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		for {
+			msgs, err := c1.Poll(pollCtx, 500*time.Millisecond)
+			if err != nil {
+				break
+			}
+			for _, msg := range msgs {
+				consumedPartitions[msg.Partition]++
+				c1.Acknowledge(msg)
+			}
+			c1.CommitSync(pollCtx)
+		}
+		cancel()
+
+		t.Logf("Prefix-matched consumer consumed from partitions: %v", consumedPartitions)
+		// 应包含 partition 2 （手动分配的分区）
+		if len(consumedPartitions) > 0 {
+			_, hasPart2 := consumedPartitions[2]
+			assert.True(t, hasPart2, "Consumer with prefix match should get partition 2")
+		}
+	})
+
+	t.Run("ManualAndAutoMixed", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "manual-mixed-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-manual-mixed",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		// c1 手动分配 partition 0, 1
+		c1, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "manual-mixed-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+
+		createManualAssignment(t, "manual-mixed-group", c1.ID(), topicName, 0)
+		createManualAssignment(t, "manual-mixed-group", c1.ID(), topicName, 1)
+
+		c1.SubscribeTopics(topicName)
+		require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
+
+		// c2 自动分配
+		c2, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "manual-mixed-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+		c2.SubscribeTopics(topicName)
+		require.Eventually(t, c2.IsReady, 5*time.Second, 100*time.Millisecond)
+
+		// 等待重平衡稳定
+		time.Sleep(2 * time.Second)
+
+		defer c1.Close()
+		defer c2.Close()
+
+		// 发送消息
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 40 {
+			p.Send(ctx, ProducerMessage{
+				Topic: topicName,
+				Key:   fmt.Sprintf("k%d", i),
+				Value: jsonValue(fmt.Sprintf("msg-%d", i)),
+			})
+		}
+
+		// 并发消费
+		c1Partitions := sync.Map{}
+		c2Partitions := sync.Map{}
+		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for {
+				msgs, err := c1.Poll(pollCtx, 500*time.Millisecond)
+				if err != nil {
+					return
+				}
+				for _, msg := range msgs {
+					c1Partitions.Store(msg.Partition, true)
+					c1.Acknowledge(msg)
+				}
+				c1.CommitSync(pollCtx)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for {
+				msgs, err := c2.Poll(pollCtx, 500*time.Millisecond)
+				if err != nil {
+					return
+				}
+				for _, msg := range msgs {
+					c2Partitions.Store(msg.Partition, true)
+					c2.Acknowledge(msg)
+				}
+				c2.CommitSync(pollCtx)
+			}
+		}()
+		wg.Wait()
+
+		// 检查 c1 分区
+		var c1Parts, c2Parts []uint
+		c1Partitions.Range(func(k, _ any) bool {
+			c1Parts = append(c1Parts, k.(uint))
+			return true
+		})
+		c2Partitions.Range(func(k, _ any) bool {
+			c2Parts = append(c2Parts, k.(uint))
+			return true
+		})
+
+		t.Logf("c1 (manual) consumed from partitions: %v", c1Parts)
+		t.Logf("c2 (auto) consumed from partitions: %v", c2Parts)
+
+		// c1 应消费 partition 0, 1；c2 应消费 partition 2, 3
+		for _, pt := range c1Parts {
+			assert.True(t, pt == 0 || pt == 1, "c1 should only consume from partition 0 and 1, got %d", pt)
+		}
+		for _, pt := range c2Parts {
+			assert.True(t, pt == 2 || pt == 3, "c2 should only consume from partition 2 and 3, got %d", pt)
+		}
+		// 确保至少有消息被消费
+		assert.Greater(t, len(c1Parts)+len(c2Parts), 0, "At least one consumer should have consumed messages")
+	})
+
+	t.Run("RuleChangeTriggerRebalance", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "manual-rebal-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-manual-rebal",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		c1, err := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "manual-rebal-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		require.NoError(t, err)
+
+		// 先手动分配 partition 0
+		createManualAssignment(t, "manual-rebal-group", c1.ID(), topicName, 0)
+
+		c1.SubscribeTopics(topicName)
+		require.Eventually(t, c1.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer c1.Close()
+
+		// 等待稳定
+		time.Sleep(2 * time.Second)
+
+		// 记录当前 generation
+		var gen1 uint
+		globalEnv.DB.Raw("SELECT generation_id FROM mq_consumer_group_generations WHERE group_id = ?",
+			"manual-rebal-group").Scan(&gen1)
+		t.Logf("Generation before rule change: %d", gen1)
+
+		// 新增 c1 手动分配 partition 1
+		createManualAssignment(t, "manual-rebal-group", c1.ID(), topicName, 1)
+
+		// 等待协调器检测到变化并触发重平衡
+		time.Sleep(3 * time.Second)
+
+		var gen2 uint
+		globalEnv.DB.Raw("SELECT generation_id FROM mq_consumer_group_generations WHERE group_id = ?",
+			"manual-rebal-group").Scan(&gen2)
+		t.Logf("Generation after rule change: %d", gen2)
+
+		assert.Greater(t, gen2, gen1, "Generation should increase after manual assignment rule change")
+	})
+}
+
+// =============================================================================
+// 测试场景31: AdminClient.CreateTopics 批量操作
+// =============================================================================
+
+func TestTC_AdminCreateTopicsBatch(t *testing.T) {
+	cleanupTables(t)
+	ctx := context.Background()
+
+	admin := NewAdminClient(globalEnv.DB)
+
+	// 预创建一个 Topic
+	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: "exists-topic", NumPartitions: 1}))
+
+	// 批量创建
+	result := admin.CreateTopics(ctx, []NewTopicRequest{
+		{Name: "new-topic-1", NumPartitions: 2},
+		{Name: "exists-topic", NumPartitions: 1},
+		{Name: "", NumPartitions: 1},
+		{Name: "new-topic-2", NumPartitions: 3},
+	})
+
+	require.Len(t, result.Results, 4)
+
+	// new-topic-1: 成功
+	assert.Nil(t, result.Results[0].Error, "new-topic-1 should succeed")
+	assert.Equal(t, "new-topic-1", result.Results[0].Name)
+
+	// exists-topic: 失败（已存在）
+	assert.NotNil(t, result.Results[1].Error, "exists-topic should fail")
+	t.Logf("exists-topic error: %v", result.Results[1].Error)
+
+	// 空名称: 失败
+	assert.NotNil(t, result.Results[2].Error, "empty name should fail")
+	t.Logf("empty name error: %v", result.Results[2].Error)
+
+	// new-topic-2: 成功
+	assert.Nil(t, result.Results[3].Error, "new-topic-2 should succeed")
+	assert.Equal(t, "new-topic-2", result.Results[3].Name)
+
+	// 验证创建的 Topic 存在
+	topics, err := admin.ListTopics(ctx)
+	require.NoError(t, err)
+	topicSet := make(map[string]bool)
+	for _, name := range topics {
+		topicSet[name] = true
+	}
+	assert.True(t, topicSet["new-topic-1"], "new-topic-1 should exist")
+	assert.True(t, topicSet["new-topic-2"], "new-topic-2 should exist")
+	assert.True(t, topicSet["exists-topic"], "exists-topic should still exist")
+
+	// 验证分区数正确
+	desc, err := admin.DescribeTopics(ctx, []string{"new-topic-1", "new-topic-2"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, desc["new-topic-1"].NumPartitions)
+	assert.Equal(t, 3, desc["new-topic-2"].NumPartitions)
+}
+
+// =============================================================================
+// 测试场景32: DeleteTopics 级联删除
+// =============================================================================
+
+func TestTC_DeleteTopicCascade(t *testing.T) {
+	t.Run("CascadeDelete", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "cascade-delete-topic"
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-cascade",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		// 发送消息
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 10 {
+			p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("k%d", i), Value: jsonValue(fmt.Sprintf("msg-%d", i))})
+		}
+
+		// 创建消费者消费并提交（产生 progress 记录）
+		consumer, _ := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "cascade-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		consumer.SubscribeTopics(topicName)
+		require.Eventually(t, consumer.IsReady, 5*time.Second, 100*time.Millisecond)
+
+		pollCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		for {
+			msgs, err := consumer.Poll(pollCtx, 500*time.Millisecond)
+			if err != nil {
+				break
+			}
+			for _, msg := range msgs {
+				consumer.Acknowledge(msg)
+			}
+			consumer.CommitSync(pollCtx)
+		}
+		cancel()
+		consumer.Close()
+
+		// 验证数据存在
+		var msgCount, progressCount, topicCount int64
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_messages WHERE topic = ?", topicName).Scan(&msgCount)
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_consumer_group_consumption_progress WHERE topic = ?", topicName).Scan(&progressCount)
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_topics WHERE topic_name = ?", topicName).Scan(&topicCount)
+		t.Logf("Before delete: messages=%d, progress=%d, topics=%d", msgCount, progressCount, topicCount)
+		assert.Greater(t, msgCount, int64(0), "Should have messages before delete")
+		assert.Greater(t, progressCount, int64(0), "Should have progress records before delete")
+		assert.Equal(t, int64(1), topicCount, "Should have topic before delete")
+
+		// 删除 Topic
+		require.NoError(t, admin.DeleteTopics(ctx, []string{topicName}))
+
+		// 验证级联删除
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_messages WHERE topic = ?", topicName).Scan(&msgCount)
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_consumer_group_consumption_progress WHERE topic = ?", topicName).Scan(&progressCount)
+		globalEnv.DB.Raw("SELECT COUNT(*) FROM mq_topics WHERE topic_name = ?", topicName).Scan(&topicCount)
+		t.Logf("After delete: messages=%d, progress=%d, topics=%d", msgCount, progressCount, topicCount)
+
+		assert.Equal(t, int64(0), msgCount, "Messages should be deleted")
+		assert.Equal(t, int64(0), progressCount, "Progress records should be deleted")
+		assert.Equal(t, int64(0), topicCount, "Topic should be deleted")
+	})
+
+	t.Run("RecreateAfterDeleteIsolation", func(t *testing.T) {
+		cleanupTables(t)
+		ctx := context.Background()
+
+		admin := NewAdminClient(globalEnv.DB)
+		topicName := "recreate-topic"
+
+		// 创建 → 发消息 → 删除
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
+		p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 5 {
+			p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("old%d", i), Value: jsonValue(fmt.Sprintf("old-%d", i))})
+		}
+		require.NoError(t, admin.DeleteTopics(ctx, []string{topicName}))
+
+		// 重新创建同名 Topic（不同分区数）
+		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+		// 验证分区数正确
+		desc, err := admin.DescribeTopics(ctx, []string{topicName})
+		require.NoError(t, err)
+		assert.Equal(t, 4, desc[topicName].NumPartitions, "Recreated topic should have new partition count")
+
+		// 发送新消息
+		newP, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+		for i := range 3 {
+			_, err := newP.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("new%d", i), Value: jsonValue(fmt.Sprintf("new-%d", i))})
+			require.NoError(t, err)
+		}
+
+		coordinator := NewCoordinator(CoordinatorConfig{
+			LockSuffix:        "tc-recreate",
+			DB:                globalEnv.DB,
+			HeartbeatTimeout:  3 * time.Second,
+			RebalanceInterval: 500 * time.Millisecond,
+		})
+		coordinator.Start()
+		defer coordinator.Stop()
+		require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+		// 新消费者消费
+		consumer, _ := NewConsumer(ConsumerConfig{
+			DB: globalEnv.DB, Redis: globalEnv.Redis,
+			GroupID: "recreate-group", NotificationEnabled: true,
+			Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+			ConsumeStrategy: ConsumeFromEarliest,
+		})
+		consumer.SubscribeTopics(topicName)
+		require.Eventually(t, consumer.IsReady, 5*time.Second, 100*time.Millisecond)
+		defer consumer.Close()
+
+		var consumed int
+		pollCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		for {
+			msgs, err := consumer.Poll(pollCtx, 500*time.Millisecond)
+			if err != nil {
+				break
+			}
+			for _, msg := range msgs {
+				consumed++
+				consumer.Acknowledge(msg)
+			}
+			consumer.CommitSync(pollCtx)
+		}
+		cancel()
+
+		t.Logf("Consumed %d messages from recreated topic", consumed)
+		assert.Equal(t, 3, consumed, "Should only consume new messages (3), not old ones")
+	})
 }

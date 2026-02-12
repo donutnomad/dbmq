@@ -4,3 +4,4 @@ main
 .gocache
 docs/plans
 .claude/settings.local.json
+.backup

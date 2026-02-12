@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/donutnomad/dbmq/internal/db"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,8 +114,8 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	// 7. Verify the commit in the database
-	var committedOffset db.ConsumerGroupConsumptionProgress
-	err = dbClient.Where(&db.ConsumerGroupConsumptionProgress{
+	var committedOffset consumerprogressrepo.ProgressPO
+	err = dbClient.Where(&consumerprogressrepo.ProgressPO{
 		GroupID:   consumerGroup,
 		Topic:     topicReq.Name,
 		Partition: 0,
@@ -255,7 +256,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	// 验证每个消费者组都有提交的偏移量
 	for _, groupID := range []string{group1, group2} {
-		var offsets []db.ConsumerGroupConsumptionProgress
+		var offsets []consumerprogressrepo.ProgressPO
 		err = dbClient.Where("group_id = ?", groupID).Find(&offsets).Error
 		require.NoError(t, err)
 		assert.True(t, len(offsets) > 0, "消费者组 %s 应该有提交的偏移量", groupID)
@@ -374,7 +375,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	}
 
 	// 10. 验证偏移量记录
-	var offsets []db.ConsumerGroupConsumptionProgress
+	var offsets []consumerprogressrepo.ProgressPO
 	err = dbClient.Where("group_id = ?", "failover-group").Find(&offsets).Error
 	require.NoError(t, err)
 	assert.True(t, len(offsets) > 0, "应该有提交的偏移量记录")
@@ -425,7 +426,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: []byte("old")})
 		require.NoError(t, err)
 		// Manually update timestamp to be older than retention period
-		err = dbClient.Model(&db.Message{}).Where("id = ?", result.Offset).Update("created_at", time.Now().Add(-1*time.Hour)).Error
+		err = dbClient.Model(&messagerepo.MessagePO{}).Where("id = ?", result.Offset).Update("created_at", time.Now().Add(-1*time.Hour)).Error
 		require.NoError(t, err)
 		oldMsgIDs = append(oldMsgIDs, result.Offset)
 	}
@@ -478,7 +479,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	// Old messages should be gone.
 	for _, msgID := range oldMsgIDs {
 		var count int64
-		err = dbClient.Model(&db.Message{}).Where("id = ?", msgID).Count(&count).Error
+		err = dbClient.Model(&messagerepo.MessagePO{}).Where("id = ?", msgID).Count(&count).Error
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), count, "Consumed and expired message (ID: %d) should have been deleted", msgID)
 	}
@@ -486,7 +487,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	// New messages should still exist.
 	for _, msgID := range newMsgIDs {
 		var count int64
-		err = dbClient.Model(&db.Message{}).Where("id = ?", msgID).Count(&count).Error
+		err = dbClient.Model(&messagerepo.MessagePO{}).Where("id = ?", msgID).Count(&count).Error
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), count, "New message (ID: %d) should not have been deleted", msgID)
 	}
@@ -578,8 +579,8 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	}
 
 	// 7. 验证偏移量已提交
-	var offset db.ConsumerGroupConsumptionProgress
-	err = dbClient.Where(&db.ConsumerGroupConsumptionProgress{
+	var offset consumerprogressrepo.ProgressPO
+	err = dbClient.Where(&consumerprogressrepo.ProgressPO{
 		GroupID:   "notification-group",
 		Topic:     topicReq.Name,
 		Partition: 0,

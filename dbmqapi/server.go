@@ -38,7 +38,7 @@ type APIPreHandler interface {
 type Server struct {
 	config    ServerConfig
 	deps      *Deps
-	engine    *gin.Engine
+	engine    gin.IRoutes
 	server    *http.Server
 	startTime time.Time
 }
@@ -104,6 +104,30 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 	return s, nil
 }
+
+//
+//// RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
+//func RegisterAPIs(handler *gin.Engine, cfg ServerConfig) {
+//	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
+//	dashPath := cfg.DashboardPath
+//	if dashPath == "" {
+//		dashPath = "/dbmq/api/v1/ui"
+//	}
+//	handler.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
+//
+//	// 注册各个 API（有 AccessToken 时通过 APIHandler 注入 token 校验）
+//	h := cfg.APIHandler
+//	if h == nil && cfg.AccessToken != "" {
+//		h = &tokenPreHandler{token: cfg.AccessToken}
+//	}
+//	NewHealthAPIWrap(NewHealthAPI(s.deps), h).BindAll(handler)
+//	NewDashboardAPIWrap(NewDashboardAPI(s.deps), h).BindAll(handler)
+//	NewTopicAPIWrap(NewTopicAPI(s.deps), h).BindAll(handler)
+//	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), h).BindAll(handler)
+//	NewDBMQAPIWrap(NewDBMQAPI(s.deps), h).BindAll(handler)
+//	NewClusterAPIWrap(NewClusterAPI(s.deps), h).BindAll(handler)
+//	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), h).BindAll(handler)
+//}
 
 // RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
 func (s *Server) RegisterAPIs() {
@@ -173,7 +197,7 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
 		Addr:         addr,
-		Handler:      s.engine,
+		Handler:      s.engine.(*gin.Engine),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -193,7 +217,7 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // Engine 返回 gin 引擎（用于测试或自定义路由）
-func (s *Server) Engine() *gin.Engine {
+func (s *Server) Engine() gin.IRoutes {
 	return s.engine
 }
 
