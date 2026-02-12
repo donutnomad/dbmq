@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/donutnomad/dbmq"
@@ -25,6 +26,7 @@ type ServerConfig struct {
 	Host          string
 	DashboardPath string        // Dashboard UI 挂载路径，默认 "/dbmq/api/v1/ui"
 	APIHandler    APIPreHandler // API 前置中间件，传 nil 则无中间件
+	AccessToken   string        // 访问令牌，为空则不校验
 }
 
 // APIPreHandler 实现所有 gogen 生成的 XXXAPIHandler 接口。
@@ -105,15 +107,18 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 // RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
 func (s *Server) RegisterAPIs() {
-	// Dashboard UI
+	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
 	dashPath := s.config.DashboardPath
 	if dashPath == "" {
 		dashPath = "/dbmq/api/v1/ui"
 	}
 	s.engine.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
 
-	// 注册各个 API
+	// 注册各个 API（有 AccessToken 时通过 APIHandler 注入 token 校验）
 	h := s.config.APIHandler
+	if h == nil && s.config.AccessToken != "" {
+		h = &tokenPreHandler{token: s.config.AccessToken}
+	}
 	NewHealthAPIWrap(NewHealthAPI(s.deps), h).BindAll(s.engine)
 	NewDashboardAPIWrap(NewDashboardAPI(s.deps), h).BindAll(s.engine)
 	NewTopicAPIWrap(NewTopicAPI(s.deps), h).BindAll(s.engine)
@@ -121,6 +126,44 @@ func (s *Server) RegisterAPIs() {
 	NewDBMQAPIWrap(NewDBMQAPI(s.deps), h).BindAll(s.engine)
 	NewClusterAPIWrap(NewClusterAPI(s.deps), h).BindAll(s.engine)
 	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), h).BindAll(s.engine)
+}
+
+// tokenPreHandler 内置的 token 校验 APIPreHandler。
+type tokenPreHandler struct {
+	token string
+}
+
+func (t *tokenPreHandler) PreHandlers() []gin.HandlerFunc {
+	return []gin.HandlerFunc{accessTokenMiddleware(t.token)}
+}
+
+// accessTokenMiddleware 校验访问令牌。
+// 支持三种方式传递 token：
+//   - Query 参数: ?token=xxx
+//   - Header: Authorization: Bearer xxx
+//   - Cookie: access_token=xxx
+func accessTokenMiddleware(token string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1. Query 参数
+		if c.Query("token") == token {
+			c.Next()
+			return
+		}
+		// 2. Authorization Header
+		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") && auth[7:] == token {
+			c.Next()
+			return
+		}
+		// 3. Cookie
+		if cookie, err := c.Cookie("access_token"); err == nil && cookie == token {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   "unauthorized: invalid or missing access token",
+		})
+	}
 }
 
 // Start 启动服务器

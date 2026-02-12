@@ -11,6 +11,32 @@ const apiClient = axios.create({
   },
 });
 
+// 获取 access token
+export function getAccessToken(): string {
+  if (typeof document === 'undefined') return '';
+  const match = document.cookie.match(/(?:^|;\s*)access_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+// 设置 access token（存入 cookie）
+export function setAccessToken(token: string) {
+  document.cookie = `access_token=${encodeURIComponent(token)};path=/;max-age=${60 * 60}`;
+}
+
+// 清除 access token
+export function clearAccessToken() {
+  document.cookie = 'access_token=;path=/;max-age=0';
+}
+
+// 请求拦截器：自动附加 token
+apiClient.interceptors.request.use((config) => {
+  const token = getAccessToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // API客户端类
 export class DBMQAPIClient {
   // 获取仪表板数据

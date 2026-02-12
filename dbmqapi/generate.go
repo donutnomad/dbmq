@@ -122,7 +122,7 @@ func (a *ClusterAPIWrap) bind(router gin.IRoutes, method, path string, preHandle
 // @Tags Cluster
 // @Produce json
 // @Success 200 {object} []ClusterResp
-// @Router /dbmq/api/v1/clusters/ [get]
+// @Router /dbmq/api/v1/clusters [get]
 func (a *ClusterAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ClusterResp](ctx, result, err)
@@ -159,7 +159,7 @@ func (a *ClusterAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.Handler
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/clusters/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/clusters", preHandlers, handlers, a.List)
 }
 
 func (a *ClusterAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -562,7 +562,7 @@ func (a *ManualAssignmentAPIWrap) bind(router gin.IRoutes, method, path string, 
 // @Produce json
 // @Param req body CreateManualAssignmentReq true "req"
 // @Success 200 {object} ManualAssignmentResp
-// @Router /dbmq/api/v1/manual-assignments/ [post]
+// @Router /dbmq/api/v1/manual-assignments [post]
 func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 	var req CreateManualAssignmentReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -578,7 +578,7 @@ func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 // @Produce json
 // @Param req query ListManualAssignmentsReq true "req"
 // @Success 200 {object} []ManualAssignmentResp
-// @Router /dbmq/api/v1/manual-assignments/ [get]
+// @Router /dbmq/api/v1/manual-assignments [get]
 func (a *ManualAssignmentAPIWrap) List(ctx *gin.Context) {
 	var req ListManualAssignmentsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -607,7 +607,7 @@ func (a *ManualAssignmentAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/dbmq/api/v1/manual-assignments/", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/dbmq/api/v1/manual-assignments", preHandlers, handlers, a.Create)
 }
 
 func (a *ManualAssignmentAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -615,7 +615,7 @@ func (a *ManualAssignmentAPIWrap) BindList(router gin.IRoutes, preHandlers ...gi
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/manual-assignments/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/manual-assignments", preHandlers, handlers, a.List)
 }
 
 func (a *ManualAssignmentAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {

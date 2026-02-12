@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { DashboardData, TopicMetrics, ConsumerGroupMetrics, DBMQStats } from '@/lib/types';
-import { DBMQAPIClient } from '@/lib/api';
+import { DBMQAPIClient, getAccessToken, clearAccessToken } from '@/lib/api';
 import { formatNumber, formatUptime, formatBytes } from '@/lib/utils';
 import { StatCard } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/badge';
@@ -22,6 +22,7 @@ import {
   Server,
   HardDrive,
   Radio,
+  LogOut,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -149,6 +150,17 @@ export function Dashboard() {
               <Button onClick={loadData} size="sm" variant="outline" disabled={loading}>
                 <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               </Button>
+              {getAccessToken() && (
+                <Button
+                  onClick={() => { clearAccessToken(); window.location.reload(); }}
+                  size="sm"
+                  variant="outline"
+                  className="text-red-500 hover:text-red-700"
+                  title="退出登录"
+                >
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              )}
             </div>
           </div>
         </div>

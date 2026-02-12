@@ -8,16 +8,15 @@ import (
 
 // ManualAssignmentAPI 手动分区分配 API
 // @TAG(Manual-Assignment)
-// @PREFIX(/dbmq/api/v1/manual-assignments)
 type ManualAssignmentAPI interface {
 	// Create 创建手动分区分配
-	// @POST(/)
+	// @POST(/dbmq/api/v1/manual-assignments)
 	Create(ctx context.Context, req CreateManualAssignmentReq) (ManualAssignmentResp, error)
 	// List 查询手动分区分配列表
-	// @GET(/)
+	// @GET(/dbmq/api/v1/manual-assignments)
 	List(ctx context.Context, req ListManualAssignmentsReq) ([]ManualAssignmentResp, error)
 	// Delete 删除手动分区分配
-	// @DELETE(/{id})
+	// @DELETE(/dbmq/api/v1/manual-assignments/{id})
 	Delete(ctx context.Context, id int64) (MessageResp, error)
 }
 

@@ -7,16 +7,15 @@ import (
 
 // ClusterAPI 集群管理 API
 // @TAG(Cluster)
-// @PREFIX(/dbmq/api/v1/clusters)
 type ClusterAPI interface {
 	// List 获取集群列表
-	// @GET(/)
+	// @GET(/dbmq/api/v1/clusters)
 	List(ctx context.Context) ([]ClusterResp, error)
 	// GetMetrics 获取集群指标
-	// @GET(/{clusterId}/metrics)
+	// @GET(/dbmq/api/v1/clusters/{clusterId}/metrics)
 	GetMetrics(ctx context.Context, clusterId string) (ClusterMetricsResp, error)
 	// GetBrokers 获取 Broker 列表
-	// @GET(/{clusterId}/brokers)
+	// @GET(/dbmq/api/v1/clusters/{clusterId}/brokers)
 	GetBrokers(ctx context.Context, clusterId string) ([]BrokerResp, error)
 }
 
