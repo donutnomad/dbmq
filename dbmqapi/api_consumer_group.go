@@ -8,13 +8,13 @@ import (
 // @TAG(Consumer-Group)
 type ConsumerGroupAPI interface {
 	// List 获取消费组列表
-	// @GET(/api/v1/consumer-groups)
+	// @GET(/dbmq/api/v1/consumer-groups)
 	List(ctx context.Context) ([]ConsumerGroupResp, error)
 	// Get 获取单个消费组
-	// @GET(/api/v1/consumer-groups/{groupId})
+	// @GET(/dbmq/api/v1/consumer-groups/{groupId})
 	Get(ctx context.Context, groupId string) (ConsumerGroupResp, error)
 	// TriggerRebalance 强制触发消费组重新均衡
-	// @POST(/api/v1/consumer-groups/{groupId}/rebalance)
+	// @POST(/dbmq/api/v1/consumer-groups/{groupId}/rebalance)
 	TriggerRebalance(ctx context.Context, groupId string) (MessageResp, error)
 }
 

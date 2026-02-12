@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"time"
 
@@ -16,14 +15,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed static/*
+//go:embed all:static
 var staticFS embed.FS
 
 // ServerConfig 服务器配置
 type ServerConfig struct {
-	DB   interfaces.DB
-	Port int
-	Host string
+	DB            interfaces.DB
+	Port          int
+	Host          string
+	DashboardPath string        // Dashboard UI 挂载路径，默认 "/dbmq/api/v1/ui"
+	APIHandler    APIPreHandler // API 前置中间件，传 nil 则无中间件
+}
+
+// APIPreHandler 实现所有 gogen 生成的 XXXAPIHandler 接口。
+type APIPreHandler interface {
+	PreHandlers() []gin.HandlerFunc
 }
 
 // Server API 服务器
@@ -99,22 +105,22 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 // RegisterAPIs 注册所有 API（由 gogen 生成的代码调用）
 func (s *Server) RegisterAPIs() {
-	// 静态文件
-	staticFiles, err := fs.Sub(staticFS, "static")
-	if err == nil {
-		s.engine.StaticFS("/static", http.FS(staticFiles))
+	// Dashboard UI
+	dashPath := s.config.DashboardPath
+	if dashPath == "" {
+		dashPath = "/dbmq/api/v1/ui"
 	}
+	s.engine.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
 
 	// 注册各个 API
-	NewHealthAPIWrap(NewHealthAPI(s.deps), nil).BindAll(s.engine)
-	NewDashboardAPIWrap(NewDashboardAPI(s.deps), nil).BindAll(s.engine)
-	NewTopicAPIWrap(NewTopicAPI(s.deps), nil).BindAll(s.engine)
-	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), nil).BindAll(s.engine)
-	NewDBMQAPIWrap(NewDBMQAPI(s.deps), nil).BindAll(s.engine)
-	NewClusterAPIWrap(NewClusterAPI(s.deps), nil).BindAll(s.engine)
-	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), nil).BindAll(s.engine)
-	// TopicProxyAPI 与 TopicAPI 有路由冲突，暂不注册
-	// NewTopicProxyAPIWrap(NewTopicProxyAPI(s.deps), nil).BindAll(s.engine)
+	h := s.config.APIHandler
+	NewHealthAPIWrap(NewHealthAPI(s.deps), h).BindAll(s.engine)
+	NewDashboardAPIWrap(NewDashboardAPI(s.deps), h).BindAll(s.engine)
+	NewTopicAPIWrap(NewTopicAPI(s.deps), h).BindAll(s.engine)
+	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(s.deps), h).BindAll(s.engine)
+	NewDBMQAPIWrap(NewDBMQAPI(s.deps), h).BindAll(s.engine)
+	NewClusterAPIWrap(NewClusterAPI(s.deps), h).BindAll(s.engine)
+	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(s.deps), h).BindAll(s.engine)
 }
 
 // Start 启动服务器

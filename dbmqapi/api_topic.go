@@ -12,19 +12,19 @@ import (
 // @TAG(Topic)
 type TopicAPI interface {
 	// List 获取 Topic 列表
-	// @GET(/api/v1/topics)
+	// @GET(/dbmq/api/v1/topics)
 	List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error)
 	// Get 获取单个 Topic
-	// @GET(/api/v1/topics/{topicName})
+	// @GET(/dbmq/api/v1/topics/{topicName})
 	Get(ctx context.Context, topicName string) (TopicResp, error)
 	// Create 创建 Topic
-	// @POST(/api/v1/topics)
+	// @POST(/dbmq/api/v1/topics)
 	Create(ctx context.Context, req CreateTopicReq) (MessageResp, error)
 	// Delete 删除 Topic
-	// @DELETE(/api/v1/topics/{topicName})
+	// @DELETE(/dbmq/api/v1/topics/{topicName})
 	Delete(ctx context.Context, topicName string) (MessageResp, error)
 	// GetMetrics 获取 Topic 指标
-	// @GET(/api/v1/topics/{topicName}/metrics)
+	// @GET(/dbmq/api/v1/topics/{topicName}/metrics)
 	GetMetrics(ctx context.Context, topicName string) (TopicResp, error)
 }
 

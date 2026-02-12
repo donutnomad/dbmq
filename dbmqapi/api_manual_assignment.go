@@ -8,7 +8,7 @@ import (
 
 // ManualAssignmentAPI 手动分区分配 API
 // @TAG(Manual-Assignment)
-// @PREFIX(/api/v1/manual-assignments)
+// @PREFIX(/dbmq/api/v1/manual-assignments)
 type ManualAssignmentAPI interface {
 	// Create 创建手动分区分配
 	// @POST(/)

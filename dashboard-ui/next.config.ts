@@ -26,8 +26,8 @@ const nextConfig: NextConfig = {
     return [];
   },
 
-  // 配置基础路径（如果需要部署到子路径）
-  basePath: process.env.NODE_ENV === 'production' ? '' : '',
+  // 配置基础路径（嵌入 Go 二进制时使用 /dashboard）
+  basePath: process.env.DASHBOARD_BASE_PATH || '',
 };
 
 export default nextConfig;

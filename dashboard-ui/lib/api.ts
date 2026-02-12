@@ -81,7 +81,7 @@ export class DBMQAPIClient {
 
       // 获取扩展信息（如果有）
       try {
-        const extendedResponse = await apiClient.get<APIResponse<any>>(`/dbmq/consumer-groups/${groupId}/extended`);
+        const extendedResponse = await apiClient.get<APIResponse<any>>(`/consumer-groups/${groupId}/extended`);
         if (extendedResponse.data.success && extendedResponse.data.data) {
           Object.assign(groupData, extendedResponse.data.data);
         }
@@ -128,7 +128,7 @@ export class DBMQAPIClient {
     }
 
     const response = await apiClient.get<APIResponse<{ messages: Message[]; total: number }>>(
-      `/dbmq/topics/${topicName}/messages?${searchParams.toString()}`
+      `/topics/${topicName}/messages?${searchParams.toString()}`
     );
     if (response.data.success && response.data.data) {
       return response.data.data;
@@ -157,7 +157,7 @@ export class DBMQAPIClient {
   // 获取分区统计信息
   static async getPartitionStats(topicName: string, partitionId: number): Promise<PartitionStats> {
     const response = await apiClient.get<APIResponse<PartitionStats>>(
-      `/dbmq/topics/${topicName}/partitions/${partitionId}/stats`
+      `/topics/${topicName}/partitions/${partitionId}/stats`
     );
     if (response.data.success && response.data.data) {
       return response.data.data;
@@ -231,7 +231,7 @@ export class DBMQAPIClient {
 
   // 获取 DBMQ 统计信息
   static async getDBMQStats(): Promise<DBMQStats> {
-    const response = await apiClient.get<APIResponse<DBMQStats>>('/dbmq/stats');
+    const response = await apiClient.get<APIResponse<DBMQStats>>('/stats');
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -274,7 +274,7 @@ export class DBMQAPIClient {
 
   // 重发消息
   static async resendMessages(request: ResendMessagesRequest): Promise<ResendMessagesResponse> {
-    const response = await apiClient.post<APIResponse<ResendMessagesResponse>>('/dbmq/messages/resend', request);
+    const response = await apiClient.post<APIResponse<ResendMessagesResponse>>('/messages/resend', request);
     if (response.data.success && response.data.data) {
       return response.data.data;
     }

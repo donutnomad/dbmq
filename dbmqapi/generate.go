@@ -122,7 +122,7 @@ func (a *ClusterAPIWrap) bind(router gin.IRoutes, method, path string, preHandle
 // @Tags Cluster
 // @Produce json
 // @Success 200 {object} []ClusterResp
-// @Router /api/v1/clusters/ [get]
+// @Router /dbmq/api/v1/clusters/ [get]
 func (a *ClusterAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ClusterResp](ctx, result, err)
@@ -134,7 +134,7 @@ func (a *ClusterAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param clusterId path string true "clusterId"
 // @Success 200 {object} ClusterMetricsResp
-// @Router /api/v1/clusters/{clusterId}/metrics [get]
+// @Router /dbmq/api/v1/clusters/{clusterId}/metrics [get]
 func (a *ClusterAPIWrap) GetMetrics(ctx *gin.Context) {
 	clusterId := ctx.Param("clusterId")
 	result, err := a.inner.GetMetrics(ctx.Request.Context(), clusterId)
@@ -147,7 +147,7 @@ func (a *ClusterAPIWrap) GetMetrics(ctx *gin.Context) {
 // @Produce json
 // @Param clusterId path string true "clusterId"
 // @Success 200 {object} []BrokerResp
-// @Router /api/v1/clusters/{clusterId}/brokers [get]
+// @Router /dbmq/api/v1/clusters/{clusterId}/brokers [get]
 func (a *ClusterAPIWrap) GetBrokers(ctx *gin.Context) {
 	clusterId := ctx.Param("clusterId")
 	result, err := a.inner.GetBrokers(ctx.Request.Context(), clusterId)
@@ -159,7 +159,7 @@ func (a *ClusterAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.Handler
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/clusters/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/clusters/", preHandlers, handlers, a.List)
 }
 
 func (a *ClusterAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -167,7 +167,7 @@ func (a *ClusterAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.H
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/clusters/:clusterId/metrics", preHandlers, handlers, a.GetMetrics)
+	a.bind(router, "GET", "/dbmq/api/v1/clusters/:clusterId/metrics", preHandlers, handlers, a.GetMetrics)
 }
 
 func (a *ClusterAPIWrap) BindGetBrokers(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -175,7 +175,7 @@ func (a *ClusterAPIWrap) BindGetBrokers(router gin.IRoutes, preHandlers ...gin.H
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/clusters/:clusterId/brokers", preHandlers, handlers, a.GetBrokers)
+	a.bind(router, "GET", "/dbmq/api/v1/clusters/:clusterId/brokers", preHandlers, handlers, a.GetBrokers)
 }
 
 func (a *ClusterAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -208,7 +208,7 @@ func (a *ConsumerGroupAPIWrap) bind(router gin.IRoutes, method, path string, pre
 // @Tags Consumer-Group
 // @Produce json
 // @Success 200 {object} []ConsumerGroupResp
-// @Router /api/v1/consumer-groups [get]
+// @Router /dbmq/api/v1/consumer-groups [get]
 func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ConsumerGroupResp](ctx, result, err)
@@ -220,7 +220,7 @@ func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} ConsumerGroupResp
-// @Router /api/v1/consumer-groups/{groupId} [get]
+// @Router /dbmq/api/v1/consumer-groups/{groupId} [get]
 func (a *ConsumerGroupAPIWrap) Get(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.Get(ctx.Request.Context(), groupId)
@@ -234,7 +234,7 @@ func (a *ConsumerGroupAPIWrap) Get(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} MessageResp
-// @Router /api/v1/consumer-groups/{groupId}/rebalance [post]
+// @Router /dbmq/api/v1/consumer-groups/{groupId}/rebalance [post]
 func (a *ConsumerGroupAPIWrap) TriggerRebalance(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.TriggerRebalance(ctx.Request.Context(), groupId)
@@ -246,7 +246,7 @@ func (a *ConsumerGroupAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.H
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/consumer-groups", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups", preHandlers, handlers, a.List)
 }
 
 func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -254,7 +254,7 @@ func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.Ha
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Get)
+	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Get)
 }
 
 func (a *ConsumerGroupAPIWrap) BindTriggerRebalance(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -262,7 +262,7 @@ func (a *ConsumerGroupAPIWrap) BindTriggerRebalance(router gin.IRoutes, preHandl
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/api/v1/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
+	a.bind(router, "POST", "/dbmq/api/v1/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
 }
 
 func (a *ConsumerGroupAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -295,7 +295,7 @@ func (a *DBMQAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers,
 // @Tags DBMQ
 // @Produce json
 // @Success 200 {object} DBMQStatsResp
-// @Router /api/v1/dbmq/stats [get]
+// @Router /dbmq/api/v1/stats [get]
 func (a *DBMQAPIWrap) GetStats(ctx *gin.Context) {
 	result, err := a.inner.GetStats(ctx.Request.Context())
 	onGinResponse[DBMQStatsResp](ctx, result, err)
@@ -308,7 +308,7 @@ func (a *DBMQAPIWrap) GetStats(ctx *gin.Context) {
 // @Param topicName path string true "topicName"
 // @Param req query GetTopicMessagesReq true "req"
 // @Success 200 {object} TopicMessagesResp
-// @Router /api/v1/dbmq/topics/{topicName}/messages [get]
+// @Router /dbmq/api/v1/topics/{topicName}/messages [get]
 func (a *DBMQAPIWrap) GetTopicMessages(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	var req GetTopicMessagesReq
@@ -326,7 +326,7 @@ func (a *DBMQAPIWrap) GetTopicMessages(ctx *gin.Context) {
 // @Param topicName path string true "topicName"
 // @Param partitionId path integer true "partitionId"
 // @Success 200 {object} PartitionStats
-// @Router /api/v1/dbmq/topics/{topicName}/partitions/{partitionId}/stats [get]
+// @Router /dbmq/api/v1/topics/{topicName}/partitions/{partitionId}/stats [get]
 func (a *DBMQAPIWrap) GetPartitionStats(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	partitionId := cast.ToUint(ctx.Param("partitionId"))
@@ -340,7 +340,7 @@ func (a *DBMQAPIWrap) GetPartitionStats(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} ConsumerGroupExtendedResp
-// @Router /api/v1/dbmq/consumer-groups/{groupId}/extended [get]
+// @Router /dbmq/api/v1/consumer-groups/{groupId}/extended [get]
 func (a *DBMQAPIWrap) GetConsumerGroupExtended(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.GetConsumerGroupExtended(ctx.Request.Context(), groupId)
@@ -354,7 +354,7 @@ func (a *DBMQAPIWrap) GetConsumerGroupExtended(ctx *gin.Context) {
 // @Produce json
 // @Param req body ResendMessagesReq true "req"
 // @Success 200 {object} ResendMessagesResp
-// @Router /api/v1/dbmq/messages/resend [post]
+// @Router /dbmq/api/v1/messages/resend [post]
 func (a *DBMQAPIWrap) ResendMessages(ctx *gin.Context) {
 	var req ResendMessagesReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -369,7 +369,7 @@ func (a *DBMQAPIWrap) BindGetStats(router gin.IRoutes, preHandlers ...gin.Handle
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/dbmq/stats", preHandlers, handlers, a.GetStats)
+	a.bind(router, "GET", "/dbmq/api/v1/stats", preHandlers, handlers, a.GetStats)
 }
 
 func (a *DBMQAPIWrap) BindGetTopicMessages(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -377,7 +377,7 @@ func (a *DBMQAPIWrap) BindGetTopicMessages(router gin.IRoutes, preHandlers ...gi
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/dbmq/topics/:topicName/messages", preHandlers, handlers, a.GetTopicMessages)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/messages", preHandlers, handlers, a.GetTopicMessages)
 }
 
 func (a *DBMQAPIWrap) BindGetPartitionStats(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -385,7 +385,7 @@ func (a *DBMQAPIWrap) BindGetPartitionStats(router gin.IRoutes, preHandlers ...g
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/dbmq/topics/:topicName/partitions/:partitionId/stats", preHandlers, handlers, a.GetPartitionStats)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/partitions/:partitionId/stats", preHandlers, handlers, a.GetPartitionStats)
 }
 
 func (a *DBMQAPIWrap) BindGetConsumerGroupExtended(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -393,7 +393,7 @@ func (a *DBMQAPIWrap) BindGetConsumerGroupExtended(router gin.IRoutes, preHandle
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/dbmq/consumer-groups/:groupId/extended", preHandlers, handlers, a.GetConsumerGroupExtended)
+	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/:groupId/extended", preHandlers, handlers, a.GetConsumerGroupExtended)
 }
 
 func (a *DBMQAPIWrap) BindResendMessages(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -401,7 +401,7 @@ func (a *DBMQAPIWrap) BindResendMessages(router gin.IRoutes, preHandlers ...gin.
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/api/v1/dbmq/messages/resend", preHandlers, handlers, a.ResendMessages)
+	a.bind(router, "POST", "/dbmq/api/v1/messages/resend", preHandlers, handlers, a.ResendMessages)
 }
 
 func (a *DBMQAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -436,7 +436,7 @@ func (a *DashboardAPIWrap) bind(router gin.IRoutes, method, path string, preHand
 // @Tags Dashboard
 // @Produce json
 // @Success 200 {object} DashboardDataResp
-// @Router /api/v1/dashboard/data [get]
+// @Router /dbmq/api/v1/dashboard/data [get]
 func (a *DashboardAPIWrap) GetDashboardData(ctx *gin.Context) {
 	result, err := a.inner.GetDashboardData(ctx.Request.Context())
 	onGinResponse[DashboardDataResp](ctx, result, err)
@@ -447,7 +447,7 @@ func (a *DashboardAPIWrap) BindGetDashboardData(router gin.IRoutes, preHandlers 
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/dashboard/data", preHandlers, handlers, a.GetDashboardData)
+	a.bind(router, "GET", "/dbmq/api/v1/dashboard/data", preHandlers, handlers, a.GetDashboardData)
 }
 
 func (a *DashboardAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -478,7 +478,7 @@ func (a *HealthAPIWrap) bind(router gin.IRoutes, method, path string, preHandler
 // @Tags Health
 // @Produce json
 // @Success 200 {object} HealthResp
-// @Router /api/v1/health [get]
+// @Router /dbmq/api/v1/health [get]
 func (a *HealthAPIWrap) Health(ctx *gin.Context) {
 	result, err := a.inner.Health(ctx.Request.Context())
 	onGinResponse[HealthResp](ctx, result, err)
@@ -489,7 +489,7 @@ func (a *HealthAPIWrap) Health(ctx *gin.Context) {
 // @Tags Health
 // @Produce json
 // @Success 200 {object} HealthResp
-// @Router /api/v1/actuator/health [get]
+// @Router /dbmq/api/v1/actuator/health [get]
 func (a *HealthAPIWrap) ActuatorHealth(ctx *gin.Context) {
 	result, err := a.inner.ActuatorHealth(ctx.Request.Context())
 	onGinResponse[HealthResp](ctx, result, err)
@@ -500,7 +500,7 @@ func (a *HealthAPIWrap) ActuatorHealth(ctx *gin.Context) {
 // @Tags Health
 // @Produce json
 // @Success 200 {object} InfoResp
-// @Router /api/v1/actuator/info [get]
+// @Router /dbmq/api/v1/actuator/info [get]
 func (a *HealthAPIWrap) ActuatorInfo(ctx *gin.Context) {
 	result, err := a.inner.ActuatorInfo(ctx.Request.Context())
 	onGinResponse[InfoResp](ctx, result, err)
@@ -511,7 +511,7 @@ func (a *HealthAPIWrap) BindHealth(router gin.IRoutes, preHandlers ...gin.Handle
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/health", preHandlers, handlers, a.Health)
+	a.bind(router, "GET", "/dbmq/api/v1/health", preHandlers, handlers, a.Health)
 }
 
 func (a *HealthAPIWrap) BindActuatorHealth(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -519,7 +519,7 @@ func (a *HealthAPIWrap) BindActuatorHealth(router gin.IRoutes, preHandlers ...gi
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/actuator/health", preHandlers, handlers, a.ActuatorHealth)
+	a.bind(router, "GET", "/dbmq/api/v1/actuator/health", preHandlers, handlers, a.ActuatorHealth)
 }
 
 func (a *HealthAPIWrap) BindActuatorInfo(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -527,7 +527,7 @@ func (a *HealthAPIWrap) BindActuatorInfo(router gin.IRoutes, preHandlers ...gin.
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/actuator/info", preHandlers, handlers, a.ActuatorInfo)
+	a.bind(router, "GET", "/dbmq/api/v1/actuator/info", preHandlers, handlers, a.ActuatorInfo)
 }
 
 func (a *HealthAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -562,7 +562,7 @@ func (a *ManualAssignmentAPIWrap) bind(router gin.IRoutes, method, path string, 
 // @Produce json
 // @Param req body CreateManualAssignmentReq true "req"
 // @Success 200 {object} ManualAssignmentResp
-// @Router /api/v1/manual-assignments/ [post]
+// @Router /dbmq/api/v1/manual-assignments/ [post]
 func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 	var req CreateManualAssignmentReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -578,7 +578,7 @@ func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 // @Produce json
 // @Param req query ListManualAssignmentsReq true "req"
 // @Success 200 {object} []ManualAssignmentResp
-// @Router /api/v1/manual-assignments/ [get]
+// @Router /dbmq/api/v1/manual-assignments/ [get]
 func (a *ManualAssignmentAPIWrap) List(ctx *gin.Context) {
 	var req ListManualAssignmentsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -595,7 +595,7 @@ func (a *ManualAssignmentAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param id path integer true "id"
 // @Success 200 {object} MessageResp
-// @Router /api/v1/manual-assignments/{id} [delete]
+// @Router /dbmq/api/v1/manual-assignments/{id} [delete]
 func (a *ManualAssignmentAPIWrap) Delete(ctx *gin.Context) {
 	id := cast.ToInt64(ctx.Param("id"))
 	result, err := a.inner.Delete(ctx.Request.Context(), id)
@@ -607,7 +607,7 @@ func (a *ManualAssignmentAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/api/v1/manual-assignments/", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/dbmq/api/v1/manual-assignments/", preHandlers, handlers, a.Create)
 }
 
 func (a *ManualAssignmentAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -615,7 +615,7 @@ func (a *ManualAssignmentAPIWrap) BindList(router gin.IRoutes, preHandlers ...gi
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/manual-assignments/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/manual-assignments/", preHandlers, handlers, a.List)
 }
 
 func (a *ManualAssignmentAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -623,7 +623,7 @@ func (a *ManualAssignmentAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/api/v1/manual-assignments/:id", preHandlers, handlers, a.Delete)
+	a.bind(router, "DELETE", "/dbmq/api/v1/manual-assignments/:id", preHandlers, handlers, a.Delete)
 }
 
 func (a *ManualAssignmentAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -657,7 +657,7 @@ func (a *TopicAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers
 // @Produce json
 // @Param req query GetTopicsReq true "req"
 // @Success 200 {object} []TopicResp
-// @Router /api/v1/topics [get]
+// @Router /dbmq/api/v1/topics [get]
 func (a *TopicAPIWrap) List(ctx *gin.Context) {
 	var req GetTopicsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -673,7 +673,7 @@ func (a *TopicAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /api/v1/topics/{topicName} [get]
+// @Router /dbmq/api/v1/topics/{topicName} [get]
 func (a *TopicAPIWrap) Get(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.Get(ctx.Request.Context(), topicName)
@@ -687,7 +687,7 @@ func (a *TopicAPIWrap) Get(ctx *gin.Context) {
 // @Produce json
 // @Param req body CreateTopicReq true "req"
 // @Success 200 {object} MessageResp
-// @Router /api/v1/topics [post]
+// @Router /dbmq/api/v1/topics [post]
 func (a *TopicAPIWrap) Create(ctx *gin.Context) {
 	var req CreateTopicReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -704,7 +704,7 @@ func (a *TopicAPIWrap) Create(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} MessageResp
-// @Router /api/v1/topics/{topicName} [delete]
+// @Router /dbmq/api/v1/topics/{topicName} [delete]
 func (a *TopicAPIWrap) Delete(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.Delete(ctx.Request.Context(), topicName)
@@ -717,7 +717,7 @@ func (a *TopicAPIWrap) Delete(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /api/v1/topics/{topicName}/metrics [get]
+// @Router /dbmq/api/v1/topics/{topicName}/metrics [get]
 func (a *TopicAPIWrap) GetMetrics(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetMetrics(ctx.Request.Context(), topicName)
@@ -729,7 +729,7 @@ func (a *TopicAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFu
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/dbmq/api/v1/topics", preHandlers, handlers, a.List)
 }
 
 func (a *TopicAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -737,7 +737,7 @@ func (a *TopicAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFun
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics/:topicName", preHandlers, handlers, a.Get)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.Get)
 }
 
 func (a *TopicAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -745,7 +745,7 @@ func (a *TopicAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...gin.Handler
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/api/v1/topics", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/dbmq/api/v1/topics", preHandlers, handlers, a.Create)
 }
 
 func (a *TopicAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -753,7 +753,7 @@ func (a *TopicAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.Handler
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/api/v1/topics/:topicName", preHandlers, handlers, a.Delete)
+	a.bind(router, "DELETE", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.Delete)
 }
 
 func (a *TopicAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -761,7 +761,7 @@ func (a *TopicAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.Han
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics/:topicName/metrics", preHandlers, handlers, a.GetMetrics)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/metrics", preHandlers, handlers, a.GetMetrics)
 }
 
 func (a *TopicAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -796,7 +796,7 @@ func (a *TopicProxyAPIWrap) bind(router gin.IRoutes, method, path string, preHan
 // @Tags Topic-Proxy
 // @Produce json
 // @Success 200 {object} []string
-// @Router /api/v1/topics [get]
+// @Router /dbmq/api/v1/topics [get]
 func (a *TopicProxyAPIWrap) ListTopics(ctx *gin.Context) {
 	result, err := a.inner.ListTopics(ctx.Request.Context())
 	onGinResponse[[]string](ctx, result, err)
@@ -808,7 +808,7 @@ func (a *TopicProxyAPIWrap) ListTopics(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /api/v1/topics/{topicName} [get]
+// @Router /dbmq/api/v1/topics/{topicName} [get]
 func (a *TopicProxyAPIWrap) GetTopicInfo(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetTopicInfo(ctx.Request.Context(), topicName)
@@ -821,7 +821,7 @@ func (a *TopicProxyAPIWrap) GetTopicInfo(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} []PartitionStats
-// @Router /api/v1/topics/{topicName}/partitions [get]
+// @Router /dbmq/api/v1/topics/{topicName}/partitions [get]
 func (a *TopicProxyAPIWrap) GetPartitions(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetPartitions(ctx.Request.Context(), topicName)
@@ -833,7 +833,7 @@ func (a *TopicProxyAPIWrap) GetPartitions(ctx *gin.Context) {
 // @Tags Topic-Proxy
 // @Produce json
 // @Success 200 {object} []BrokerResp
-// @Router /api/v1/brokers [get]
+// @Router /dbmq/api/v1/brokers [get]
 func (a *TopicProxyAPIWrap) ListBrokers(ctx *gin.Context) {
 	result, err := a.inner.ListBrokers(ctx.Request.Context())
 	onGinResponse[[]BrokerResp](ctx, result, err)
@@ -844,7 +844,7 @@ func (a *TopicProxyAPIWrap) BindListTopics(router gin.IRoutes, preHandlers ...gi
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics", preHandlers, handlers, a.ListTopics)
+	a.bind(router, "GET", "/dbmq/api/v1/topics", preHandlers, handlers, a.ListTopics)
 }
 
 func (a *TopicProxyAPIWrap) BindGetTopicInfo(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -852,7 +852,7 @@ func (a *TopicProxyAPIWrap) BindGetTopicInfo(router gin.IRoutes, preHandlers ...
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics/:topicName", preHandlers, handlers, a.GetTopicInfo)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.GetTopicInfo)
 }
 
 func (a *TopicProxyAPIWrap) BindGetPartitions(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -860,7 +860,7 @@ func (a *TopicProxyAPIWrap) BindGetPartitions(router gin.IRoutes, preHandlers ..
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics/:topicName/partitions", preHandlers, handlers, a.GetPartitions)
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/partitions", preHandlers, handlers, a.GetPartitions)
 }
 
 func (a *TopicProxyAPIWrap) BindListBrokers(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -868,7 +868,7 @@ func (a *TopicProxyAPIWrap) BindListBrokers(router gin.IRoutes, preHandlers ...g
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/brokers", preHandlers, handlers, a.ListBrokers)
+	a.bind(router, "GET", "/dbmq/api/v1/brokers", preHandlers, handlers, a.ListBrokers)
 }
 
 func (a *TopicProxyAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {

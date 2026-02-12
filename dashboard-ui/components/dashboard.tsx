@@ -260,20 +260,12 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
           <Database className="h-4 w-4 mr-2 text-blue-500" />
           Topic 列表
         </h2>
-        <div className="flex space-x-2">
-          <Link href="/topics/create">
-            <Button size="sm" variant="outline" className="text-green-600 hover:text-green-800">
-              <Plus className="h-4 w-4 mr-1" />
-              创建Topic
-            </Button>
-          </Link>
-          <Link href="/topics">
-            <Button size="sm" variant="outline" className="text-gray-600 hover:text-gray-800">
-              <Settings className="h-4 w-4 mr-1" />
-              管理
-            </Button>
-          </Link>
-        </div>
+        <Link href="/topics/create">
+          <Button size="sm" variant="outline" className="text-green-600 hover:text-green-800">
+            <Plus className="h-4 w-4 mr-1" />
+            创建Topic
+          </Button>
+        </Link>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full">

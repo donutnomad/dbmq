@@ -12,7 +12,7 @@ import (
 
 // DBMQAPI DBMQ 专用 API
 // @TAG(DBMQ)
-// @PREFIX(/api/v1/dbmq)
+// @PREFIX(/dbmq/api/v1)
 type DBMQAPI interface {
 	// GetStats 获取统计信息
 	// @GET(/stats)

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import {useSearchParams} from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
 import { ConsumerGroupMetrics, PartitionLag } from '@/lib/types';
@@ -32,6 +32,9 @@ function ConsumerGroupDetailContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showMemberDetails, setShowMemberDetails] = useState<Record<string, boolean>>({});
+  const [autoRefresh, setAutoRefresh] = useState(true); // 自动刷新开关
+  const [refreshInterval, setRefreshInterval] = useState(5000); // 刷新间隔（毫秒）
+  const loadFunctionRef = useRef<(() => Promise<void>) | null>(null);
 
   // 派生状态：计算总分区数
   const totalAssignedPartitions = group?.members?.reduce(
@@ -45,7 +48,7 @@ function ConsumerGroupDetailContent() {
       0
   ) ?? 0;
 
-  // 加载消费组详情
+  // 加载消费组详情（完整加载，显示 loading 状态）
   const loadConsumerGroupDetail = useCallback(async () => {
     try {
       setLoading(true);
@@ -59,6 +62,23 @@ function ConsumerGroupDetailContent() {
       setLoading(false);
     }
   }, [groupId]);
+
+  // 静默刷新数据（不显示 loading 状态，用于自动刷新）
+  const refreshDataSilently = useCallback(async () => {
+    try {
+      const groupData = await DBMQAPIClient.getConsumerGroup(groupId);
+      setGroup(groupData);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to refresh consumer group data:', err);
+      // 静默刷新失败不显示错误，避免干扰用户
+    }
+  }, [groupId]);
+
+  // 更新 ref 以保持最新的刷新函数
+  useEffect(() => {
+    loadFunctionRef.current = refreshDataSilently;
+  }, [refreshDataSilently]);
 
   // 获取状态徽章类型
   const getStatusVariant = (status: string | undefined): 'default' | 'success' | 'warning' | 'error' => {
@@ -134,6 +154,19 @@ function ConsumerGroupDetailContent() {
     }
   }, [groupId, loadConsumerGroupDetail]);
 
+  // 自动刷新逻辑
+  useEffect(() => {
+    if (!autoRefresh || !groupId) return;
+
+    const timer = setInterval(() => {
+      if (loadFunctionRef.current) {
+        loadFunctionRef.current();
+      }
+    }, refreshInterval);
+
+    return () => clearInterval(timer);
+  }, [autoRefresh, refreshInterval, groupId]);
+
   if (loading) {
     return (
         <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -184,6 +217,41 @@ function ConsumerGroupDetailContent() {
                 <Badge variant={getStatusVariant(group?.state || group?.status)} className="px-3 py-1">
                   {getStatusText(group?.state || group?.status)}
                 </Badge>
+
+                {/* 自动刷新间隔选择 */}
+                <select
+                  value={refreshInterval}
+                  onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                  className="px-2 py-1 text-xs border border-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                  disabled={!autoRefresh}
+                >
+                  <option value={3000}>3秒</option>
+                  <option value={5000}>5秒</option>
+                  <option value={10000}>10秒</option>
+                  <option value={30000}>30秒</option>
+                </select>
+
+                {/* 自动刷新开关 */}
+                <Button
+                  onClick={() => setAutoRefresh(!autoRefresh)}
+                  size="sm"
+                  variant={autoRefresh ? "default" : "outline"}
+                  className={autoRefresh ? "bg-green-600 hover:bg-green-700 text-white" : ""}
+                >
+                  {autoRefresh ? (
+                    <>
+                      <Activity className="h-4 w-4 mr-1" />
+                      自动刷新
+                    </>
+                  ) : (
+                    <>
+                      <Activity className="h-4 w-4 mr-1" />
+                      已暂停
+                    </>
+                  )}
+                </Button>
+
+                {/* 手动刷新按钮 */}
                 <Button onClick={loadConsumerGroupDetail} size="sm" variant="outline" disabled={loading}>
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>

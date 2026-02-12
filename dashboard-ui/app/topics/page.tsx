@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import {useSearchParams} from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
 import { TopicMetrics, Message, PartitionStats } from '@/lib/types';
@@ -333,6 +333,9 @@ function TopicDetailContent() {
     if (topicName) {
       loadTopicDetail();
       loadMessages();
+    } else {
+      // 如果没有 topicName，说明是直接访问 /topics，设置 loading 为 false
+      setLoading(false);
     }
   }, [topicName, loadTopicDetail, loadMessages]);
 
@@ -366,6 +369,27 @@ function TopicDetailContent() {
             }} variant="primary">
               重试
             </Button>
+          </div>
+        </div>
+    );
+  }
+
+  // 如果没有 topicName，显示提示
+  if (!topicName) {
+    return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="text-center max-w-md mx-auto p-8">
+            <Database className="h-16 w-16 mx-auto mb-4 text-gray-400" />
+            <h2 className="text-xl font-medium text-gray-900 mb-2">请选择一个 Topic</h2>
+            <p className="text-gray-600 mb-6">
+              请从首页的 Topic 列表中选择一个 Topic 查看详情
+            </p>
+            <Link href="/">
+              <Button variant="primary">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                返回首页
+              </Button>
+            </Link>
           </div>
         </div>
     );
@@ -727,9 +751,8 @@ function TopicDetailContent() {
                       </TableHeader>
                       <TableBody>
                         {messages.map((message) => (
-                          <>
+                          <React.Fragment key={message.id}>
                             <TableRow
-                              key={message.id}
                               className={cn(
                                 "cursor-pointer",
                                 expandedMessages.has(message.id) && "bg-blue-50"
@@ -811,7 +834,7 @@ function TopicDetailContent() {
                                 </TableCell>
                               </TableRow>
                             )}
-                          </>
+                          </React.Fragment>
                         ))}
                       </TableBody>
                     </Table>

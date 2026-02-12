@@ -8,7 +8,7 @@ import (
 
 // HealthAPI 健康检查 API
 // @TAG(Health)
-// @PREFIX(/api/v1)
+// @PREFIX(/dbmq/api/v1)
 type HealthAPI interface {
 	// Health 健康检查
 	// @GET(/health)

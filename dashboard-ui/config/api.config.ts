@@ -7,7 +7,7 @@
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8081';
 
 // API 路径前缀
-export const API_PREFIX = '/api/v1';
+export const API_PREFIX = '/dbmq/api/v1';
 
 // 完整的 API URL
 export const getFullAPIURL = () => {
