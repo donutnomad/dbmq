@@ -93,8 +93,9 @@ type leaderSession struct {
 
 // groupSnapshot 缓存每次成功重新均衡后的成员订阅和分区元数据
 type groupSnapshot struct {
-	memberTopics  map[string]string // consumerID -> 订阅Topic哈希，用于检测订阅变更
-	partitionHash string            // 相关Topic及分区数量的哈希，用于检测Topic/分区变化
+	memberTopics         map[string]string // consumerID -> 订阅Topic哈希，用于检测订阅变更
+	partitionHash        string            // 相关Topic及分区数量的哈希，用于检测Topic/分区变化
+	manualAssignmentHash string            // 手动分配规则的哈希，用于检测手动分配变化
 }
 
 // NewCoordinator 创建一个新的协调器
@@ -624,7 +625,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		if err := c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, map[string][]types.PartitionInfo{}); err != nil {
 			return fmt.Errorf("[LEADER] failed to clear assignments for empty group: %w", err)
 		}
-		c.updateGroupSnapshot(groupID, nil, "")
+		c.updateGroupSnapshot(groupID, nil, "", nil)
 		c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' completed with no active consumers. Generation: %d", groupID, newGenerationID))
 		return nil
 	}
@@ -651,7 +652,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	}
 
 	// 记录新的消费组快照
-	c.updateGroupSnapshot(groupID, activeConsumers, partitionHash)
+	c.updateGroupSnapshot(groupID, activeConsumers, partitionHash, manualAssignments)
 	c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
 	return nil
 }
@@ -667,10 +668,12 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 		return len(consumers) > 0 || partitionHash != ""
 	}
 
+	// 检查消费者数量变化
 	if len(consumers) != len(snapshot.memberTopics) {
 		return true
 	}
 
+	// 检查订阅 Topic 变化
 	for _, consumer := range consumers {
 		topicHash := hashSubscribedTopics(consumer.SubscribedTopics)
 		if cachedHash, ok := snapshot.memberTopics[consumer.ConsumerID]; !ok || cachedHash != topicHash {
@@ -678,13 +681,44 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 		}
 	}
 
-	return snapshot.partitionHash != partitionHash
+	// 检查分区变化
+	if snapshot.partitionHash != partitionHash {
+		return true
+	}
+
+	// 🔥 新增：检查手动分配规则是否变化
+	// 获取当前手动分配规则的哈希
+	ctx := context.Background()
+	consumerIDs := make([]string, 0, len(consumers))
+	for _, c := range consumers {
+		consumerIDs = append(consumerIDs, c.ConsumerID)
+	}
+
+	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
+	if err != nil {
+		// 查询失败时保守触发 rebalance
+		c.logger.Warn("[LEADER] Failed to check manual assignments, triggering rebalance", "error", err)
+		return true
+	}
+
+	currentManualHash := hashManualAssignments(manualAssignments)
+	if snapshot.manualAssignmentHash != currentManualHash {
+		c.logger.Info("[LEADER] 🎯 检测到手动分配规则变化，触发 rebalance",
+			"group_id", groupID,
+			"old_hash", snapshot.manualAssignmentHash,
+			"new_hash", currentManualHash,
+		)
+		return true
+	}
+
+	return false
 }
 
-func (c *Coordinator) updateGroupSnapshot(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string) {
+func (c *Coordinator) updateGroupSnapshot(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, manualAssignments map[string][]types.PartitionInfo) {
 	snapshot := &groupSnapshot{
-		memberTopics:  make(map[string]string, len(consumers)),
-		partitionHash: partitionHash,
+		memberTopics:         make(map[string]string, len(consumers)),
+		partitionHash:        partitionHash,
+		manualAssignmentHash: hashManualAssignments(manualAssignments),
 	}
 	for _, consumer := range consumers {
 		snapshot.memberTopics[consumer.ConsumerID] = hashSubscribedTopics(consumer.SubscribedTopics)
@@ -705,6 +739,45 @@ func hashSubscribedTopics(topics []string) string {
 	sorted := slices.Clone(topics)
 	sort.Strings(sorted)
 	return strings.Join(sorted, "|")
+}
+
+// hashManualAssignments 计算手动分配规则的哈希值，用于检测规则变化
+func hashManualAssignments(assignments map[string][]types.PartitionInfo) string {
+	if len(assignments) == 0 {
+		return ""
+	}
+
+	// 收集所有条目并排序，确保结果可重现
+	type entry struct {
+		consumerID string
+		partitions []types.PartitionInfo
+	}
+
+	entries := make([]entry, 0, len(assignments))
+	for consumerID, partitions := range assignments {
+		// 克隆并排序分区列表
+		sortedParts := slices.Clone(partitions)
+		utils.SortPartitionsByTopicAndPartition(sortedParts)
+		entries = append(entries, entry{
+			consumerID: consumerID,
+			partitions: sortedParts,
+		})
+	}
+
+	// 按 consumerID 排序
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].consumerID < entries[j].consumerID
+	})
+
+	// 构建哈希字符串
+	var parts []string
+	for _, e := range entries {
+		for _, p := range e.partitions {
+			parts = append(parts, fmt.Sprintf("%s:%s:%d", e.consumerID, p.Topic, p.Partition))
+		}
+	}
+
+	return strings.Join(parts, "|")
 }
 
 func mapKeys(m map[string]struct{}) []string {

@@ -55,6 +55,14 @@ func NewServer(config ServerConfig) (*Server, error) {
 
 	adminClient := dbmq.NewAdminClient(config.DB)
 
+	// 创建 Producer 用于重发消息
+	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
+		DB: config.DB,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create producer: %w", err)
+	}
+
 	s := &Server{
 		config: config,
 	}
@@ -66,6 +74,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		MessageQuery:         query.NewMessageQuery(config.DB),
 		MetricsClient:        metricsClient,
 		AdminClient:          adminClient,
+		Producer:             producer,
 		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),
 		StartTime:            func() int64 { return s.startTime.Unix() },
 	}
@@ -77,6 +86,11 @@ func NewServer(config ServerConfig) (*Server, error) {
 	engine.Use(gin.Recovery())
 	engine.Use(corsMiddleware())
 	engine.Use(loggingMiddleware())
+
+	// 自动处理尾部斜杠问题
+	// 当访问 /api/v1/consumer-groups 时，自动匹配到 /api/v1/consumer-groups/
+	engine.RedirectTrailingSlash = true
+	engine.RedirectFixedPath = true
 
 	s.engine = engine
 
@@ -142,12 +156,25 @@ func (s *Server) Deps() *Deps {
 // corsMiddleware CORS 中间件
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		origin := c.Request.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
 
+		// 设置 CORS 响应头
+		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, X-CSRF-Token, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers")
+
+		// 开发环境使用较短的缓存时间，生产环境可以设置为 86400（24小时）
+		// 开发时如果遇到 CORS 缓存问题，设置为 0 可以禁用预检缓存
+		c.Writer.Header().Set("Access-Control-Max-Age", "600") // 10分钟
+
+		// 处理 OPTIONS 预检请求
 		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusOK)
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 

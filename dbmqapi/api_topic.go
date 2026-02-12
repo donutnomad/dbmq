@@ -10,31 +10,30 @@ import (
 
 // TopicAPI Topic 管理 API
 // @TAG(Topic)
-// @PREFIX(/api/v1/topics)
 type TopicAPI interface {
 	// List 获取 Topic 列表
-	// @GET(/)
+	// @GET(/api/v1/topics)
 	List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error)
 	// Get 获取单个 Topic
-	// @GET(/{topicName})
+	// @GET(/api/v1/topics/{topicName})
 	Get(ctx context.Context, topicName string) (TopicResp, error)
 	// Create 创建 Topic
-	// @POST(/)
+	// @POST(/api/v1/topics)
 	Create(ctx context.Context, req CreateTopicReq) (MessageResp, error)
 	// Delete 删除 Topic
-	// @DELETE(/{topicName})
+	// @DELETE(/api/v1/topics/{topicName})
 	Delete(ctx context.Context, topicName string) (MessageResp, error)
 	// GetMetrics 获取 Topic 指标
-	// @GET(/{topicName}/metrics)
+	// @GET(/api/v1/topics/{topicName}/metrics)
 	GetMetrics(ctx context.Context, topicName string) (TopicResp, error)
-}
-
-type topicAPI struct {
-	deps *Deps
 }
 
 func NewTopicAPI(deps *Deps) TopicAPI {
 	return &topicAPI{deps: deps}
+}
+
+type topicAPI struct {
+	deps *Deps
 }
 
 func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/query"
 )
 
@@ -25,6 +26,9 @@ type DBMQAPI interface {
 	// GetConsumerGroupExtended 获取消费组扩展信息
 	// @GET(/consumer-groups/{groupId}/extended)
 	GetConsumerGroupExtended(ctx context.Context, groupId string) (ConsumerGroupExtendedResp, error)
+	// ResendMessages 重发消息
+	// @POST(/messages/resend)
+	ResendMessages(ctx context.Context, req ResendMessagesReq) (ResendMessagesResp, error)
 }
 
 type dbmqAPI struct {
@@ -253,5 +257,109 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 		Coordinator:        "coordinator",
 		CommitMode:         "manual",
 		AssignmentStrategy: "range",
+	}, nil
+}
+
+func (a *dbmqAPI) ResendMessages(ctx context.Context, req ResendMessagesReq) (ResendMessagesResp, error) {
+	if len(req.Messages) == 0 {
+		return ResendMessagesResp{}, fmt.Errorf("messages cannot be empty")
+	}
+
+	if a.deps.Producer == nil {
+		return ResendMessagesResp{}, fmt.Errorf("producer not configured")
+	}
+
+	results := make([]ResendResult, 0, len(req.Messages))
+	successCount := 0
+	failedCount := 0
+
+	// 逐个获取并重发消息
+	for _, msgItem := range req.Messages {
+		result := ResendResult{
+			OriginalMessageID: msgItem.MessageID,
+			Success:           false,
+		}
+
+		// 通过查询层查找消息
+		searchResult, err := a.deps.MessageQuery.Search(ctx, query.MessageSearchRequest{
+			Topic:  msgItem.Topic,
+			Offset: msgItem.MessageID,
+			Limit:  100, // 获取一批消息以找到匹配的 ID
+		})
+
+		if err != nil {
+			errMsg := fmt.Sprintf("failed to query message: %v", err)
+			result.Error = &errMsg
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		// 找到 ID 匹配的消息
+		var originalMsg *query.MessageRecord
+		for i := range searchResult.Messages {
+			if searchResult.Messages[i].ID == msgItem.MessageID {
+				originalMsg = &searchResult.Messages[i]
+				break
+			}
+		}
+
+		if originalMsg == nil {
+			errMsg := "message not found"
+			result.Error = &errMsg
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		// 构建重发消息
+		targetTopic := originalMsg.Topic
+		if req.TargetTopic != nil && *req.TargetTopic != "" {
+			targetTopic = *req.TargetTopic
+		}
+
+		key := originalMsg.MessageKey
+		if msgItem.Key != nil {
+			key = *msgItem.Key
+		}
+
+		// 合并 Headers
+		headers := make(map[string]string)
+		for k, v := range originalMsg.Headers {
+			headers[k] = v
+		}
+		for k, v := range req.OverrideHeaders {
+			headers[k] = v
+		}
+
+		// 发送消息
+		sendResult, err := a.deps.Producer.Send(ctx, dbmq.ProducerMessage{
+			Topic:   targetTopic,
+			Key:     key,
+			Value:   originalMsg.Body,
+			Headers: headers,
+		})
+
+		if err != nil {
+			errMsg := err.Error()
+			result.Error = &errMsg
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		// 成功
+		result.Success = true
+		newOffset := sendResult.Offset
+		result.NewMessageID = &newOffset
+		result.NewOffset = &newOffset
+		results = append(results, result)
+		successCount++
+	}
+
+	return ResendMessagesResp{
+		SuccessCount: successCount,
+		FailedCount:  failedCount,
+		Results:      results,
 	}, nil
 }

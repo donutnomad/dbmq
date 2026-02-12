@@ -149,6 +149,50 @@ type MessageDTO struct {
 	Headers   map[string]string `json:"headers"`
 }
 
+// ResendMessagesReq 重发消息请求
+type ResendMessagesReq struct {
+	// Messages 要重发的消息列表（包含 Topic 和 ID）
+	Messages []ResendMessageItem `json:"messages"`
+	// TargetTopic 目标 Topic（可选，如果指定则所有消息发送到此 Topic）
+	TargetTopic *string `json:"targetTopic,omitempty"`
+	// OverrideHeaders 覆盖的 Headers（可选）
+	OverrideHeaders map[string]string `json:"overrideHeaders,omitempty"`
+}
+
+// ResendMessageItem 单个重发消息项
+type ResendMessageItem struct {
+	// Topic 消息所在的 Topic
+	Topic string `json:"topic"`
+	// MessageID 消息 ID
+	MessageID int64 `json:"messageId"`
+	// Key 新的消息键（可选，默认使用原消息的 Key）
+	Key *string `json:"key,omitempty"`
+}
+
+// ResendMessagesResp 重发消息响应
+type ResendMessagesResp struct {
+	// SuccessCount 成功重发的消息数量
+	SuccessCount int `json:"successCount"`
+	// FailedCount 失败的消息数量
+	FailedCount int `json:"failedCount"`
+	// Results 每条消息的重发结果
+	Results []ResendResult `json:"results"`
+}
+
+// ResendResult 单个消息的重发结果
+type ResendResult struct {
+	// OriginalMessageID 原始消息 ID
+	OriginalMessageID int64 `json:"originalMessageId"`
+	// Success 是否成功
+	Success bool `json:"success"`
+	// NewMessageID 新消息的 ID（成功时）
+	NewMessageID *int64 `json:"newMessageId,omitempty"`
+	// NewOffset 新消息的 Offset（成功时）
+	NewOffset *int64 `json:"newOffset,omitempty"`
+	// Error 错误信息（失败时）
+	Error *string `json:"error,omitempty"`
+}
+
 // ==================== Consumer Group API Types ====================
 
 // ConsumerGroupResp 消费组响应
@@ -163,11 +207,14 @@ type ConsumerGroupResp struct {
 
 // PartitionLagResp 分区延迟响应
 type PartitionLagResp struct {
-	Topic         string `json:"topic"`
-	Partition     int    `json:"partition"`
-	CurrentOffset int64  `json:"currentOffset"`
-	LatestOffset  int64  `json:"latestOffset"`
-	Lag           int64  `json:"lag"`
+	Topic              string  `json:"topic"`
+	Partition          int     `json:"partition"`
+	CurrentOffset      int64   `json:"currentOffset"`
+	LatestOffset       int64   `json:"latestOffset"`
+	Lag                int64   `json:"lag"`
+	ConsumedMessages   int64   `json:"consumedMessages"`   // 已消费的消息数
+	RemainingMessages  int64   `json:"remainingMessages"`  // 剩余未消费的消息数
+	ConsumedPercentage float64 `json:"consumedPercentage"` // 消费进度百分比
 }
 
 // ConsumerMemberDTO 消费者成员数据传输对象

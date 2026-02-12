@@ -208,7 +208,7 @@ func (a *ConsumerGroupAPIWrap) bind(router gin.IRoutes, method, path string, pre
 // @Tags Consumer-Group
 // @Produce json
 // @Success 200 {object} []ConsumerGroupResp
-// @Router /api/v1/consumer-groups/ [get]
+// @Router /api/v1/consumer-groups [get]
 func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ConsumerGroupResp](ctx, result, err)
@@ -227,12 +227,26 @@ func (a *ConsumerGroupAPIWrap) Get(ctx *gin.Context) {
 	onGinResponse[ConsumerGroupResp](ctx, result, err)
 }
 
+// TriggerRebalance
+// @Summary 强制触发消费组重新均衡
+// @Tags Consumer-Group
+// @Accept json
+// @Produce json
+// @Param groupId path string true "groupId"
+// @Success 200 {object} MessageResp
+// @Router /api/v1/consumer-groups/{groupId}/rebalance [post]
+func (a *ConsumerGroupAPIWrap) TriggerRebalance(ctx *gin.Context) {
+	groupId := ctx.Param("groupId")
+	result, err := a.inner.TriggerRebalance(ctx.Request.Context(), groupId)
+	onGinResponse[MessageResp](ctx, result, err)
+}
+
 func (a *ConsumerGroupAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	var handlers []gin.HandlerFunc
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/consumer-groups/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/api/v1/consumer-groups", preHandlers, handlers, a.List)
 }
 
 func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -243,9 +257,18 @@ func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.Ha
 	a.bind(router, "GET", "/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Get)
 }
 
+func (a *ConsumerGroupAPIWrap) BindTriggerRebalance(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "POST", "/api/v1/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
+}
+
 func (a *ConsumerGroupAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	a.BindList(router, preHandlers...)
 	a.BindGet(router, preHandlers...)
+	a.BindTriggerRebalance(router, preHandlers...)
 }
 
 type DBMQAPIWrap struct {
@@ -324,6 +347,23 @@ func (a *DBMQAPIWrap) GetConsumerGroupExtended(ctx *gin.Context) {
 	onGinResponse[ConsumerGroupExtendedResp](ctx, result, err)
 }
 
+// ResendMessages
+// @Summary 重发消息
+// @Tags DBMQ
+// @Accept json
+// @Produce json
+// @Param req body ResendMessagesReq true "req"
+// @Success 200 {object} ResendMessagesResp
+// @Router /api/v1/dbmq/messages/resend [post]
+func (a *DBMQAPIWrap) ResendMessages(ctx *gin.Context) {
+	var req ResendMessagesReq
+	if !onGinBind(ctx, &req, "JSON") {
+		return
+	}
+	result, err := a.inner.ResendMessages(ctx.Request.Context(), req)
+	onGinResponse[ResendMessagesResp](ctx, result, err)
+}
+
 func (a *DBMQAPIWrap) BindGetStats(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	var handlers []gin.HandlerFunc
 	if a.handler != nil {
@@ -356,11 +396,20 @@ func (a *DBMQAPIWrap) BindGetConsumerGroupExtended(router gin.IRoutes, preHandle
 	a.bind(router, "GET", "/api/v1/dbmq/consumer-groups/:groupId/extended", preHandlers, handlers, a.GetConsumerGroupExtended)
 }
 
+func (a *DBMQAPIWrap) BindResendMessages(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "POST", "/api/v1/dbmq/messages/resend", preHandlers, handlers, a.ResendMessages)
+}
+
 func (a *DBMQAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	a.BindGetStats(router, preHandlers...)
 	a.BindGetTopicMessages(router, preHandlers...)
 	a.BindGetPartitionStats(router, preHandlers...)
 	a.BindGetConsumerGroupExtended(router, preHandlers...)
+	a.BindResendMessages(router, preHandlers...)
 }
 
 type DashboardAPIWrap struct {
@@ -608,7 +657,7 @@ func (a *TopicAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers
 // @Produce json
 // @Param req query GetTopicsReq true "req"
 // @Success 200 {object} []TopicResp
-// @Router /api/v1/topics/ [get]
+// @Router /api/v1/topics [get]
 func (a *TopicAPIWrap) List(ctx *gin.Context) {
 	var req GetTopicsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -638,7 +687,7 @@ func (a *TopicAPIWrap) Get(ctx *gin.Context) {
 // @Produce json
 // @Param req body CreateTopicReq true "req"
 // @Success 200 {object} MessageResp
-// @Router /api/v1/topics/ [post]
+// @Router /api/v1/topics [post]
 func (a *TopicAPIWrap) Create(ctx *gin.Context) {
 	var req CreateTopicReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -680,7 +729,7 @@ func (a *TopicAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFu
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/api/v1/topics/", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/api/v1/topics", preHandlers, handlers, a.List)
 }
 
 func (a *TopicAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -696,7 +745,7 @@ func (a *TopicAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...gin.Handler
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/api/v1/topics/", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/api/v1/topics", preHandlers, handlers, a.Create)
 }
 
 func (a *TopicAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {

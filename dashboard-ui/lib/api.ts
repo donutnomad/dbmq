@@ -1,22 +1,11 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, RMQConsumerInfo } from './types';
-
-// 获取API基础URL
-const getAPIBaseURL = () => {
-  if (typeof window !== 'undefined') {
-    // 客户端环境
-    return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8081';
-  }
-  // 服务端环境
-  return process.env.DBMQ_API_BASE || 'http://localhost:8081';
-};
-
-const API_PREFIX = '/api/v1';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, RMQConsumerInfo, ResendMessagesRequest, ResendMessagesResponse } from './types';
+import { apiConfig } from '@/config/api.config';
 
 // 创建axios实例
 const apiClient = axios.create({
-  baseURL: getAPIBaseURL() + API_PREFIX,
-  timeout: 30000,
+  baseURL: apiConfig.fullURL,
+  timeout: apiConfig.timeout,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -104,6 +93,16 @@ export class DBMQAPIClient {
     } catch (err) {
       console.error('Error fetching consumer group details:', err);
       throw err;
+    }
+  }
+
+  // 触发消费组 rebalance
+  static async triggerRebalance(groupId: string): Promise<void> {
+    const response = await apiClient.post<APIResponse<{ message: string }>>(
+      `/consumer-groups/${encodeURIComponent(groupId)}/rebalance`
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to trigger rebalance');
     }
   }
 
@@ -271,6 +270,15 @@ export class DBMQAPIClient {
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to resume consumer');
     }
+  }
+
+  // 重发消息
+  static async resendMessages(request: ResendMessagesRequest): Promise<ResendMessagesResponse> {
+    const response = await apiClient.post<APIResponse<ResendMessagesResponse>>('/dbmq/messages/resend', request);
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to resend messages');
   }
 }
 

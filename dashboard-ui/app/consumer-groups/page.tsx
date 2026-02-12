@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import {useSearchParams} from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
 import { ConsumerGroupMetrics, PartitionLag } from '@/lib/types';
@@ -122,12 +122,10 @@ function ConsumerGroupDetailContent() {
 
   // 计算消费进度百分比
   const calculateProgressPercentage = (lag: PartitionLag): number => {
-    if (!lag.latestOffset || lag.latestOffset === 0) return 100;
-    if (!lag.currentOffset && lag.currentOffset !== 0) return 0;
-
-    const total = lag.latestOffset;
-    const consumed = lag.currentOffset;
-    return Math.min(100, Math.max(0, Math.round((consumed / total) * 100)));
+    const total = lag.totalMessageCount || 0;
+    const pending = lag.lag || 0;
+    if (total <= 0) return 100;
+    return ((total - pending) / total) * 100;
   };
 
   useEffect(() => {
@@ -204,7 +202,7 @@ function ConsumerGroupDetailContent() {
                 className="bg-blue-50 border-none"
             />
             <StatCard
-                title="总延迟"
+                title="待消费"
                 value={formatNumber(group?.totalLag || group?.lag || 0)}
                 icon={<Clock className="h-5 w-5 text-orange-500" />}
                 className="bg-orange-50 border-none"
@@ -258,7 +256,7 @@ function ConsumerGroupDetailContent() {
                             <div className="flex justify-between items-center mb-2">
                               <div>
                                 <span className="text-xs font-medium text-gray-700 block">{topic}</span>
-                                <span className="text-xs text-gray-500">延迟: {formatNumber(totalLag)}</span>
+                                <span className="text-xs text-gray-500">延迟: {totalLag.toLocaleString()}</span>
                               </div>
                               <span className="text-xs font-medium text-gray-700">{Math.round(avgProgress)}%</span>
                             </div>
@@ -280,9 +278,8 @@ function ConsumerGroupDetailContent() {
               </Card>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <div>
             {/* 消费者成员 - 现代化表格设计 */}
-            <div className="lg:col-span-3">
               <Card className="shadow-sm border-none">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base font-medium flex items-center">
@@ -299,12 +296,6 @@ function ConsumerGroupDetailContent() {
                           消费者ID / 状态
                         </th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          客户端ID
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          主机
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           最后心跳
                         </th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -318,14 +309,14 @@ function ConsumerGroupDetailContent() {
                       <tbody className="divide-y divide-gray-100">
                       {!group?.members || group.members.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="px-3 py-4 text-center text-gray-500">
+                            <td colSpan={4} className="px-3 py-4 text-center text-gray-500">
                               暂无成员数据
                             </td>
                           </tr>
                       ) : (
                           group.members.map((member, index) => (
-                              <>
-                                <tr key={member.memberId || index} className={getConsumerRowStyle(member.lastHeartbeat)}>
+                              <React.Fragment key={member.memberId || index}>
+                                <tr className={getConsumerRowStyle(member.lastHeartbeat)}>
                                   <td className="px-3 py-2 whitespace-nowrap">
                                     <div className="flex items-center">
                                       <div className={`w-2 h-2 rounded-full mr-2 ${
@@ -341,12 +332,6 @@ function ConsumerGroupDetailContent() {
                                       )}
                                     </div>
                                   </td>
-                                  <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                                    {member.clientId || '--'}
-                                  </td>
-                                  <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                                    {member.host || '--'}
-                                  </td>
                                   <td className="px-3 py-2 whitespace-nowrap">
                                 <span className="text-gray-600">
                                   {member.lastHeartbeat ? formatTimestamp(member.lastHeartbeat) : '--'}
@@ -356,7 +341,9 @@ function ConsumerGroupDetailContent() {
                                     <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
                                       {(() => {
                                         if (!member.assignment || typeof member.assignment !== 'object') return 0;
-                                        return member.assignment.length;
+                                        return Object.values(member.assignment).reduce((total: number, partitions: any) => {
+                                          return total + (Array.isArray(partitions) ? partitions.length : 0);
+                                        }, 0);
                                       })()}
                                     </Badge>
                                   </td>
@@ -373,7 +360,7 @@ function ConsumerGroupDetailContent() {
                                 </tr>
                                 {showMemberDetails[member.memberId] && (
                                     <tr>
-                                      <td colSpan={6} className="px-3 py-2 bg-gray-50">
+                                      <td colSpan={4} className="px-3 py-2 bg-gray-50">
                                         <div className="space-y-3">
                                           {/* 订阅主题 */}
                                           <div>
@@ -417,7 +404,7 @@ function ConsumerGroupDetailContent() {
                                       </td>
                                     </tr>
                                 )}
-                              </>
+                              </React.Fragment>
                           ))
                       )}
                       </tbody>
@@ -438,61 +425,6 @@ function ConsumerGroupDetailContent() {
                   </div>
                 </CardContent>
               </Card>
-            </div>
-
-            {/* 消费组信息 - 更紧凑和现代的设计 */}
-            <div className="lg:col-span-1">
-              <Card className="shadow-sm border-none">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base font-medium flex items-center">
-                    <Database className="h-4 w-4 mr-2 text-blue-500" />
-                    消费组信息
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <h3 className="text-xs font-medium text-gray-700 mb-2">时间信息</h3>
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="text-xs text-gray-600">最后活动</span>
-                          <span className="text-xs font-medium">
-                          {group?.lastActivity ? formatTimestamp(group.lastActivity) : '--'}
-                        </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-xs text-gray-600">创建时间</span>
-                          <span className="text-xs font-medium">
-                          {group?.createdAt ? formatTimestamp(group.createdAt) : '--'}
-                        </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <h3 className="text-xs font-medium text-gray-700 mb-2">分配的Topics</h3>
-                      {!group?.assignedTopics || group.assignedTopics.length === 0 ? (
-                          <p className="text-xs text-gray-500">暂无分配的Topics</p>
-                      ) : (
-                          <div className="flex flex-wrap gap-1">
-                            {group.assignedTopics.map((topic, index) => (
-                                <Link href={`/topics/${encodeURIComponent(topic)}`} key={index}>
-                                  <Badge
-                                      variant="outline"
-                                      className="bg-blue-50 text-blue-700 border-blue-200 cursor-pointer hover:bg-blue-100"
-                                  >
-                                    <Database className="h-3 w-3 mr-1" />
-                                    {topic}
-                                  </Badge>
-                                </Link>
-                            ))}
-                          </div>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
           </div>
 
           {/* 分区延迟详情 - 现代化表格设计 */}
@@ -512,20 +444,20 @@ function ConsumerGroupDetailContent() {
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Topic/分区
                       </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        ID范围
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        最新Offset
                       </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        当前Offset
+                      </th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="未消费的实际消息条数（非offset差值，因消息清理后ID不连续）">
+                        待消费
+                      </th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[200px]">
                         消费进度
                       </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        消息统计
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        延迟状态
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        大小/更新时间
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        消息数/大小
                       </th>
                     </tr>
                     </thead>
@@ -538,114 +470,79 @@ function ConsumerGroupDetailContent() {
                         </tr>
                     ) : (
                         group.partitionLags.map((lag, index) => {
-                          const progressPercentage = lag.consumedPercentage;
+                          const latest = lag.latestOffset || 0;
+                          const current = lag.currentOffset || 0;
+                          const watermark = lag.initialTopicWatermark ?? 0;
+                          const total = lag.totalMessageCount || 0;
+                          const pending = lag.lag || 0;
+                          // 基于实际消息数计算进度: (总消息数 - 待消费数) / 总消息数
+                          let progressPct = total > 0 ? ((total - pending) / total) * 100 : 0;
+                          // 水位在进度条中的位置百分比
+                          const watermarkPct = latest > 0 ? Math.min(100, (watermark / latest) * 100) : 0;
                           return (
                               <tr key={index} className="hover:bg-gray-50 transition-colors">
-                                {/* Topic/分区 */}
                                 <td className="px-3 py-2">
-                                  <div>
-                                    <Link
-                                        href={`/topics/${encodeURIComponent(lag.topic || '')}`}
-                                        className="text-blue-600 hover:text-blue-800 font-medium text-sm"
-                                    >
-                                      {lag.topic || '--'}
-                                    </Link>
-                                    <div className="text-xs text-gray-500">
-                                      分区 {lag.partition !== undefined ? lag.partition : '--'}
-                                    </div>
-                                  </div>
+                                  <Link
+                                      href={`/topics?name=${encodeURIComponent(lag.topic || '')}`}
+                                      className="text-blue-600 hover:text-blue-800 font-medium text-sm"
+                                  >
+                                    {lag.topic || '--'}
+                                  </Link>
+                                  <div className="text-xs text-gray-500">分区 {lag.partition ?? '--'}</div>
                                 </td>
-
-                                {/* ID范围 */}
-                                <td className="px-3 py-2">
-                                  <div className="text-xs space-y-1">
-                                    <div>
-                                      <span className="text-gray-500">最新:</span>
-                                      <span className="ml-1 font-mono text-gray-700">
-                                    {lag.lastMessageId !== undefined && lag.lastMessageId !== -1
-                                        ? formatNumber(lag.lastMessageId)
-                                        : '无'}
-                                  </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">当前:</span>
-                                      <span className="ml-1 font-mono text-blue-600 font-medium">
-                                    {formatNumber(lag.currentOffset || 0)}
-                                  </span>
-                                    </div>
-                                    {lag.initialTopicWatermark !== undefined && lag.initialTopicWatermark !== null && (
-                                        <div>
-                                          <span className="text-gray-500">初始水位:</span>
-                                          <span className="ml-1 font-mono text-orange-600 font-medium" title="消费组首次加入topic时的topic最新消息ID">
-                                      {formatNumber(lag.initialTopicWatermark)}
-                                    </span>
-                                        </div>
-                                    )}
-                                  </div>
+                                <td className="px-3 py-2 text-right font-mono text-sm text-gray-700">
+                                  {latest.toLocaleString()}
                                 </td>
-
-                                {/* 消费进度 */}
-                                <td className="px-3 py-2">
-                                  <div className="space-y-2">
-                                    <div className="flex items-center justify-between text-xs">
-                                      <span className="text-gray-500">进度</span>
-                                      <span className="font-medium">{progressPercentage.toFixed(1)}%</span>
-                                    </div>
-                                    <Progress value={progressPercentage} className="h-1.5" />
-                                    <div className="flex justify-between text-xs text-gray-500">
-                                      <span>已消费: {formatNumber(lag.consumedMessages || 0)}</span>
-                                      <span>剩余: {formatNumber(lag.remainingMessages || 0)}</span>
-                                    </div>
-                                  </div>
+                                <td className="px-3 py-2 text-right font-mono text-sm text-blue-600 font-medium">
+                                  {current.toLocaleString()}
                                 </td>
-
-                                {/* 消息统计 */}
-                                <td className="px-3 py-2">
-                                  <div className="text-xs space-y-1">
-                                    <div>
-                                      <span className="text-gray-500">总数:</span>
-                                      <span className="ml-1 font-medium text-gray-700">
-                                    {formatNumber(lag.totalMessageCount || 0)}
-                                  </span>
-                                    </div>
-                                    {lag.partitionSizeBytes !== undefined && (
-                                        <div>
-                                          <span className="text-gray-500">大小:</span>
-                                          <span className="ml-1 font-medium text-gray-700">
-                                      {formatBytes(lag.partitionSizeBytes)}
-                                    </span>
-                                        </div>
-                                    )}
+                                <td className="px-3 py-2 text-right">
+                                  <div title="未消费的实际消息条数">
+                                    <Badge className={`${getLagSeverity(lag.lag)} font-medium text-xs`}>
+                                      {(lag.lag || 0).toLocaleString()} 条
+                                    </Badge>
                                   </div>
+                                  {latest - current !== (lag.lag || 0) && latest - current > 0 && (
+                                      <div className="text-[10px] text-gray-400 mt-0.5" title="Offset差值，因消息清理后ID不连续，与实际待消费数不同">
+                                        offset差: {(latest - current).toLocaleString()}
+                                      </div>
+                                  )}
                                 </td>
-
-                                {/* 延迟状态 */}
                                 <td className="px-3 py-2">
                                   <div className="space-y-1">
-                                    <Badge className={`${getLagSeverity(lag.lag)} font-medium text-xs`}>
-                                      延迟 {formatNumber(lag.lag || 0)}
-                                    </Badge>
-                                    {lag.metadata && (
-                                        <div className="text-xs text-gray-400" title={lag.metadata}>
-                                          {lag.metadata}
+                                    <div className="flex items-center gap-2">
+                                      <div className="flex-1 relative">
+                                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                          {/* 已消费部分 */}
+                                          <div
+                                              className="h-full bg-blue-500 rounded-full"
+                                              style={{ width: `${progressPct}%` }}
+                                          />
+                                        </div>
+                                        {/* 初始水位标记线 */}
+                                        {watermark > 0 && watermarkPct > 0.5 && watermarkPct < 99.5 && (
+                                            <div
+                                                className="absolute top-[-2px] w-0.5 h-3 bg-orange-500"
+                                                style={{ left: `${watermarkPct}%` }}
+                                                title={`初始水位: ${watermark.toLocaleString()}`}
+                                            />
+                                        )}
+                                      </div>
+                                      <span className="text-xs font-medium text-gray-700 w-14 text-right">{progressPct.toFixed(4)}%</span>
+                                    </div>
+                                    {watermark > 0 && (
+                                        <div className="flex items-center gap-1 text-[10px] text-orange-600">
+                                          <div className="w-2 h-0.5 bg-orange-500 rounded" />
+                                          <span>水位: {watermark.toLocaleString()}</span>
                                         </div>
                                     )}
-                                    <div className="text-xs text-gray-500">
-                                      代际: {lag.generationId || '--'}
-                                    </div>
                                   </div>
                                 </td>
-
-                                {/* 大小/更新时间 */}
-                                <td className="px-3 py-2">
-                                  <div className="text-xs space-y-1">
-                                    {lag.updatedAt && (
-                                        <div>
-                                          <span className="text-gray-500">更新:</span>
-                                          <div className="text-gray-700">{formatTimestamp(lag.updatedAt)}</div>
-                                        </div>
-                                    )}
-                                  </div>
+                                <td className="px-3 py-2 text-right text-xs text-gray-700">
+                                  <div>{(lag.totalMessageCount || 0).toLocaleString()} 条</div>
+                                  {lag.partitionSizeBytes !== undefined && (
+                                      <div className="text-gray-500">{formatBytes(lag.partitionSizeBytes)}</div>
+                                  )}
                                 </td>
                               </tr>
                           );

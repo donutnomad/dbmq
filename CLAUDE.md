@@ -22,6 +22,63 @@ npm run build    # 生产构建
 npm run lint     # ESLint检查
 ```
 
+### 代码生成
+
+修改 API 定义后需要重新生成代码：
+
+```bash
+# 重新生成 API 路由代码（修改 dbmqapi/*.go 中的 @GET/@POST 注解后）
+cd dbmqapi
+go tool gogen ./...
+
+# 注意：
+# 1. ❌ 不要使用 @PREFIX + @GET(/) 的组合，会生成带尾部斜杠的路由
+#    例如：@PREFIX(/api/v1/topics) + @GET(/) → /api/v1/topics/ (多了斜杠!)
+#
+# 2. ✅ 直接在 @GET 中写完整路径
+#    例如：@GET(/api/v1/consumer-groups) → /api/v1/consumer-groups (正确!)
+#
+# 3. 修改后必须运行 go tool gogen 重新生成 generate.go 文件
+#
+# 4. 生成后检查 generate.go 中的路由定义，确保没有尾部斜杠
+```
+
+**正确示例**：
+
+```go
+// ConsumerGroupAPI 消费组管理 API
+// @TAG(Consumer-Group)
+type ConsumerGroupAPI interface {
+    // List 获取消费组列表
+    // @GET(/api/v1/consumer-groups)  ← 完整路径，无尾部斜杠
+    List(ctx context.Context) ([]ConsumerGroupResp, error)
+}
+```
+
+**错误示例**：
+
+```go
+// ❌ 不要这样写
+// @PREFIX(/api/v1/consumer-groups)
+type ConsumerGroupAPI interface {
+    // @GET(/)  ← 会生成 /api/v1/consumer-groups/ (多了斜杠!)
+    List(ctx context.Context) ([]ConsumerGroupResp, error)
+}
+```
+
+### 测试脚本
+
+```bash
+# 测试 API 路由是否正确（不带尾部斜杠）
+./test-routes.sh
+
+# 测试 CORS 配置
+./test-cors.sh
+
+# 重启演示服务
+./restart-demo.sh
+```
+
 ### 数据库设置
 项目根目录有`create_tables.sql`文件，包含完整的MySQL表结构定义。集成测试需要运行中的MySQL和Redis实例。
 
@@ -124,7 +181,48 @@ internal/query/
 - Topic和消费组管理
 - 响应式设计，支持桌面和移动设备
 
+**前端 API 配置**：
+- 配置文件位置：`dashboard-ui/config/api.config.ts`（唯一配置源）
+- 环境变量：创建 `dashboard-ui/.env.local` 设置 `NEXT_PUBLIC_API_BASE_URL`
+- 默认后端地址：`http://localhost:8081`
+- 详细说明：参考 `dashboard-ui/config/README.md`
+
 ## 重要实现细节
+
+### CORS 跨域配置
+
+后端服务器（`dbmqapi/server.go`）已配置 CORS 中间件：
+
+```go
+func corsMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        origin := c.Request.Header.Get("Origin")
+        if origin == "" {
+            origin = "*"
+        }
+
+        c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+        c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+        c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        c.Writer.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, X-CSRF-Token, X-Requested-With")
+        c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers")
+        c.Writer.Header().Set("Access-Control-Max-Age", "86400")
+
+        if c.Request.Method == "OPTIONS" {
+            c.AbortWithStatus(http.StatusNoContent)
+            return
+        }
+
+        c.Next()
+    }
+}
+```
+
+**注意**：
+- 开发环境允许所有源（动态设置 Origin）
+- 生产环境应添加源白名单验证
+- OPTIONS 预检请求返回 204 No Content
+- 预检结果缓存 24 小时（减少预检请求频率）
 
 ### 智能通知合并
 Producer使用Redis Lua脚本实现"从静默到活跃"的一次性通知，避免高吞吐场景下的惊群效应。
@@ -282,3 +380,182 @@ Producer使用Redis Lua脚本实现"从静默到活跃"的一次性通知，避�
    关键日志输出：
    - "检测到 generation 变化，触发重新均衡"
    - "✅ 消费者初始化完成"
+
+## 常见问题和故障排查
+
+### API 路由问题
+
+**问题**：前端请求 `/api/v1/consumer-groups` 返回 301 重定向
+
+**原因**：路由定义中包含尾部斜杠（`/api/v1/consumer-groups/`）
+
+**解决方案**：
+1. 修改 `dbmqapi/api_*.go` 文件中的路由定义
+2. 移除 `@PREFIX` 注解，在 `@GET/@POST` 中写完整路径
+3. 运行 `cd dbmqapi && go tool gogen ./...` 重新生成代码
+4. 重启服务：`./restart-demo.sh`
+
+### CORS 跨域错误
+
+**问题**：浏览器控制台显示 CORS 错误
+
+**检查步骤**：
+1. 确认后端服务运行在 `http://localhost:8081`
+2. 检查 `dbmqapi/server.go` 中的 CORS 中间件是否正确配置
+3. 清除浏览器缓存（预检请求可能被缓存）
+4. 使用 `./test-cors.sh` 测试 CORS 配置
+
+**常见原因**：
+- 后端服务未启动或端口不正确
+- CORS 中间件未注册到 Gin 引擎
+- OPTIONS 预检请求返回错误状态码
+- **浏览器缓存了旧的预检请求结果**（最常见）
+
+**浏览器缓存问题** ⚠️：
+
+CORS 预检请求（OPTIONS）会被浏览器缓存，缓存时间由 `Access-Control-Max-Age` 控制：
+- 开发环境设置为 **600 秒（10 分钟）**
+- 生产环境可以设置为 **86400 秒（24 小时）**
+
+如果修改了后端 CORS 配置或路由，但前端仍报错，可能是缓存问题：
+
+**解决方法**：
+
+1. **清空缓存并硬性重新加载**（推荐）
+   - Chrome/Edge：开发者工具（F12）→ 右键点击刷新按钮 → "清空缓存并硬性重新加载"
+
+2. **使用无痕模式**
+   - Chrome：Ctrl+Shift+N (Windows) 或 Cmd+Shift+N (Mac)
+   - 无痕模式不使用缓存，可以快速验证是否是缓存问题
+
+3. **开发时禁用缓存**
+   - 开发者工具（F12）→ Network 标签 → 勾选 "Disable cache"
+   - 保持开发者工具打开状态
+
+4. **临时禁用预检缓存**（调试用）
+   - 修改 `dbmqapi/server.go` 中的 `Access-Control-Max-Age` 为 `"0"`
+   - 重启后端服务
+   - 调试完成后改回 `"600"` 或 `"86400"`
+
+### 前端无法加载数据
+
+**问题**：前端页面显示"加载失败"或数据为空
+
+**排查步骤**：
+
+1. **检查后端服务**：
+   ```bash
+   curl http://localhost:8081/api/v1/health
+   ```
+   应返回 200 状态码
+
+2. **检查 API 配置**：
+   - 查看 `dashboard-ui/config/api.config.ts`
+   - 确认 `API_BASE_URL` 是否正确
+   - 开发模式下检查页面底部的调试信息面板
+
+3. **检查网络请求**：
+   - 打开浏览器开发者工具 → Network 标签
+   - 查看请求 URL 是否正确
+   - 查看响应状态码和数据
+
+4. **检查环境变量**：
+   ```bash
+   # 查看前端配置
+   cat dashboard-ui/.env.local
+
+   # 应该包含
+   NEXT_PUBLIC_API_BASE_URL=http://localhost:8081
+   ```
+
+5. **重启服务**：
+   ```bash
+   # 停止旧进程
+   pkill -f integration_demo
+
+   # 重启后端
+   ./restart-demo.sh
+
+   # 重启前端（新终端）
+   cd dashboard-ui && npm run dev
+   ```
+
+### 路由 301 重定向循环
+
+**问题**：请求不断重定向，无法获取数据
+
+**原因**：Gin 默认的 `RedirectTrailingSlash` 配置
+
+**解决方案**：
+- 不要依赖自动重定向
+- 修改 API 定义，确保路由不包含尾部斜杠
+- 重新生成代码：`cd dbmqapi && go tool gogen ./...`
+
+### 代码生成失败
+
+**问题**：运行 `go tool gogen` 报错
+
+**检查步骤**：
+1. 确认 gogen 工具已安装：
+   ```bash
+   go tool gogen -h
+   ```
+
+2. 检查 API 定义语法是否正确：
+   - `@GET(...)` 路径必须以 `/` 开头
+   - 参数占位符使用 `{paramName}` 格式
+   - 注释格式必须严格遵守
+
+3. 查看错误信息，定位到具体文件和行号
+
+### 生产环境部署注意事项
+
+**CORS 安全配置**：
+
+生产环境不应允许所有源，需要添加白名单：
+
+```go
+// dbmqapi/server.go
+func corsMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        origin := c.Request.Header.Get("Origin")
+
+        // 生产环境白名单
+        allowedOrigins := []string{
+            "https://your-frontend.com",
+            "https://www.your-frontend.com",
+        }
+
+        allowed := false
+        for _, allowed := range allowedOrigins {
+            if origin == allowedOrigin {
+                allowed = true
+                break
+            }
+        }
+
+        if allowed {
+            c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+            // ... 其他 CORS 头
+        } else {
+            c.AbortWithStatus(http.StatusForbidden)
+            return
+        }
+
+        // ... 其他逻辑
+    }
+}
+```
+
+**环境变量配置**：
+
+```bash
+# 生产环境前端配置
+NEXT_PUBLIC_API_BASE_URL=https://api.your-domain.com
+
+# 生产环境后端配置
+MYSQL_DSN=user:pass@tcp(mysql-host:3306)/dbmq_prod?charset=utf8mb4
+REDIS_ADDR=redis-host:6379
+REDIS_PASSWORD=your-redis-password
+```
+

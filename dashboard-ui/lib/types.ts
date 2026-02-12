@@ -228,3 +228,30 @@ export interface RMQConsumerInfo {
   offline: boolean;
   paused: boolean;
 } 
+
+// 重发消息相关类型
+export interface ResendMessageItem {
+  topic: string;
+  messageId: number;
+  key?: string;
+}
+
+export interface ResendMessagesRequest {
+  messages: ResendMessageItem[];
+  targetTopic?: string;
+  overrideHeaders?: Record<string, string>;
+}
+
+export interface ResendResult {
+  originalMessageId: number;
+  success: boolean;
+  newMessageId?: number;
+  newOffset?: number;
+  error?: string;
+}
+
+export interface ResendMessagesResponse {
+  successCount: number;
+  failedCount: number;
+  results: ResendResult[];
+}

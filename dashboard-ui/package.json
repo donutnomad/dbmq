@@ -18,7 +18,9 @@
     "lucide-react": "^0.469.0",
     "recharts": "^2.15.0",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "@uiw/react-json-view": "^2.0.0-alpha.27",
+    "react-window": "^1.8.10"
   },
   "devDependencies": {
     "typescript": "^5",
@@ -29,6 +31,7 @@
     "tailwindcss": "^4",
     "eslint": "^9",
     "eslint-config-next": "15.3.4",
-    "@eslint/eslintrc": "^3"
+    "@eslint/eslintrc": "^3",
+    "@types/react-window": "^1.8.8"
   }
 }

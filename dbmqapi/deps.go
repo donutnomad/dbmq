@@ -7,7 +7,6 @@ import (
 	"github.com/donutnomad/dbmq/internal/query"
 )
 
-// Deps API 依赖
 type Deps struct {
 	DB                   interfaces.DB
 	TopicQuery           query.TopicQuery
@@ -15,6 +14,7 @@ type Deps struct {
 	MessageQuery         query.MessageQuery
 	MetricsClient        *MetricsClient
 	AdminClient          *dbmq.AdminClient
+	Producer             *dbmq.Producer // 用于重发消息
 	ManualAssignmentRepo manualassignment.Repo
 	StartTime            func() int64 // 返回启动时间戳（秒）
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import {useSearchParams} from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
 import { TopicMetrics, Message, PartitionStats } from '@/lib/types';
@@ -22,9 +22,17 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Maximize2,
-  Code
+  Copy,
+  Download,
+  X,
+  Send
 } from 'lucide-react';
 import Link from 'next/link';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { JsonViewer } from '@/components/ui/json-viewer';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
 function TopicDetailContent() {
   const searchParams = useSearchParams();
@@ -37,8 +45,6 @@ function TopicDetailContent() {
   const [showLoading, setShowLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [partitionStats, setPartitionStats] = useState<PartitionStats[]>([]);
-  const [listHeight, setListHeight] = useState<number>(400);
-  const listRef = useRef<HTMLDivElement>(null);
 
   // 消息查询参数
   const [selectedPartition, setSelectedPartition] = useState<string>('');
@@ -53,7 +59,8 @@ function TopicDetailContent() {
   });
 
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
-  const [prettyMessages, setPrettyMessages] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [resending, setResending] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalMessages, setTotalMessages] = useState(0);
@@ -131,24 +138,10 @@ function TopicDetailContent() {
 
       // 检查全局状态
       const allExpanded = document.querySelector('[data-expand-all="true"]') !== null;
-      const allPretty = document.querySelector('[data-pretty-all="true"]') !== null;
 
       // 根据全局状态设置新消息的状态
       if (allExpanded) {
         setExpandedMessages(new Set(result.messages.map(m => m.id)));
-      }
-
-      if (allPretty) {
-        const newPretty = new Set<string>();
-        result.messages.forEach(message => {
-          try {
-            JSON.parse(message.value);
-            newPretty.add(message.id);
-          } catch (e) {
-            // 如果不是有效的JSON，跳过
-          }
-        });
-        setPrettyMessages(newPretty);
       }
     } catch (err) {
       console.error('Failed to load messages:', err);
@@ -189,53 +182,92 @@ function TopicDetailContent() {
     setExpandedMessages(newExpanded);
   }, [expandedMessages]);
 
+  // 全选/取消全选
+  const handleSelectAll = useCallback(() => {
+    if (selectedIds.size === messages.length && messages.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(messages.map(m => m.id)));
+    }
+  }, [messages, selectedIds]);
+
+  // 切换单个选择
+  const toggleSelection = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  }, []);
+
+  // 复制选中的消息
+  const handleCopySelected = useCallback(() => {
+    const selectedMessages = messages.filter(m => selectedIds.has(m.id));
+    const text = selectedMessages.map(m => m.value).join('\n\n');
+    navigator.clipboard.writeText(text);
+  }, [messages, selectedIds]);
+
+  // 导出选中的消息
+  const handleExportSelected = useCallback(() => {
+    const selectedMessages = messages.filter(m => selectedIds.has(m.id));
+    const blob = new Blob([JSON.stringify(selectedMessages, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `messages-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, selectedIds]);
+
+  // 重发选中的消息
+  const handleResendSelected = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    setResending(true);
+    try {
+      const selectedMessages = messages.filter(m => selectedIds.has(m.id));
+      const request = {
+        messages: selectedMessages.map(m => ({
+          topic: m.topic,
+          messageId: parseInt(m.id),
+          key: undefined, // 使用原消息的 key
+        })),
+      };
+
+      const result = await DBMQAPIClient.resendMessages(request);
+
+      // 显示结果
+      alert(`重发完成！\n成功: ${result.successCount} 条\n失败: ${result.failedCount} 条`);
+
+      // 清除选择
+      setSelectedIds(new Set());
+
+      // 刷新消息列表
+      await loadMessages();
+    } catch (err) {
+      console.error('Failed to resend messages:', err);
+      alert(`重发失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    } finally {
+      setResending(false);
+    }
+  }, [messages, selectedIds]);
+
   // 展开/折叠所有消息
   const toggleAllMessages = useCallback(() => {
     if (expandedMessages.size === messages.length) {
       setExpandedMessages(new Set());
-      setPrettyMessages(new Set());
       document.querySelector('[data-expand-all]')?.setAttribute('data-expand-all', 'false');
     } else {
       setExpandedMessages(new Set(messages.map(m => m.id)));
       document.querySelector('[data-expand-all]')?.setAttribute('data-expand-all', 'true');
     }
   }, [messages, expandedMessages]);
-
-  // 切换全局JSON美化状态
-  const toggleAllPrettyFormat = useCallback(() => {
-    const newPretty = new Set<string>();
-    const button = document.querySelector('[data-pretty-all]');
-
-    if (prettyMessages.size === messages.length) {
-      setPrettyMessages(newPretty);
-      button?.setAttribute('data-pretty-all', 'false');
-    } else {
-      // 尝试格式化所有可以格式化的消息
-      messages.forEach(message => {
-        try {
-          JSON.parse(message.value);
-          newPretty.add(message.id);
-        } catch (e) {
-          // 如果不是有效的JSON，跳过
-        }
-      });
-      setPrettyMessages(newPretty);
-      button?.setAttribute('data-pretty-all', 'true');
-    }
-  }, [messages, prettyMessages]);
-
-  // 格式化消息内容
-  const formatMessageContent = (message: Message) => {
-    if (!prettyMessages.has(message.id)) {
-      return message.value;
-    }
-    try {
-      const parsed = JSON.parse(message.value);
-      return JSON.stringify(parsed, null, 2);
-    } catch (e) {
-      return message.value;
-    }
-  };
 
   // 页码变更处理
   const handlePageChange = useCallback((page: number) => {
@@ -308,21 +340,6 @@ function TopicDetailContent() {
   const handlePartitionChange = useCallback((partition: string) => {
     setSelectedPartition(partition);
   }, []);
-
-  // 添加高度更新函数
-  const updateListHeight = useCallback(() => {
-    if (listRef.current && !messagesLoading && messages.length > 0) {
-      const height = listRef.current.offsetHeight;
-      if (height > 400) { // 只在高度大于最小高度时更新
-        setListHeight(height);
-      }
-    }
-  }, [messages.length, messagesLoading]);
-
-  // 监听消息变化更新高度
-  useEffect(() => {
-    updateListHeight();
-  }, [messages, updateListHeight]);
 
   if (loading && !topic) {
     return (
@@ -548,16 +565,6 @@ function TopicDetailContent() {
                   <Button
                       variant="outline"
                       size="sm"
-                      onClick={toggleAllPrettyFormat}
-                      className="text-gray-600 hover:text-gray-800"
-                      data-pretty-all={prettyMessages.size === messages.length}
-                  >
-                    <Code className="h-4 w-4 mr-1" />
-                    {prettyMessages.size === messages.length ? '取消格式化' : '格式化全部'}
-                  </Button>
-                  <Button
-                      variant="outline"
-                      size="sm"
                       onClick={toggleAllMessages}
                       className="text-gray-600 hover:text-gray-800"
                       data-expand-all={expandedMessages.size === messages.length}
@@ -636,10 +643,58 @@ function TopicDetailContent() {
                 </div>
               </div>
 
+              {/* 批量操作工具栏 */}
+              {selectedIds.size > 0 && (
+                <div className="sticky top-0 z-10 bg-blue-50 border border-blue-200 rounded-md p-3 mb-4 flex items-center justify-between">
+                  <div className="flex items-center space-x-4">
+                    <span className="text-sm font-medium text-blue-900">
+                      已选中 {selectedIds.size} 条消息
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleResendSelected}
+                      disabled={resending}
+                    >
+                      {resending ? (
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4 mr-2" />
+                      )}
+                      {resending ? '重发中...' : '重发'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCopySelected}
+                    >
+                      <Copy className="h-4 w-4 mr-2" />
+                      复制
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleExportSelected}
+                    >
+                      <Download className="h-4 w-4 mr-2" />
+                      导出 JSON
+                    </Button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedIds(new Set())}
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    清除
+                  </Button>
+                </div>
+              )}
+
               {/* 消息列表 */}
-              <div className="space-y-2 mb-4">
+              <div className="mb-4 overflow-x-auto">
                 {messagesLoading && showLoading ? (
-                    <div style={{ minHeight: `${listHeight}px` }} className="flex items-center justify-center">
+                    <div className="min-h-[400px] flex items-center justify-center">
                       <div className="text-center">
                         <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-blue-600" />
                         <p className="text-sm text-gray-500">加载消息中...</p>
@@ -653,55 +708,113 @@ function TopicDetailContent() {
                       </div>
                     </div>
                 ) : (
-                    <div ref={listRef} className="min-h-[400px]">
-                      {messages.map((message) => (
-                          <div key={message.id} className="bg-white border border-gray-100 rounded-md">
-                            <div
-                                className="p-3 cursor-pointer hover:bg-gray-50 transition-colors"
-                                onClick={() => toggleMessage(message.id)}
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-12">
+                            <Checkbox
+                              checked={selectedIds.size === messages.length && messages.length > 0}
+                              onChange={handleSelectAll}
+                            />
+                          </TableHead>
+                          <TableHead className="w-24">Offset</TableHead>
+                          <TableHead className="w-20">分区</TableHead>
+                          <TableHead className="w-48">时间戳</TableHead>
+                          <TableHead>Key</TableHead>
+                          <TableHead className="w-24">大小</TableHead>
+                          <TableHead className="w-12"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {messages.map((message) => (
+                          <>
+                            <TableRow
+                              key={message.id}
+                              className={cn(
+                                "cursor-pointer",
+                                expandedMessages.has(message.id) && "bg-blue-50"
+                              )}
+                              onClick={() => toggleMessage(message.id)}
                             >
-                              <div className="flex justify-between items-center">
-                                <div className="flex-1">
-                                  <div className="flex items-center space-x-3">
-                              <span className="text-sm text-gray-900">
-                                {message.key || '(无键)'}
-                              </span>
-                                    <span className="text-xs text-gray-500">
-                                分区: {message.partition}
-                              </span>
-                                    <span className="text-xs text-gray-500">
-                                ID: {message.offset}
-                              </span>
-                                    <span className="text-xs text-gray-500">
+                              <TableCell onClick={e => e.stopPropagation()}>
+                                <Checkbox
+                                  checked={selectedIds.has(message.id)}
+                                  onChange={() => toggleSelection(message.id)}
+                                />
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">
+                                {message.offset}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">P{message.partition}</Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-gray-600">
                                 {formatTimestamp(message.timestamp)}
-                              </span>
-                                    <span className="text-xs text-gray-500">
+                              </TableCell>
+                              <TableCell className="truncate max-w-xs">
+                                {message.key || <span className="text-gray-400">(无键)</span>}
+                              </TableCell>
+                              <TableCell className="text-xs">
                                 {formatBytes(message.size)}
-                              </span>
-                                  </div>
-                                </div>
-                                <div className="flex items-center">
-                                  {expandedMessages.has(message.id) ? (
-                                      <ChevronUp className="h-4 w-4 text-gray-400" />
-                                  ) : (
-                                      <ChevronDown className="h-4 w-4 text-gray-400" />
-                                  )}
-                                </div>
-                              </div>
-                            </div>
+                              </TableCell>
+                              <TableCell>
+                                {expandedMessages.has(message.id) ? (
+                                  <ChevronUp className="h-4 w-4 text-gray-400" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-gray-400" />
+                                )}
+                              </TableCell>
+                            </TableRow>
 
+                            {/* 展开行 */}
                             {expandedMessages.has(message.id) && (
-                                <div className="px-3 pb-3 border-t border-gray-100">
-                                  <div className="bg-gray-50 p-3 rounded-md mt-3">
-                            <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono">
-                              {formatMessageContent(message)}
-                            </pre>
+                              <TableRow key={`${message.id}-expanded`}>
+                                <TableCell colSpan={7} className="bg-gray-50 p-0">
+                                  <div className="p-4 space-y-3">
+                                    {/* 消息元数据 */}
+                                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+                                      <span>Topic: <span className="font-mono text-gray-700">{message.topic}</span></span>
+                                      <span>Partition: <span className="font-mono text-gray-700">{message.partition}</span></span>
+                                      <span>Offset: <span className="font-mono text-gray-700">{message.offset}</span></span>
+                                      <span>Size: <span className="font-mono text-gray-700">{formatBytes(message.size)}</span></span>
+                                      <span>Time: <span className="font-mono text-gray-700">{formatTimestamp(message.timestamp)}</span></span>
+                                    </div>
+
+                                    {/* Headers */}
+                                    {message.headers && Object.keys(message.headers).length > 0 && (
+                                      <div>
+                                        <div className="text-xs font-medium text-gray-600 mb-1">Headers</div>
+                                        <div className="bg-white border border-gray-200 rounded-md p-2">
+                                          <div className="flex flex-wrap gap-2">
+                                            {Object.entries(message.headers).map(([k, v]) => (
+                                              <span key={k} className="inline-flex items-center text-xs font-mono bg-gray-100 rounded px-2 py-0.5">
+                                                <span className="text-purple-600">{k}</span>
+                                                <span className="text-gray-400 mx-1">=</span>
+                                                <span className="text-gray-700">{v}</span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Value (消息体) */}
+                                    <div>
+                                      <div className="text-xs font-medium text-gray-600 mb-1">Value</div>
+                                      <JsonViewer
+                                        data={message.value}
+                                        collapsed={2}
+                                        theme="dark"
+                                      />
+                                    </div>
                                   </div>
-                                </div>
+                                </TableCell>
+                              </TableRow>
                             )}
-                          </div>
-                      ))}
-                    </div>
+                          </>
+                        ))}
+                      </TableBody>
+                    </Table>
                 )}
               </div>
 

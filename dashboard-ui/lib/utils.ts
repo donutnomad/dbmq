@@ -54,7 +54,7 @@ export function formatTimestamp(timestamp: number | string | Date): string {
       ? new Date(timestamp)
       : timestamp;
       
-  return new Intl.DateTimeFormat('zh-CN', {
+  const base = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -63,6 +63,8 @@ export function formatTimestamp(timestamp: number | string | Date): string {
     second: '2-digit',
     hour12: false
   }).format(date);
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
+  return `${base}.${ms}`;
 }
 
 // 获取状态对应的颜色类
