@@ -81,6 +81,14 @@ func (r *mysqlRepo) GetMatching(ctx context.Context, groupID string, consumerIDs
 		return nil, nil
 	}
 
+	return matchAssignments(assignments, consumerIDs), nil
+}
+
+// matchAssignments 根据 ConsumerIDPattern 匹配 consumerIDs，返回每个消费者对应的分区列表
+// 支持两种匹配模式:
+//   - 精确匹配: pattern 不以 * 结尾，要求 consumerID == pattern
+//   - 前缀匹配: pattern 以 * 结尾，去掉 * 后对 consumerID 做前缀匹配
+func matchAssignments(assignments []AssignmentPO, consumerIDs []string) map[string][]types.PartitionInfo {
 	result := make(map[string][]types.PartitionInfo)
 
 	for _, assignment := range assignments {
@@ -107,10 +115,10 @@ func (r *mysqlRepo) GetMatching(ctx context.Context, groupID string, consumerIDs
 	}
 
 	if len(result) == 0 {
-		return nil, nil
+		return nil
 	}
 
-	return result, nil
+	return result
 }
 
 // 编译时接口实现检查

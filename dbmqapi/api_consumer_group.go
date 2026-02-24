@@ -110,16 +110,15 @@ func (a *consumerGroupAPI) Get(ctx context.Context, groupId string) (ConsumerGro
 }
 
 func (a *consumerGroupAPI) TriggerRebalance(ctx context.Context, groupId string) (MessageResp, error) {
-	// 通过递增 generation_id 强制触发 rebalance
-	// 消费者检测到 generation 变化后会自动触发重新均衡流程
-	err := a.deps.DB.WithContext(ctx).
-		Exec("UPDATE mq_consumer_heartbeats SET generation_id = generation_id + 1 WHERE group_id = ?", groupId).
-		Error
+	// 通过递增 mq_consumer_group_generations 表的 generation_id 触发重新均衡。
+	// 协调器在下一轮 scan 时会检测到 generation_id 与内存快照不一致，
+	// 从而执行完整的 rebalance 流程（重新计算分区分配并更新数据库）。
+	_, err := a.deps.ConsumerGroupRepo.IncrementGenerationID(ctx, groupId)
 	if err != nil {
 		return MessageResp{}, err
 	}
 
 	return MessageResp{
-		Message: "重新均衡已触发，更改将在 10 秒内生效",
+		Message: "重新均衡已触发，更改将在下一个检查周期内生效",
 	}, nil
 }

@@ -93,6 +93,7 @@ type leaderSession struct {
 
 // groupSnapshot 缓存每次成功重新均衡后的成员订阅和分区元数据
 type groupSnapshot struct {
+	generationID         uint              // 最后一次成功 rebalance 后的 generation_id
 	memberTopics         map[string]string // consumerID -> 订阅Topic哈希，用于检测订阅变更
 	partitionHash        string            // 相关Topic及分区数量的哈希，用于检测Topic/分区变化
 	manualAssignmentHash string            // 手动分配规则的哈希，用于检测手动分配变化
@@ -603,7 +604,15 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		return fmt.Errorf("[LEADER] failed to get partitions for consumers: %w", err)
 	}
 
-	if !c.isRebalanceNeeded(groupID, activeConsumers, partitionHash) {
+	// 获取当前 generation_id，用于检测外部触发的重新均衡（如 TriggerRebalance API）
+	var currentGenerationID uint
+	if gen, err := c.groupRepo.GetGeneration(ctx, groupID); err != nil {
+		return fmt.Errorf("[LEADER] failed to get generation: %w", err)
+	} else if gen != nil {
+		currentGenerationID = gen.GenerationID
+	}
+
+	if !c.isRebalanceNeeded(groupID, activeConsumers, partitionHash, currentGenerationID) {
 		return nil // 没有变化，无需重新均衡
 	}
 
@@ -625,7 +634,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		if err := c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, map[string][]types.PartitionInfo{}); err != nil {
 			return fmt.Errorf("[LEADER] failed to clear assignments for empty group: %w", err)
 		}
-		c.updateGroupSnapshot(groupID, nil, "", nil)
+		c.updateGroupSnapshot(groupID, newGenerationID, nil, "", nil)
 		c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' completed with no active consumers. Generation: %d", groupID, newGenerationID))
 		return nil
 	}
@@ -652,20 +661,31 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	}
 
 	// 记录新的消费组快照
-	c.updateGroupSnapshot(groupID, activeConsumers, partitionHash, manualAssignments)
+	c.updateGroupSnapshot(groupID, newGenerationID, activeConsumers, partitionHash, manualAssignments)
 	c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
 	return nil
 }
 
 // isRebalanceNeeded 检查是否需要对指定消费组进行重新均衡。
-// 除了成员集合外，还会比较每个成员的订阅主题和Topic/Partition元数据哈希。
-func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string) bool {
+// 除了成员集合外，还会比较每个成员的订阅主题、Topic/Partition元数据哈希，
+// 以及 generation_id（检测外部触发的重新均衡，如 TriggerRebalance API）。
+func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, currentGenerationID uint) bool {
 	c.mu.Lock()
 	snapshot := c.groupSnapshots[groupID]
 	c.mu.Unlock()
 
 	if snapshot == nil {
 		return len(consumers) > 0 || partitionHash != ""
+	}
+
+	// 检查 generation_id 是否被外部修改（如 TriggerRebalance API 递增了 generations 表）
+	if currentGenerationID != snapshot.generationID {
+		c.logger.Info("[LEADER] 检测到 generation_id 被外部修改，强制触发 rebalance",
+			"group_id", groupID,
+			"snapshot_generation", snapshot.generationID,
+			"current_generation", currentGenerationID,
+		)
+		return true
 	}
 
 	// 检查消费者数量变化
@@ -686,8 +706,7 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 		return true
 	}
 
-	// 🔥 新增：检查手动分配规则是否变化
-	// 获取当前手动分配规则的哈希
+	// 检查手动分配规则是否变化
 	ctx := context.Background()
 	consumerIDs := make([]string, 0, len(consumers))
 	for _, c := range consumers {
@@ -714,8 +733,9 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 	return false
 }
 
-func (c *Coordinator) updateGroupSnapshot(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, manualAssignments map[string][]types.PartitionInfo) {
+func (c *Coordinator) updateGroupSnapshot(groupID string, generationID uint, consumers []*heartbeat.Heartbeat, partitionHash string, manualAssignments map[string][]types.PartitionInfo) {
 	snapshot := &groupSnapshot{
+		generationID:         generationID,
 		memberTopics:         make(map[string]string, len(consumers)),
 		partitionHash:        partitionHash,
 		manualAssignmentHash: hashManualAssignments(manualAssignments),

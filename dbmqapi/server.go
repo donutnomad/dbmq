@@ -11,6 +11,7 @@ import (
 	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/query"
+	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
 	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		AdminClient:          adminClient,
 		Producer:             producer,
 		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),
+		ConsumerGroupRepo:    consumergrouprepo.New(config.DB),
 		StartTime:            func() int64 { return s.startTime.Unix() },
 	}
 
