@@ -153,7 +153,7 @@ func (q *consumerQueryMySQL) GetConsumerGroupExtended(ctx context.Context, group
 		Select("consumer_id, generation_id, subscribed_topics, assigned_partitions, offline, last_heartbeat, offline_at").
 		Where("group_id = ?", groupID).
 		Where("offline = ? AND last_heartbeat > DATE_SUB(NOW(), INTERVAL 1 HOUR)", false).
-		Order("offline ASC, last_heartbeat DESC").
+		Order("offline ASC, last_heartbeat DESC, consumer_id ASC").
 		Find(&members).Error
 	if err != nil {
 		return nil, err
@@ -250,6 +250,7 @@ func (q *consumerQueryMySQL) GetConsumerGroupMetrics(ctx context.Context, groupI
 	err = q.db.WithContext(ctx).
 		Where("group_id = ?", groupID).
 		Where("offline = ? AND last_heartbeat > DATE_SUB(NOW(), INTERVAL 1 HOUR)", false).
+		Order("consumer_id ASC").
 		Find(&heartbeats).Error
 	if err != nil {
 		return nil, err
@@ -449,6 +450,7 @@ func (q *consumerQueryMySQL) GetAllConsumerGroupsMetrics(ctx context.Context) ([
 	if err := q.db.WithContext(ctx).
 		Where("group_id IN ?", groupIDs).
 		Where("offline = ? AND last_heartbeat > DATE_SUB(NOW(), INTERVAL 1 HOUR)", false).
+		Order("group_id ASC, consumer_id ASC").
 		Find(&allHeartbeats).Error; err != nil {
 		return nil, err
 	}
