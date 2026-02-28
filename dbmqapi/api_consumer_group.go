@@ -6,15 +6,16 @@ import (
 
 // ConsumerGroupAPI 消费组管理 API
 // @TAG(Consumer-Group)
+// @PREFIX(/dbmq/api/v1/consumer-groups)
 type ConsumerGroupAPI interface {
 	// List 获取消费组列表
-	// @GET(/dbmq/api/v1/consumer-groups)
+	// @GET(/)
 	List(ctx context.Context) ([]ConsumerGroupResp, error)
 	// Get 获取单个消费组
-	// @GET(/dbmq/api/v1/consumer-groups/{groupId})
+	// @GET(/{groupId})
 	Get(ctx context.Context, groupId string) (ConsumerGroupResp, error)
 	// TriggerRebalance 强制触发消费组重新均衡
-	// @POST(/dbmq/api/v1/consumer-groups/{groupId}/rebalance)
+	// @POST(/{groupId}/rebalance)
 	TriggerRebalance(ctx context.Context, groupId string) (MessageResp, error)
 }
 
@@ -27,7 +28,7 @@ func NewConsumerGroupAPI(deps *Deps) ConsumerGroupAPI {
 }
 
 func (a *consumerGroupAPI) List(ctx context.Context) ([]ConsumerGroupResp, error) {
-	groups, err := a.deps.MetricsClient.GetAllConsumerGroupsMetrics(ctx)
+	groups, err := a.deps.ConsumerQuery.GetAllConsumerGroupsMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +72,7 @@ func (a *consumerGroupAPI) List(ctx context.Context) ([]ConsumerGroupResp, error
 }
 
 func (a *consumerGroupAPI) Get(ctx context.Context, groupId string) (ConsumerGroupResp, error) {
-	group, err := a.deps.MetricsClient.GetConsumerGroupMetrics(ctx, groupId)
+	group, err := a.deps.ConsumerQuery.GetConsumerGroupMetrics(ctx, groupId)
 	if err != nil {
 		return ConsumerGroupResp{}, err
 	}

@@ -53,7 +53,7 @@ func (a *topicProxyAPI) GetTopicInfo(ctx context.Context, topicName string) (Top
 }
 
 func (a *topicProxyAPI) GetPartitions(ctx context.Context, topicName string) ([]PartitionStats, error) {
-	topicMetrics, err := a.deps.MetricsClient.GetTopicMetrics(ctx, topicName)
+	topicMetrics, err := a.deps.TopicQuery.GetTopicMetrics(ctx, topicName)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (a *topicProxyAPI) GetPartitions(ctx context.Context, topicName string) ([]
 }
 
 func (a *topicProxyAPI) ListBrokers(ctx context.Context) ([]BrokerResp, error) {
-	metrics, err := a.deps.MetricsClient.GetBrokerMetrics(ctx)
+	metrics, err := a.deps.GetBrokerMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}

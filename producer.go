@@ -98,6 +98,17 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 	}, nil
 }
 
+func MustNewProducer(config ProducerConfig) *Producer {
+	return &Producer{
+		config:             config,
+		redis:              config.Redis,
+		topicMetadataCache: sync.Map{},
+		roundRobinCounters: sync.Map{},
+		topicRepo:          topicrepo.New(config.DB),
+		messageRepo:        messagerepo.New(config.DB),
+	}
+}
+
 func (p *Producer) Send(ctx context.Context, msg ProducerMessage) (*SendResult, error) {
 	results, err := p.SendBatch(ctx, msg)
 	if err != nil {

@@ -35,12 +35,12 @@ func (a *dashboardAPI) GetDashboardData(ctx context.Context) (DashboardDataResp,
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
-		topics, err = a.deps.MetricsClient.GetAllTopicsMetrics(gCtx)
+		topics, err = a.deps.TopicQuery.GetAllTopicsMetrics(gCtx)
 		return err
 	})
 	g.Go(func() error {
 		var err error
-		groups, err = a.deps.MetricsClient.GetAllConsumerGroupsMetrics(gCtx)
+		groups, err = a.deps.ConsumerQuery.GetAllConsumerGroupsMetrics(gCtx)
 		return err
 	})
 	if err := g.Wait(); err != nil {

@@ -10,21 +10,22 @@ import (
 
 // TopicAPI Topic 管理 API
 // @TAG(Topic)
+// @PREFIX(/dbmq/api/v1/topics)
 type TopicAPI interface {
 	// List 获取 Topic 列表
-	// @GET(/dbmq/api/v1/topics)
+	// @GET(/)
 	List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error)
 	// Get 获取单个 Topic
-	// @GET(/dbmq/api/v1/topics/{topicName})
+	// @GET(/{topicName})
 	Get(ctx context.Context, topicName string) (TopicResp, error)
 	// Create 创建 Topic
-	// @POST(/dbmq/api/v1/topics)
+	// @POST(/)
 	Create(ctx context.Context, req CreateTopicReq) (MessageResp, error)
 	// Delete 删除 Topic
-	// @DELETE(/dbmq/api/v1/topics/{topicName})
+	// @DELETE(/{topicName})
 	Delete(ctx context.Context, topicName string) (MessageResp, error)
 	// GetMetrics 获取 Topic 指标
-	// @GET(/dbmq/api/v1/topics/{topicName}/metrics)
+	// @GET(/{topicName}/metrics)
 	GetMetrics(ctx context.Context, topicName string) (TopicResp, error)
 }
 
@@ -37,7 +38,7 @@ type topicAPI struct {
 }
 
 func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error) {
-	topics, err := a.deps.MetricsClient.GetAllTopicsMetrics(ctx)
+	topics, err := a.deps.TopicQuery.GetAllTopicsMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, err
 }
 
 func (a *topicAPI) Get(ctx context.Context, topicName string) (TopicResp, error) {
-	topic, err := a.deps.MetricsClient.GetTopicMetrics(ctx, topicName)
+	topic, err := a.deps.TopicQuery.GetTopicMetrics(ctx, topicName)
 	if err != nil {
 		return TopicResp{}, err
 	}

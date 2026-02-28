@@ -10,6 +10,9 @@ import (
 	"github.com/donutnomad/dbmq/internal/query"
 )
 
+// defaultHeartbeatTimeout 心跳超时时间，用于判断消费者在线状态。
+const defaultHeartbeatTimeout = 30 * time.Second
+
 // DBMQAPI DBMQ 专用 API
 // @TAG(DBMQ)
 // @PREFIX(/dbmq/api/v1)
@@ -40,12 +43,12 @@ func NewDBMQAPI(deps *Deps) DBMQAPI {
 }
 
 func (a *dbmqAPI) GetStats(ctx context.Context) (DBMQStatsResp, error) {
-	clusterMetrics, err := a.deps.MetricsClient.GetClusterMetrics(ctx)
+	clusterMetrics, err := a.deps.ClusterQuery.GetClusterMetrics(ctx)
 	if err != nil {
 		return DBMQStatsResp{}, err
 	}
 
-	brokerMetrics, err := a.deps.MetricsClient.GetBrokerMetrics(ctx)
+	brokerMetrics, err := a.deps.GetBrokerMetrics(ctx)
 	if err != nil {
 		return DBMQStatsResp{}, err
 	}
@@ -144,7 +147,7 @@ func (a *dbmqAPI) GetPartitionStats(ctx context.Context, topicName string, parti
 }
 
 func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) (ConsumerGroupExtendedResp, error) {
-	group, err := a.deps.MetricsClient.GetConsumerGroupMetrics(ctx, groupId)
+	group, err := a.deps.ConsumerQuery.GetConsumerGroupMetrics(ctx, groupId)
 	if err != nil {
 		return ConsumerGroupExtendedResp{}, err
 	}
@@ -155,7 +158,6 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 		return ConsumerGroupExtendedResp{}, err
 	}
 
-	heartbeatTimeout := 30 * time.Second
 	enhancedMembers := make([]ConsumerMemberDTO, 0, len(extended.Members))
 
 	for _, detail := range extended.Members {
@@ -194,7 +196,7 @@ func (a *dbmqAPI) GetConsumerGroupExtended(ctx context.Context, groupId string) 
 			}
 		}
 
-		isTimeout := time.Since(detail.LastHeartbeat) > heartbeatTimeout
+		isTimeout := time.Since(detail.LastHeartbeat) > defaultHeartbeatTimeout
 		if detail.Offline {
 			memberDTO.Status = "offline"
 		} else if isTimeout {

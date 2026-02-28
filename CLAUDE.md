@@ -30,17 +30,6 @@ npm run lint     # ESLint检查
 # 重新生成 API 路由代码（修改 dbmqapi/*.go 中的 @GET/@POST 注解后）
 cd dbmqapi
 go tool gogen ./...
-
-# 注意：
-# 1. ❌ 不要使用 @PREFIX + @GET(/) 的组合，会生成带尾部斜杠的路由
-#    例如：@PREFIX(/api/v1/topics) + @GET(/) → /api/v1/topics/ (多了斜杠!)
-#
-# 2. ✅ 直接在 @GET 中写完整路径
-#    例如：@GET(/api/v1/consumer-groups) → /api/v1/consumer-groups (正确!)
-#
-# 3. 修改后必须运行 go tool gogen 重新生成 generate.go 文件
-#
-# 4. 生成后检查 generate.go 中的路由定义，确保没有尾部斜杠
 ```
 
 **正确示例**：

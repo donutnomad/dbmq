@@ -4,8 +4,8 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/donutnomad/dbmq"
@@ -25,17 +25,11 @@ type ServerConfig struct {
 	DB            interfaces.DB
 	Port          int
 	Host          string
-	DashboardPath string        // Dashboard UI 挂载路径，默认 "/dbmq/api/v1/ui"
-	APIHandler    APIPreHandler // API 前置中间件，传 nil 则无中间件
-	AccessToken   string        // 访问令牌，为空则不校验
+	DashboardPath string            // Dashboard UI 挂载路径，默认 "/dbmq/api/v1/ui"
+	APIHandler    []gin.HandlerFunc // API 前置中间件，传 nil 则无中间件
+	AccessToken   string            // 访问令牌，为空则不校验
 }
 
-// APIPreHandler 实现所有 gogen 生成的 XXXAPIHandler 接口。
-type APIPreHandler interface {
-	PreHandlers() []gin.HandlerFunc
-}
-
-// Server API 服务器
 type Server struct {
 	config    ServerConfig
 	deps      *Deps
@@ -44,134 +38,50 @@ type Server struct {
 	startTime time.Time
 }
 
-// NewServer 创建服务器
+func newDeps(db interfaces.DB) *Deps {
+	now := time.Now()
+	return &Deps{
+		DB:                   db,
+		TopicQuery:           query.NewTopicQuery(db),
+		ConsumerQuery:        query.NewConsumerQuery(db),
+		MessageQuery:         query.NewMessageQuery(db),
+		ClusterQuery:         query.NewClusterQuery(db),
+		AdminClient:          dbmq.NewAdminClient(db),
+		Producer:             dbmq.MustNewProducer(dbmq.ProducerConfig{DB: db}), // 创建 Producer 用于重发消息
+		ManualAssignmentRepo: manualassignmentrepo.New(db),
+		ConsumerGroupRepo:    consumergrouprepo.New(db),
+		StartTime:            func() int64 { return now.Unix() },
+	}
+}
+
 func NewServer(config ServerConfig) (*Server, error) {
-	if config.DB == nil {
+	db := config.DB
+	if db == nil {
 		return nil, fmt.Errorf("database connection is required")
 	}
-
 	if config.Port == 0 {
 		config.Port = 8080
 	}
 	if config.Host == "" {
 		config.Host = "localhost"
 	}
-
-	metricsClient, err := NewMetricsClient(config.DB)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create metrics client: %w", err)
-	}
-
-	adminClient := dbmq.NewAdminClient(config.DB)
-
-	// 创建 Producer 用于重发消息
-	producer, err := dbmq.NewProducer(dbmq.ProducerConfig{
-		DB: config.DB,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create producer: %w", err)
-	}
-
-	s := &Server{
-		config: config,
-	}
-
-	deps := &Deps{
-		DB:                   config.DB,
-		TopicQuery:           query.NewTopicQuery(config.DB),
-		ConsumerQuery:        query.NewConsumerQuery(config.DB),
-		MessageQuery:         query.NewMessageQuery(config.DB),
-		MetricsClient:        metricsClient,
-		AdminClient:          adminClient,
-		Producer:             producer,
-		ManualAssignmentRepo: manualassignmentrepo.New(config.DB),
-		ConsumerGroupRepo:    consumergrouprepo.New(config.DB),
-		StartTime:            func() int64 { return s.startTime.Unix() },
-	}
-
-	s.deps = deps
-
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 	engine.Use(corsMiddleware())
 	engine.Use(loggingMiddleware())
-
-	// 自动处理尾部斜杠问题
-	// 当访问 /api/v1/consumer-groups 时，自动匹配到 /api/v1/consumer-groups/
-	engine.RedirectTrailingSlash = true
-	engine.RedirectFixedPath = true
-
-	s.engine = engine
-
-	return s, nil
-}
-
-func RegisterAPIs(handler gin.IRoutes, cfg ServerConfig, deps *Deps) {
-	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
-	dashPath := cfg.DashboardPath
-	if dashPath == "" {
-		dashPath = "/dbmq/api/v1/ui"
-	}
-	handler.GET(dashPath+"/*filepath", DashboardHandler(dashPath))
-
-	// 注册各个 API（有 AccessToken 时通过 APIHandler 注入 token 校验）
-	h := cfg.APIHandler
-	if h == nil && cfg.AccessToken != "" {
-		h = &tokenPreHandler{token: cfg.AccessToken}
-	}
-	NewHealthAPIWrap(NewHealthAPI(deps), h).BindAll(handler)
-	NewDashboardAPIWrap(NewDashboardAPI(deps), h).BindAll(handler)
-	NewTopicAPIWrap(NewTopicAPI(deps), h).BindAll(handler)
-	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(deps), h).BindAll(handler)
-	NewDBMQAPIWrap(NewDBMQAPI(deps), h).BindAll(handler)
-	NewClusterAPIWrap(NewClusterAPI(deps), h).BindAll(handler)
-	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(deps), h).BindAll(handler)
+	return &Server{
+		config:    config,
+		startTime: time.Now(),
+		deps:      newDeps(db),
+		engine:    engine,
+	}, nil
 }
 
 func (s *Server) RegisterAPIs() {
-	RegisterAPIs(s.engine, s.config, s.deps)
+	registerAPIs(s.engine, s.config.DashboardPath, s.config.AccessToken, s.deps, s.config.APIHandler...)
 }
 
-// tokenPreHandler 内置的 token 校验 APIPreHandler。
-type tokenPreHandler struct {
-	token string
-}
-
-func (t *tokenPreHandler) PreHandlers() []gin.HandlerFunc {
-	return []gin.HandlerFunc{accessTokenMiddleware(t.token)}
-}
-
-// accessTokenMiddleware 校验访问令牌。
-// 支持三种方式传递 token：
-//   - Query 参数: ?token=xxx
-//   - Header: Authorization: Bearer xxx
-//   - Cookie: access_token=xxx
-func accessTokenMiddleware(token string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 1. Query 参数
-		if c.Query("token") == token {
-			c.Next()
-			return
-		}
-		// 2. Authorization Header
-		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") && auth[7:] == token {
-			c.Next()
-			return
-		}
-		// 3. Cookie
-		if cookie, err := c.Cookie("access_token"); err == nil && cookie == token {
-			c.Next()
-			return
-		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "unauthorized: invalid or missing access token",
-		})
-	}
-}
-
-// Start 启动服务器
 func (s *Server) Start() error {
 	s.RegisterAPIs()
 
@@ -184,8 +94,7 @@ func (s *Server) Start() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	s.startTime = time.Now()
-	fmt.Printf("Starting DBMQ API server on %s\n", addr)
+	slog.Info("starting DBMQ API server", "addr", addr)
 	return s.server.ListenAndServe()
 }
 
@@ -205,48 +114,4 @@ func (s *Server) Engine() gin.IRoutes {
 // Deps 返回依赖（用于测试）
 func (s *Server) Deps() *Deps {
 	return s.deps
-}
-
-// corsMiddleware CORS 中间件
-func corsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		origin := c.Request.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
-		}
-
-		// 设置 CORS 响应头
-		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, X-CSRF-Token, X-Requested-With")
-		c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers")
-
-		// 开发环境使用较短的缓存时间，生产环境可以设置为 86400（24小时）
-		// 开发时如果遇到 CORS 缓存问题，设置为 0 可以禁用预检缓存
-		c.Writer.Header().Set("Access-Control-Max-Age", "600") // 10分钟
-
-		// 处理 OPTIONS 预检请求
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-
-		c.Next()
-	}
-}
-
-// loggingMiddleware 日志中间件
-func loggingMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		duration := time.Since(start)
-		fmt.Printf("[%s] %s %s %d %v\n",
-			start.Format("2006-01-02 15:04:05"),
-			c.Request.Method,
-			c.Request.URL.Path,
-			c.Writer.Status(),
-			duration)
-	}
 }

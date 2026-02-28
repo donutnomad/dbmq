@@ -7,15 +7,16 @@ import (
 
 // ClusterAPI 集群管理 API
 // @TAG(Cluster)
+// @PREFIX(/dbmq/api/v1/clusters)
 type ClusterAPI interface {
 	// List 获取集群列表
-	// @GET(/dbmq/api/v1/clusters)
+	// @GET(/)
 	List(ctx context.Context) ([]ClusterResp, error)
 	// GetMetrics 获取集群指标
-	// @GET(/dbmq/api/v1/clusters/{clusterId}/metrics)
+	// @GET(/{clusterId}/metrics)
 	GetMetrics(ctx context.Context, clusterId string) (ClusterMetricsResp, error)
 	// GetBrokers 获取 Broker 列表
-	// @GET(/dbmq/api/v1/clusters/{clusterId}/brokers)
+	// @GET(/{clusterId}/brokers)
 	GetBrokers(ctx context.Context, clusterId string) ([]BrokerResp, error)
 }
 
@@ -39,7 +40,7 @@ func (a *clusterAPI) List(ctx context.Context) ([]ClusterResp, error) {
 }
 
 func (a *clusterAPI) GetMetrics(ctx context.Context, clusterId string) (ClusterMetricsResp, error) {
-	metrics, err := a.deps.MetricsClient.GetClusterMetrics(ctx)
+	metrics, err := a.deps.ClusterQuery.GetClusterMetrics(ctx)
 	if err != nil {
 		return ClusterMetricsResp{}, err
 	}
@@ -54,7 +55,7 @@ func (a *clusterAPI) GetMetrics(ctx context.Context, clusterId string) (ClusterM
 }
 
 func (a *clusterAPI) GetBrokers(ctx context.Context, clusterId string) ([]BrokerResp, error) {
-	metrics, err := a.deps.MetricsClient.GetBrokerMetrics(ctx)
+	metrics, err := a.deps.GetBrokerMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}
