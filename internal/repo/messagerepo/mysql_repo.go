@@ -57,24 +57,22 @@ func (r *mysqlRepo) FetchBatch(ctx context.Context, requests []message.FetchRequ
 		return nil, nil
 	}
 
-	var unionParts []string
-	var args []any
+	tableName := MessagePO{}.TableName()
+	subQuery := "SELECT * FROM " + tableName + " WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
 
+	var ret []*message.Message
 	for _, req := range requests {
-		unionParts = append(unionParts, "(SELECT * FROM "+MessagePO{}.TableName()+" WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?)")
-		args = append(args, req.Topic, req.Partition, req.AfterID, req.Limit)
+		var messages []MessagePO
+		err := r.db.WithContext(ctx).
+			Raw(subQuery, req.Topic, req.Partition, req.AfterID, req.Limit).
+			Scan(&messages).Error
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, ToDomainSlice(messages)...)
 	}
 
-	sql := strings.Join(unionParts, " UNION ALL ") + " ORDER BY `id` ASC"
-
-	var messages []MessagePO
-	err := r.db.WithContext(ctx).
-		Raw(sql, args...).
-		Scan(&messages).Error
-	if err != nil {
-		return nil, err
-	}
-	return ToDomainSlice(messages), nil
+	return ret, nil
 }
 
 func (r *mysqlRepo) GetLatestID(ctx context.Context, topic string, partition uint) (int64, error) {

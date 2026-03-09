@@ -405,6 +405,7 @@ func (a *ConsumerActor) handlePoll(ctx context.Context, timeout time.Duration) P
 	allMessages, err := a.messageRepo.FetchBatch(fetchCtx, requests)
 	if err != nil {
 		if stderrors.Is(err, context.DeadlineExceeded) || stderrors.Is(err, context.Canceled) {
+			slog.WarnContext(ctx, "[dbmq] fetch message timeout", "id", a.ID(), "topics", a.topics)
 			return PollResult{Err: err}
 		}
 		return PollResult{Err: &ErrFailedFetchMessage{err}}
