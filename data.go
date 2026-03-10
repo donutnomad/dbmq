@@ -166,7 +166,7 @@ func (c ConsumerMessage) PartitionInfo() types.PartitionInfo {
 // parentCtx: 父级 context（通常是当前请求的 context）
 // 返回: 包含从消息中提取的追踪信息的新 context
 func (c ConsumerMessage) ExtractTracingContext(parentCtx context.Context) context.Context {
-	propagator := otel.GetTextMapPropagator()
+	propagator := propagation.TraceContext{}
 	return propagator.Extract(parentCtx, propagation.MapCarrier(c.Headers))
 }
 
@@ -181,7 +181,7 @@ func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName s
 	}
 
 	tracer := otel.Tracer("dbmq.consumer")
-	propagator := otel.GetTextMapPropagator()
+	propagator := propagation.TraceContext{}
 
 	// 从消息头提取父级 span context
 	carrierCtx := propagator.Extract(context.Background(), propagation.MapCarrier(c.Headers))
@@ -226,7 +226,7 @@ func (messages ConsumerMessages) StartBatchConsumerSpan(parentCtx context.Contex
 	}
 
 	tracer := otel.Tracer("dbmq.consumer")
-	propagator := otel.GetTextMapPropagator()
+	propagator := propagation.TraceContext{}
 
 	// 从所有消息头提取 span context 并创建 links
 	var links []trace.Link
