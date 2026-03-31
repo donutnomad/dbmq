@@ -138,15 +138,18 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		progressRepo:         consumerprogressrepo.New(config.DB),
 		manualAssignmentRepo: manualassignmentrepo.New(config.DB),
 		db:                   config.DB,
-		logger:               logger.GetLogger().With("component", "coordinator", "lock_suffix", config.LockSuffix),
 	}
+}
+
+func (c *Coordinator) getLogger() *slog.Logger {
+	return logger.GetLogger().With("component", "coordinator", "lock_suffix", c.config.LockSuffix)
 }
 
 // Start 开始协调器的工作，包括领导者选举
 func (c *Coordinator) Start() {
 	// 检查是否已经停止，防止重复启动
 	if c.stopped.Load() {
-		c.logger.Debug("Coordinator has already been stopped, cannot start again")
+		c.getLogger().Debug("Coordinator has already been stopped, cannot start again")
 		return
 	}
 
@@ -161,7 +164,7 @@ func (c *Coordinator) Stop() {
 		// 已经停止过了，直接返回
 		return
 	}
-	c.logger.Debug("Coordinator stopping...")
+	c.getLogger().Debug("Coordinator stopping...")
 
 	// 取消所有goroutine的context
 	c.cancel()
@@ -169,7 +172,7 @@ func (c *Coordinator) Stop() {
 	// 等待所有goroutine完成
 	c.wg.Wait()
 
-	c.logger.Debug("Coordinator stopped successfully")
+	c.getLogger().Debug("Coordinator stopped successfully")
 }
 
 // IsLeader 返回此协调器实例是否为当前领导者
@@ -186,10 +189,10 @@ func (c *Coordinator) IsStopped() bool {
 func (c *Coordinator) setLeader(isLeader bool) {
 	wasLeader := c.isLeader.Swap(isLeader)
 	if isLeader && !wasLeader {
-		c.logger.Debug("Coordinator became the global leader.")
+		c.getLogger().Debug("Coordinator became the global leader.")
 	}
 	if !isLeader && wasLeader {
-		c.logger.Debug("Coordinator lost global leadership.")
+		c.getLogger().Debug("Coordinator lost global leadership.")
 	}
 }
 
@@ -202,16 +205,16 @@ func (c *Coordinator) releaseConn(conn *sql.Conn) {
 	defer cancel()
 	var released sql.NullInt64
 	if err := conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", c.lockName).Scan(&released); err != nil {
-		c.logger.Error("Error releasing global leader lock", "error", err)
+		c.getLogger().Error("Error releasing global leader lock", "error", err)
 	} else if !released.Valid {
-		c.logger.Warn("Release lock returned NULL (lock may not exist)")
+		c.getLogger().Warn("Release lock returned NULL (lock may not exist)")
 	} else if released.Int64 == 0 {
-		c.logger.Warn("Release lock returned 0 (lock not owned by this session)")
+		c.getLogger().Warn("Release lock returned 0 (lock not owned by this session)")
 	} else {
-		c.logger.Debug("Coordinator released global leader lock.")
+		c.getLogger().Debug("Coordinator released global leader lock.")
 	}
 	if err := conn.Close(); err != nil {
-		c.logger.Warn("Error closing leader lock connection", "error", err)
+		c.getLogger().Warn("Error closing leader lock connection", "error", err)
 	}
 }
 
@@ -219,14 +222,14 @@ func (c *Coordinator) releaseConn(conn *sql.Conn) {
 func (c *Coordinator) ensureLeaderLockHealth() {
 	session := c.getLeaderSession()
 	if session == nil {
-		c.logger.Warn("Leader flag is set but no leader session is tracked, forcing step-down.")
+		c.getLogger().Warn("Leader flag is set but no leader session is tracked, forcing step-down.")
 		c.relinquishLeadership("missing leader session state")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := session.conn.PingContext(ctx); err != nil {
-		c.logger.Warn("Leader lock connection ping failed, relinquishing leadership.", "error", err)
+		c.getLogger().Warn("Leader lock connection ping failed, relinquishing leadership.", "error", err)
 		c.relinquishLeadership("leader lock connection unhealthy")
 	}
 }
@@ -242,7 +245,7 @@ func (c *Coordinator) getLeaderSession() *leaderSession {
 // startLeaderSession 基于新的 MySQL 连接创建一个领导者任期，并启动主循环
 func (c *Coordinator) startLeaderSession(conn *sql.Conn) {
 	if conn == nil {
-		c.logger.Error("Cannot start leader session with nil connection")
+		c.getLogger().Error("Cannot start leader session with nil connection")
 		return
 	}
 	if c.getLeaderSession() != nil {
@@ -264,7 +267,7 @@ func (c *Coordinator) startLeaderSession(conn *sql.Conn) {
 	if !c.IsLeader() {
 		c.setLeader(true)
 	}
-	c.logger.Debug("Leader session started", "session_id", sessionID)
+	c.getLogger().Debug("Leader session started", "session_id", sessionID)
 
 	c.wg.Add(1)
 	go c.leaderLoop(session)
@@ -287,7 +290,7 @@ func (c *Coordinator) relinquishLeadership(reason string) {
 	}
 
 	if reason != "" {
-		c.logger.Debug("Relinquishing leadership", "reason", reason, "session_id", session.id)
+		c.getLogger().Debug("Relinquishing leadership", "reason", reason, "session_id", session.id)
 	}
 	session.cancel()
 	<-session.done
@@ -320,7 +323,7 @@ func (c *Coordinator) leaderElectionLoop() {
 // attemptToBecomeLeader 尝试成为领导者
 func (c *Coordinator) attemptToBecomeLeader() {
 	if c.IsStopped() {
-		c.logger.Debug("Coordinator stopped, not attempting to become leader")
+		c.getLogger().Debug("Coordinator stopped, not attempting to become leader")
 		return
 	}
 
@@ -331,13 +334,13 @@ func (c *Coordinator) attemptToBecomeLeader() {
 
 	sqlDb, err := c.db.DB()
 	if err != nil {
-		c.logger.Error("Error getting database connection for leader election", "error", err)
+		c.getLogger().Error("Error getting database connection for leader election", "error", err)
 		return
 	}
 
 	conn, err := sqlDb.Conn(c.ctx)
 	if err != nil {
-		c.logger.Error("Error getting dedicated connection for leader election", "error", err)
+		c.getLogger().Error("Error getting dedicated connection for leader election", "error", err)
 		return
 	}
 	// releaseConn 标记用于 defer：只有在确认为领导者时才保留连接，其他场景都立即关闭
@@ -345,44 +348,44 @@ func (c *Coordinator) attemptToBecomeLeader() {
 	defer func() {
 		if releaseConn {
 			if err := conn.Close(); err != nil {
-				c.logger.Warn("Error closing leader lock connection", "error", err)
+				c.getLogger().Warn("Error closing leader lock connection", "error", err)
 			}
 		}
 	}()
 
 	var timeout = int(lockRefreshInterval / time.Second / 2)
-	c.logger.Debug("Attempting to acquire leader lock", "timeout_seconds", timeout)
+	c.getLogger().Debug("Attempting to acquire leader lock", "timeout_seconds", timeout)
 	lockCtx, cancel := context.WithTimeout(c.ctx, time.Duration(timeout+2)*time.Second)
 	defer cancel()
 
 	var result int
 	if err := conn.QueryRowContext(lockCtx, "SELECT GET_LOCK(?, ?)", c.lockName, timeout).Scan(&result); err != nil {
-		c.logger.Error("Error executing GET_LOCK", "error", err)
+		c.getLogger().Error("Error executing GET_LOCK", "error", err)
 		return
 	}
 
-	c.logger.Debug("GET_LOCK result", "result", result)
+	c.getLogger().Debug("GET_LOCK result", "result", result)
 	switch result {
 	case 0:
 		// GET_LOCK 返回0表示锁被其他会话持有；连接会在 defer 中关闭
 		if c.IsLeader() {
-			c.logger.Debug("Coordinator lost leadership (unable to acquire lock).")
+			c.getLogger().Debug("Coordinator lost leadership (unable to acquire lock).")
 			c.relinquishLeadership("GET_LOCK returned 0")
 		}
 	case 1:
 		if c.ctx.Err() != nil {
 			// 如果在获取期间协调器已经退出，立即释放锁，避免遗留
-			c.logger.Warn("Acquired leader lock while coordinator is stopping, releasing immediately")
+			c.getLogger().Warn("Acquired leader lock while coordinator is stopping, releasing immediately")
 			releaseConn = false
 			c.releaseConn(conn)
 			return
 		}
 		releaseConn = false // 交给 leaderSession 管理连接生命周期
-		c.logger.Debug("Coordinator acquired leadership.")
+		c.getLogger().Debug("Coordinator acquired leadership.")
 		c.startLeaderSession(conn)
 	default:
 		// MySQL 理论上只返回0/1/NULL；这里兜底并关闭连接（defer 会处理）
-		c.logger.Warn("Unexpected GET_LOCK result", "result", result)
+		c.getLogger().Warn("Unexpected GET_LOCK result", "result", result)
 	}
 }
 
@@ -392,7 +395,7 @@ func (c *Coordinator) leaderLoop(session *leaderSession) {
 	defer c.wg.Done()
 	defer close(session.done)
 
-	c.logger.Debug("[LEADER] Coordinator leader loop started.", "session_id", session.id)
+	c.getLogger().Debug("[LEADER] Coordinator leader loop started.", "session_id", session.id)
 	rebalanceTicker := time.NewTicker(c.config.RebalanceInterval)
 	defer rebalanceTicker.Stop()
 	cleanupTicker := time.NewTicker(c.config.RetentionCheckInterval)
@@ -405,13 +408,13 @@ func (c *Coordinator) leaderLoop(session *leaderSession) {
 	for {
 		select {
 		case <-session.ctx.Done():
-			c.logger.Debug("[LEADER] Leader session context cancelled, exiting loop.", "session_id", session.id)
+			c.getLogger().Debug("[LEADER] Leader session context cancelled, exiting loop.", "session_id", session.id)
 			return
 		case <-rebalanceTicker.C:
-			c.logger.Debug("[LEADER] Starting global rebalance scan...", "session_id", session.id)
+			c.getLogger().Debug("[LEADER] Starting global rebalance scan...", "session_id", session.id)
 			c.scanAndRebalanceAllGroups(session.ctx)
 		case <-cleanupTicker.C:
-			c.logger.Debug("[LEADER] Starting message retention cleanup...", "session_id", session.id)
+			c.getLogger().Debug("[LEADER] Starting message retention cleanup...", "session_id", session.id)
 			c.runRetentionCleanup(session.ctx)
 		}
 	}
@@ -429,17 +432,17 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 
 	// 如果协调器已停止，不执行清理操作
 	if c.IsStopped() {
-		c.logger.Debug("Coordinator stopped, skipping message retention cleanup.")
+		c.getLogger().Debug("Coordinator stopped, skipping message retention cleanup.")
 		return
 	}
 
-	c.logger.Debug("Starting message retention cleanup cycle.")
+	c.getLogger().Debug("Starting message retention cleanup cycle.")
 	startTime := time.Now()
 
 	// 1. 获取所有Topic以了解它们的保留策略
 	allTopics, err := c.topicRepo.GetAll(ctx)
 	if err != nil {
-		c.logger.Error("Cleanup failed to get topics", "error", err)
+		c.getLogger().Error("Cleanup failed to get topics", "error", err)
 		return
 	}
 	topicConfigMap := make(map[string]time.Duration)
@@ -453,10 +456,10 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 	// 2. Calculate global low watermark for all consumed partitions
 	watermarks, err := c.progressRepo.GetLowWatermarks(ctx)
 	if err != nil {
-		c.logger.Error("Cleanup failed to get low watermarks", "error", err)
+		c.getLogger().Error("Cleanup failed to get low watermarks", "error", err)
 		return
 	}
-	c.logger.Debug(fmt.Sprintf("Found %d consumed partitions with a low watermark.", len(watermarks)))
+	c.getLogger().Debug(fmt.Sprintf("Found %d consumed partitions with a low watermark.", len(watermarks)))
 
 	var totalDeletedCount int64
 
@@ -487,7 +490,7 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 				}
 
 				if err != nil {
-					c.logger.Error("Failed to clean partition", "partition", p, "error", err)
+					c.getLogger().Error("Failed to clean partition", "partition", p, "error", err)
 					break // Break from batch loop on error
 				}
 
@@ -503,7 +506,7 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 				// Sleep briefly to avoid overwhelming the DB, but check for context cancellation
 				select {
 				case <-ctx.Done():
-					c.logger.Debug("Cleanup cancelled during batch processing for partition", "partition", p)
+					c.getLogger().Debug("Cleanup cancelled during batch processing for partition", "partition", p)
 					return
 				case <-time.After(cleanupBatchSleep):
 					// Continue to next batch
@@ -512,12 +515,12 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 
 			if partitionTotalDeleted > 0 {
 				totalDeletedCount += partitionTotalDeleted
-				c.logger.Debug(fmt.Sprintf("Cleaned up %d messages from partition %v", partitionTotalDeleted, p))
+				c.getLogger().Debug(fmt.Sprintf("Cleaned up %d messages from partition %v", partitionTotalDeleted, p))
 			}
 		}
 	}
 
-	c.logger.Debug(fmt.Sprintf("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount))
+	c.getLogger().Debug(fmt.Sprintf("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount))
 }
 
 // scanAndRebalanceAllGroups 由领导者循环驱动，扫描并触发所有消费组的重新均衡
@@ -532,17 +535,17 @@ func (c *Coordinator) scanAndRebalanceAllGroups(parentCtx context.Context) {
 	// 找到活跃的消费组IDs
 	activeGroupIds, err := c.groupRepo.FindAllActiveGroups(ctx, c.config.HeartbeatTimeout)
 	if err != nil {
-		c.logger.Error("[LEADER] Failed to scan for active groups", "error", err)
+		c.getLogger().Error("[LEADER] Failed to scan for active groups", "error", err)
 		return
 	}
 	if len(activeGroupIds) == 0 {
 		return
 	}
 
-	c.logger.Debug(fmt.Sprintf("[LEADER] [scanAndRebalanceAllGroups] Found active consumer groups: %v", activeGroupIds))
+	c.getLogger().Debug(fmt.Sprintf("[LEADER] [scanAndRebalanceAllGroups] Found active consumer groups: %v", activeGroupIds))
 	for _, groupID := range activeGroupIds {
 		if err := c.rebalanceIfNeeded(ctx, groupID); err != nil {
-			c.logger.Error("[LEADER] Rebalance failed for group", "group", groupID, "error", err)
+			c.getLogger().Error("[LEADER] Rebalance failed for group", "group", groupID, "error", err)
 		}
 	}
 }
@@ -569,7 +572,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	// 这是一个关键的并发控制机制，避免同一消费组的多个重新均衡操作并发执行，
 	// 防止数据竞争和状态不一致。
 	if !c.rebalancingLocks.TryLock(groupID) {
-		c.logger.Debug("[LEADER] Rebalance check for group skipped", "group", groupID, "reason", "another rebalance is already in progress")
+		c.getLogger().Debug("[LEADER] Rebalance check for group skipped", "group", groupID, "reason", "another rebalance is already in progress")
 		return nil
 	}
 	defer c.rebalancingLocks.Unlock(groupID)
@@ -616,26 +619,18 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		return nil // 没有变化，无需重新均衡
 	}
 
-	c.logger.Info(fmt.Sprintf("[LEADER] Rebalance needed for group '%s'. Old members: %v, New members: %v",
+	c.getLogger().Info(fmt.Sprintf("[LEADER] Rebalance needed for group '%s'. Old members: %v, New members: %v",
 		groupID, c.getMemberIDs(groupID), mapKeys(activeConsumerIDs)))
 
 	// ========== 第四步：开始重新均衡协议 - 代际隔离 ==========
-	// 递增代际ID。这是DBMQ的核心隔离机制：
-	// - 新代际ID会使所有旧消费者的请求失效（代际不匹配）
-	// - 防止旧消费者继续处理消息，避免重复消费
-	// - 实现"围栏"效应，确保只有新分配的消费者能工作
-	newGenerationID, err := c.groupRepo.IncrementGenerationID(ctx, groupID)
-	if err != nil {
-		return fmt.Errorf("[LEADER] failed to increment generation id: %w", err)
-	}
-
-	// 特殊情况：如果没有活跃消费者，只需递增代际并结束
+	// 特殊情况：如果没有活跃消费者，只需原子递增代际并清空所有分配
 	if len(activeConsumers) == 0 {
-		if err := c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, map[string][]types.PartitionInfo{}); err != nil {
-			return fmt.Errorf("[LEADER] failed to clear assignments for empty group: %w", err)
+		newGenerationID, err := c.groupRepo.IncrementAndUpdateAssignments(ctx, groupID, map[string][]types.PartitionInfo{})
+		if err != nil {
+			return fmt.Errorf("[LEADER] failed to increment generation for empty group: %w", err)
 		}
 		c.updateGroupSnapshot(groupID, newGenerationID, nil, "", nil)
-		c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' completed with no active consumers. Generation: %d", groupID, newGenerationID))
+		c.getLogger().Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' completed with no active consumers. Generation: %d", groupID, newGenerationID))
 		return nil
 	}
 
@@ -654,15 +649,15 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 	// 分配分区（传入手动配置）
 	newAssignments := c.calculateAssignments(activeConsumers, allPartitions, manualAssignments)
 
-	// 持久化到数据库中
-	err = c.groupRepo.UpdateAssignments(ctx, groupID, newGenerationID, newAssignments)
+	// 原子地递增代际 ID 并持久化分区分配，消除两阶段提交竞态窗口
+	newGenerationID, err := c.groupRepo.IncrementAndUpdateAssignments(ctx, groupID, newAssignments)
 	if err != nil {
-		return fmt.Errorf("[LEADER] failed to update assignments: %w", err)
+		return fmt.Errorf("[LEADER] failed to increment generation and update assignments: %w", err)
 	}
 
 	// 记录新的消费组快照
 	c.updateGroupSnapshot(groupID, newGenerationID, activeConsumers, partitionHash, manualAssignments)
-	c.logger.Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
+	c.getLogger().Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
 	return nil
 }
 
@@ -680,7 +675,7 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 
 	// 检查 generation_id 是否被外部修改（如 TriggerRebalance API 递增了 generations 表）
 	if currentGenerationID != snapshot.generationID {
-		c.logger.Info("[LEADER] 检测到 generation_id 被外部修改，强制触发 rebalance",
+		c.getLogger().Info("[LEADER] 检测到 generation_id 被外部修改，强制触发 rebalance",
 			"group_id", groupID,
 			"snapshot_generation", snapshot.generationID,
 			"current_generation", currentGenerationID,
@@ -716,13 +711,13 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
 	if err != nil {
 		// 查询失败时保守触发 rebalance
-		c.logger.Warn("[LEADER] Failed to check manual assignments, triggering rebalance", "error", err)
+		c.getLogger().Warn("[LEADER] Failed to check manual assignments, triggering rebalance", "error", err)
 		return true
 	}
 
 	currentManualHash := hashManualAssignments(manualAssignments)
 	if snapshot.manualAssignmentHash != currentManualHash {
-		c.logger.Info("[LEADER] 🎯 检测到手动分配规则变化，触发 rebalance",
+		c.getLogger().Info("[LEADER] 🎯 检测到手动分配规则变化，触发 rebalance",
 			"group_id", groupID,
 			"old_hash", snapshot.manualAssignmentHash,
 			"new_hash", currentManualHash,

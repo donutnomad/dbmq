@@ -175,7 +175,7 @@ func (c ConsumerMessage) ExtractTracingContext(parentCtx context.Context) contex
 // parentCtx: 父级 context
 // spanName: span 名称，如果为空则使用 "process"
 // 返回: 新的 context 和 span（调用者负责调用 span.End()）
-func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName string) (context.Context, trace.Span) {
+func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName string, attributes ...attribute.KeyValue) (context.Context, trace.Span) {
 	if spanName == "" {
 		spanName = "process"
 	}
@@ -194,16 +194,18 @@ func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName s
 		})
 	}
 
+	attributes = append(attributes,
+		semconv.MessagingSystemKey.String("dbmq"),
+		semconv.MessagingOperationName(spanName),
+		semconv.MessagingDestinationName(c.Topic),
+		attribute.Int64("messaging.message.id", c.ID),
+		attribute.Int("messaging.destination.partition.id", int(c.Partition)),
+	)
+
 	ctx, span := tracer.Start(parentCtx, spanName,
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithLinks(links...),
-		trace.WithAttributes(
-			semconv.MessagingSystemKey.String("dbmq"),
-			semconv.MessagingOperationName("process"),
-			semconv.MessagingDestinationName(c.Topic),
-			attribute.Int64("messaging.message.id", c.ID),
-			attribute.Int("messaging.destination.partition.id", int(c.Partition)),
-		),
+		trace.WithAttributes(attributes...),
 	)
 
 	if c.Key != "" {

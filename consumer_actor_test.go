@@ -1033,6 +1033,109 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 	})
 }
 
+// TestBug_CoordinatorRaceWindow 复现 coordinator 两阶段提交竞态导致消费者永久卡死的 bug。
+//
+// Bug 根因：coordinator 的 rebalance 分两个独立事务执行：
+//
+//	事务1: IncrementGenerationID (generation 508 → 509)
+//	事务2: UpdateAssignments    (写入分区分配)
+//
+// 消费者心跳恰好落在事务1和事务2之间的窗口时：
+//   - Get() 读到 generation_id=509（事务1已提交）
+//   - 但 assigned_partitions=[]（事务2还没提交）
+//   - doRebalance(509, []) 成功执行：generationID=509, assignment=[], state=Ready
+//   - 事务2之后提交，数据库里有分区，但消费者内存里分区为空
+//   - 此后每次心跳: dbGen(509) == currentGen(509) → 直接 return，永远不再触发 rebalance
+//   - IsReady() 永远返回 false（state=Ready 但 assignment 为空）
+func TestBug_CoordinatorRaceWindow(t *testing.T) {
+	t.Run("heartbeat with empty partitions during coordinator two-phase commit causes permanent stuck", func(t *testing.T) {
+		mocks := newMockConsumerRepos()
+		fakeClock := NewFakeClock(time.Now())
+
+		// 初始状态：消费者刚订阅，数据库里 generation=0，分区为空
+		mocks.heartbeat.heartbeat = &heartbeat.Heartbeat{
+			GenerationID:       0,
+			AssignedPartitions: []types.PartitionInfo{},
+		}
+
+		actor := NewConsumerActor(ConsumerConfig{
+			GroupID:           "test-group",
+			HeartbeatInterval: 1 * time.Second,
+			ConsumeStrategy:   ConsumeFromEarliest,
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+
+		actor.Start()
+		defer actor.Stop()
+		actor.SubscribeTopics("test-topic")
+
+		// 首次心跳：dbGen=0 == currentGen=0，不触发 rebalance，消费者保持 Joining
+		fakeClock.Advance(2 * time.Second)
+		time.Sleep(100 * time.Millisecond)
+		require.Equal(t, StateJoining, actor.stateMachine.Get(), "首次心跳后应仍在 Joining 状态")
+
+		// ====== 模拟 coordinator 竞态窗口 ======
+		// 事务1完成：IncrementGenerationID，generation 0→509
+		// 事务2未完成：UpdateAssignments 还没执行
+		// 此时消费者心跳读到：generation_id=509 但 assigned_partitions=[]
+		mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+			GenerationID:       509,
+			AssignedPartitions: []types.PartitionInfo{}, // 竞态窗口：分区还未写入
+		})
+
+		// 触发心跳：dbGen=509 != currentGen=0 → 触发 doRebalance(509, [])
+		fakeClock.Advance(2 * time.Second)
+		time.Sleep(100 * time.Millisecond)
+
+		// doRebalance 使用空分区成功完成：state=Ready，但 assignment=[]
+		require.Equal(t, StateReady, actor.stateMachine.Get(), "doRebalance(509,[]) 后状态变为 Ready")
+		require.Equal(t, uint(509), actor.generationID, "generationID 已更新为 509")
+		require.Empty(t, actor.assignment, "分区为空（竞态窗口中拿到的是空分区）")
+
+		// ====== 事务2完成：coordinator 写入了实际的分区分配 ======
+		// 数据库：generation_id=509, assigned_partitions=[p0]
+		mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+			GenerationID: 509, // generation 没有再次变化
+			AssignedPartitions: []types.PartitionInfo{
+				{Topic: "test-topic", Partition: 0},
+			},
+		})
+
+		// 再触发几次心跳，验证消费者是否能自动恢复
+		for i := 0; i < 3; i++ {
+			fakeClock.Advance(2 * time.Second)
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// ====== 验证 bug：消费者当前因竞态窗口卡在 Ready 但分区为空 ======
+		// （此时协调器端的修复尚未生效，这是验证竞态窗口确实曾经存在）
+		assert.Empty(t, actor.assignment, "竞态窗口后分区为空")
+		assert.False(t, actor.IsReady(), "竞态窗口后 IsReady() 返回 false")
+
+		// ====== 验证修复：当 coordinator 再次触发 rebalance（gen 变化），消费者能正常恢复 ======
+		// 修复后，coordinator 端合并了两个事务，不再出现 gen 增加但 partition 未更新的中间态。
+		// 这里模拟正常的下一次 rebalance（gen 510，有分区）
+		mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+			GenerationID: 510,
+			AssignedPartitions: []types.PartitionInfo{
+				{Topic: "test-topic", Partition: 0},
+			},
+		})
+		mocks.progress.committedOffsets = []*consumerprogress.Progress{
+			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 0},
+		}
+
+		// 触发心跳：gen=510 != currentGen=509，触发 doRebalance(510, [p0])
+		fakeClock.Advance(2 * time.Second)
+		time.Sleep(100 * time.Millisecond)
+
+		// 修复后验证：消费者能通过下一次 rebalance 自愈
+		assert.Equal(t, StateReady, actor.stateMachine.Get(), "下一次 rebalance 后应恢复 Ready")
+		assert.Equal(t, uint(510), actor.generationID, "generation 更新为 510")
+		assert.Len(t, actor.assignment, 1, "分区分配已恢复")
+		assert.True(t, actor.IsReady(), "IsReady() 应返回 true")
+	})
+}
+
 func TestConsumerActor_ConcurrentAccess(t *testing.T) {
 	t.Run("concurrent state reads are safe", func(t *testing.T) {
 		mocks := newMockConsumerRepos()

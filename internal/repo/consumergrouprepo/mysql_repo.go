@@ -19,7 +19,6 @@ type mysqlRepo struct {
 	db interfaces.DB
 }
 
-// New 创建 MySQL 实现的消费组仓储
 func New(db interfaces.DB) consumergroup.Repo {
 	return &mysqlRepo{db: db}
 }
@@ -68,12 +67,20 @@ func (r *mysqlRepo) IncrementGenerationID(ctx context.Context, groupID string) (
 	return generationID, nil
 }
 
-func (r *mysqlRepo) UpdateAssignments(ctx context.Context, groupID string, generationID uint, assignments map[string][]types.PartitionInfo) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+func (r *mysqlRepo) IncrementAndUpdateAssignments(ctx context.Context, groupID string, assignments map[string][]types.PartitionInfo) (uint, error) {
+	var newGenerationID uint
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Step 1: 原子递增 generation_id 并读取新值
+		var err error
+		newGenerationID, err = r.IncrementGenerationID(ctx, groupID)
+		if err != nil {
+			return err
+		}
+
+		// Step 2: 在同一事务内更新所有消费者的分区分配
 		activeIDs := make([]string, 0, len(assignments))
 		for consumerID, partitions := range assignments {
 			activeIDs = append(activeIDs, consumerID)
-			// 将 types.PartitionInfo 转换为 heartbeatrepo.PartitionInfo
 			hbPartitions := make([]heartbeatrepo.PartitionInfo, len(partitions))
 			for i, p := range partitions {
 				hbPartitions[i] = heartbeatrepo.PartitionInfo{
@@ -82,7 +89,7 @@ func (r *mysqlRepo) UpdateAssignments(ctx context.Context, groupID string, gener
 				}
 			}
 			updates := map[string]any{
-				"generation_id":       generationID,
+				"generation_id":       newGenerationID,
 				"assigned_partitions": datatypes.NewJSONSlice(hbPartitions),
 				"offline":             false,
 				"offline_at":          gorm.Expr("NULL"),
@@ -99,20 +106,23 @@ func (r *mysqlRepo) UpdateAssignments(ctx context.Context, groupID string, gener
 			}
 		}
 
+		// Step 3: 清空非活跃消费者的分区分配
 		inactiveQuery := tx.Model(&heartbeatrepo.HeartbeatPO{}).
 			Where("`group_id` = ?", groupID)
 		if len(activeIDs) > 0 {
 			inactiveQuery = inactiveQuery.Where("`consumer_id` NOT IN ?", activeIDs)
 		}
 		inactiveUpdates := map[string]any{
-			"generation_id":       generationID,
+			"generation_id":       newGenerationID,
 			"assigned_partitions": datatypes.NewJSONSlice([]heartbeatrepo.PartitionInfo{}),
 		}
 		if err := inactiveQuery.Updates(inactiveUpdates).Error; err != nil {
 			return fmt.Errorf("failed to clear assignments for inactive consumers: %w", err)
 		}
+
 		return nil
 	})
+	return newGenerationID, err
 }
 
 func (r *mysqlRepo) FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error) {
