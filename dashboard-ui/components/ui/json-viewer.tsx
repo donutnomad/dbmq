@@ -6,15 +6,15 @@ import { cn } from '@/lib/utils';
 
 interface JsonViewerProps {
   data: string | object;
-  collapsed?: number;
+  collapsed?: number | boolean;
   theme?: 'light' | 'dark';
   className?: string;
 }
 
 export function JsonViewer({
   data,
-  collapsed = 2,
-  theme = 'dark',
+  collapsed = false,
+  theme = 'light',
   className
 }: JsonViewerProps) {
   const [jsonData, setJsonData] = React.useState<any>(null);

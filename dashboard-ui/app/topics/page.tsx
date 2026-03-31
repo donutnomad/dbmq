@@ -826,8 +826,8 @@ function TopicDetailContent() {
                                       <div className="text-xs font-medium text-gray-600 mb-1">Value</div>
                                       <JsonViewer
                                         data={message.value}
-                                        collapsed={2}
-                                        theme="dark"
+                                        collapsed={false}
+                                        theme="light"
                                       />
                                     </div>
                                   </div>
