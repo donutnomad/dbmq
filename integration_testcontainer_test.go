@@ -154,6 +154,7 @@ func TestTC_MultiProducerMultiConsumer(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc1",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -262,6 +263,7 @@ func TestTC_ConsumerOnlineOffline(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc2",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -379,6 +381,7 @@ func TestTC_AssignedButNotConsuming(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc3",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -460,6 +463,7 @@ func TestTC_ConsumeStrategy(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc4",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -562,6 +566,7 @@ func TestTC_AutoCommitVsManualCommit(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc5",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -649,6 +654,7 @@ func TestTC_GenerationIDIsolation(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc6",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -710,6 +716,7 @@ func TestTC_HighConcurrencyStress(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc7",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -814,6 +821,7 @@ func TestTC_ConsumerStateErrors(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc8",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -876,6 +884,7 @@ func TestTC_HeartbeatTimeout(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc9",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  1 * time.Second, // 1秒超时
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -995,6 +1004,7 @@ func TestTC_ConsumerSubscribeNonexistentTopic(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc11",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1058,6 +1068,7 @@ func TestTC_ConcurrentRebalanceStability(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc13",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
 		RebalanceInterval: 300 * time.Millisecond,
 	})
@@ -1150,6 +1161,7 @@ func TestTC_AcknowledgeWrongMessage(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc14",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1210,6 +1222,7 @@ func TestTC_AutoCommitMode(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc15",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1298,6 +1311,7 @@ func TestTC_ContextCancellation(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc16",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1343,6 +1357,7 @@ func TestTC_EmptyPoll(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc17",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1525,6 +1540,7 @@ func TestTC_MessageRetentionCleanup(t *testing.T) {
 	// 启动协调器，配置快速清理
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:             "tc-retention",
+		NodeAddr:               "test-node",
 		DB:                     globalEnv.DB,
 		HeartbeatTimeout:       3 * time.Second,
 		RebalanceInterval:      500 * time.Millisecond,
@@ -1600,6 +1616,7 @@ func TestTC_MultiCoordinatorLeaderElection(t *testing.T) {
 		c := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-election", // 相同的锁后缀，竞争同一个Leader
 			DB:                globalEnv.DB,
+			NodeAddr:          fmt.Sprintf("test-node-%d", i),
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -1660,6 +1677,7 @@ func TestTC_MessageProcessingDuringRebalance(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc-rebalance-msg",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1806,6 +1824,7 @@ func TestTC_ConsumerMetadataMethods(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc-metadata",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -1871,6 +1890,7 @@ func TestTC_CommitMessage(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "tc-commit-msg",
 		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
 		RebalanceInterval: 500 * time.Millisecond,
 	})
@@ -2188,6 +2208,7 @@ func TestTC_PollLoop(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-pollloop",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2254,6 +2275,7 @@ func TestTC_PollLoop(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-pollloop-to",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2339,6 +2361,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-manual-exact",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2410,6 +2433,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-manual-prefix",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2479,6 +2503,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-manual-mixed",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2602,6 +2627,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-manual-rebal",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2721,6 +2747,7 @@ func TestTC_DeleteTopicCascade(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-cascade",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})
@@ -2815,6 +2842,7 @@ func TestTC_DeleteTopicCascade(t *testing.T) {
 		coordinator := NewCoordinator(CoordinatorConfig{
 			LockSuffix:        "tc-recreate",
 			DB:                globalEnv.DB,
+			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
 			RebalanceInterval: 500 * time.Millisecond,
 		})

@@ -18,7 +18,7 @@ import (
 func TestTC_OfflineFilterExtended(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
-	db := globalEnv.DB
+	db := globalEnv.DB.WithContext(context.Background())
 
 	groupID := "offline-filter-test-group"
 	now := time.Now()
@@ -104,7 +104,7 @@ func TestTC_OfflineFilterExtended(t *testing.T) {
 func TestTC_OfflineFilterMetrics(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
-	db := globalEnv.DB
+	db := globalEnv.DB.WithContext(context.Background())
 
 	groupID := "offline-filter-metrics-group"
 	topicName := "metrics-filter-topic"
@@ -179,7 +179,7 @@ func TestTC_OfflineFilterMetrics(t *testing.T) {
 func TestTC_OfflineFilterNotAffectOnlineWithNilOfflineAt(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
-	db := globalEnv.DB
+	db := globalEnv.DB.WithContext(context.Background())
 
 	groupID := "offline-nil-test-group"
 	now := time.Now()
@@ -217,7 +217,7 @@ func TestTC_OfflineFilterNotAffectOnlineWithNilOfflineAt(t *testing.T) {
 func TestTC_OfflineFilterAllOfflineOver1Hour(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
-	db := globalEnv.DB
+	db := globalEnv.DB.WithContext(context.Background())
 
 	groupID := "all-offline-test-group"
 

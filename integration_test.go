@@ -34,6 +34,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	// 2. Start Coordinator
 	coordConf := CoordinatorConfig{
 		LockSuffix:        "test",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,
@@ -143,6 +144,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
 		LockSuffix:        "test",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,
@@ -281,6 +283,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
 		LockSuffix:        "test",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  3 * time.Second, // 较短的超时时间以便快速故障检测
 		RebalanceInterval: 1 * time.Second,
@@ -398,6 +401,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 	// 2. Start the Coordinator.
 	coordConf := CoordinatorConfig{
 		LockSuffix:             "test",
+		NodeAddr:               "test-node",
 		DB:                     dbClient,
 		HeartbeatTimeout:       5 * time.Second,
 		RebalanceInterval:      1 * time.Second,
@@ -511,6 +515,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
 		LockSuffix:        "test",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,
@@ -604,6 +609,7 @@ func TestIntegration_ConsumerInitialization(t *testing.T) {
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "test-init",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second, // 短间隔加快测试
@@ -673,6 +679,7 @@ func TestIntegration_ConcurrentConsumerInitialization(t *testing.T) {
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
 		LockSuffix:        "test-concurrent",
+		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
 		RebalanceInterval: 1 * time.Second,

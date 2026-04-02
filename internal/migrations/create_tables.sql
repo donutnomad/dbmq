@@ -85,3 +85,12 @@ CREATE TABLE `mq_manual_partition_assignments` (
     UNIQUE KEY `uk_assignment` (`group_id`, `consumer_id_pattern`, `topic`, `partition`) COMMENT '确保同一分配规则不重复',
     INDEX `idx_group` (`group_id`) COMMENT '按消费组查询索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='手动分区分配配置表';
+
+-- 协调器 Leader 选举锁表（基于 CAS 方式，由 dbleader 库管理）
+CREATE TABLE IF NOT EXISTS `mq_coordinator_leader_lock` (
+    `lock_name`   VARCHAR(64)     NOT NULL COMMENT '锁名称/组件名',
+    `leader_ip`   VARCHAR(64)     NOT NULL COMMENT '当前持有锁的节点地址',
+    `expire_time` DATETIME(3)     NOT NULL COMMENT '锁的绝对过期时间',
+    `version`     BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '每次易主 +1，Fencing Token',
+    PRIMARY KEY (`lock_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='协调器Leader选举锁表';

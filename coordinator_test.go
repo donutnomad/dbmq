@@ -40,12 +40,9 @@ func TestCalculateAssignments_IsDeterministic(t *testing.T) {
 	consumers := makeTestConsumers("consumer-c", "consumer-a", "consumer-b")
 	partitions := makeTestPartitions("topic-1", 5)
 
-	// Create a dummy coordinator instance to call the method
-	coord := &Coordinator{}
-
 	// Run the assignment calculation multiple times
-	firstRun := coord.calculateAssignments(consumers, partitions, nil)
-	secondRun := coord.calculateAssignments(consumers, partitions, nil)
+	firstRun := calculateAssignments(consumers, partitions, nil)
+	secondRun := calculateAssignments(consumers, partitions, nil)
 
 	// Sort the results to ensure deep equality check is consistent
 	firstRun = sortAssignments(firstRun)
@@ -61,10 +58,8 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 	consumers1 := makeTestConsumers("consumer-a", "consumer-b", "consumer-c")
 	partitions := makeTestPartitions("topic-1", 6)
 
-	coord := &Coordinator{}
-
 	// Calculate initial assignment
-	initialAssignment := coord.calculateAssignments(consumers1, partitions, nil)
+	initialAssignment := calculateAssignments(consumers1, partitions, nil)
 	initialAssignment = sortAssignments(initialAssignment)
 
 	// Expected initial assignment:
@@ -82,7 +77,7 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 
 	// Scenario: One consumer leaves ("consumer-c")
 	consumers2 := makeTestConsumers("consumer-a", "consumer-b")
-	newAssignment := coord.calculateAssignments(consumers2, partitions, nil)
+	newAssignment := calculateAssignments(consumers2, partitions, nil)
 	newAssignment = sortAssignments(newAssignment)
 
 	// The 2 partitions from consumer-c should be redistributed to a and b.
@@ -104,16 +99,14 @@ func TestCalculateAssignments_Stability(t *testing.T) {
 }
 
 func TestCalculateAssignments_EmptyInputs(t *testing.T) {
-	coord := &Coordinator{}
-
 	// Test with no consumers
-	noConsumers := coord.calculateAssignments(makeTestConsumers(), makeTestPartitions("topic-1", 5), nil)
+	noConsumers := calculateAssignments(makeTestConsumers(), makeTestPartitions("topic-1", 5), nil)
 	if len(noConsumers) != 0 {
 		t.Errorf("Expected empty assignment for no consumers, got %v", noConsumers)
 	}
 
 	// Test with no partitions
-	noPartitions := coord.calculateAssignments(makeTestConsumers("consumer-a"), makeTestPartitions("topic-1", 0), nil)
+	noPartitions := calculateAssignments(makeTestConsumers("consumer-a"), makeTestPartitions("topic-1", 0), nil)
 	if len(noPartitions["consumer-a"]) != 0 {
 		t.Errorf("Expected empty assignment for no partitions, got %v", noPartitions)
 	}
@@ -121,8 +114,6 @@ func TestCalculateAssignments_EmptyInputs(t *testing.T) {
 
 // TestCalculateAssignments_ManualOnly tests the case where all consumers have manual partition assignments.
 func TestCalculateAssignments_ManualOnly(t *testing.T) {
-	coord := &Coordinator{}
-
 	// Setup: 3 consumers with manual assignments
 	consumers := makeTestConsumers("consumer-a", "consumer-b", "consumer-c")
 	partitions := makeTestPartitions("topic-1", 6)
@@ -134,7 +125,7 @@ func TestCalculateAssignments_ManualOnly(t *testing.T) {
 		"consumer-c": {{Topic: "topic-1", Partition: 4}, {Topic: "topic-1", Partition: 5}},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// Verify each consumer gets exactly their manual assignment
@@ -151,14 +142,12 @@ func TestCalculateAssignments_ManualOnly(t *testing.T) {
 
 // TestCalculateAssignments_AutoOnly tests the case where no consumers have manual assignments (original behavior).
 func TestCalculateAssignments_AutoOnly(t *testing.T) {
-	coord := &Coordinator{}
-
 	// Setup: 3 consumers without manual assignments
 	consumers := makeTestConsumers("consumer-a", "consumer-b", "consumer-c")
 	partitions := makeTestPartitions("topic-1", 6)
 
 	// No manual assignments (nil)
-	result := coord.calculateAssignments(consumers, partitions, nil)
+	result := calculateAssignments(consumers, partitions, nil)
 	result = sortAssignments(result)
 
 	// Expected round-robin distribution:
@@ -177,8 +166,6 @@ func TestCalculateAssignments_AutoOnly(t *testing.T) {
 
 // TestCalculateAssignments_Mixed tests the case where some consumers have manual assignments and others don't.
 func TestCalculateAssignments_Mixed(t *testing.T) {
-	coord := &Coordinator{}
-
 	// Setup: 3 consumers, only consumer-a has manual assignment
 	consumers := makeTestConsumers("consumer-a", "consumer-b", "consumer-c")
 	partitions := makeTestPartitions("topic-1", 6)
@@ -189,7 +176,7 @@ func TestCalculateAssignments_Mixed(t *testing.T) {
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 1}},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// consumer-a gets manual partitions (0, 1)
@@ -210,8 +197,6 @@ func TestCalculateAssignments_Mixed(t *testing.T) {
 // TestCalculateAssignments_ManualPartitionExcluded tests that manually assigned partitions
 // are excluded from automatic distribution to other consumers.
 func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
-	coord := &Coordinator{}
-
 	// Setup: 2 consumers, one with manual assignment
 	consumers := makeTestConsumers("consumer-a", "consumer-b")
 	partitions := makeTestPartitions("topic-1", 4)
@@ -221,7 +206,7 @@ func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
 		"consumer-a": {{Topic: "topic-1", Partition: 0}, {Topic: "topic-1", Partition: 2}},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// consumer-a gets manual partitions (0, 2)
@@ -250,8 +235,6 @@ func TestCalculateAssignments_ManualPartitionExcluded(t *testing.T) {
 // TestCalculateAssignments_ManualWithEmptySlice tests that an empty manual assignment slice
 // means the consumer participates in automatic assignment.
 func TestCalculateAssignments_ManualWithEmptySlice(t *testing.T) {
-	coord := &Coordinator{}
-
 	consumers := makeTestConsumers("consumer-a", "consumer-b")
 	partitions := makeTestPartitions("topic-1", 4)
 
@@ -260,7 +243,7 @@ func TestCalculateAssignments_ManualWithEmptySlice(t *testing.T) {
 		"consumer-a": {},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// Both consumers should participate in round-robin
@@ -276,8 +259,6 @@ func TestCalculateAssignments_ManualWithEmptySlice(t *testing.T) {
 
 // TestCalculateAssignments_ManualWithMultipleTopics tests manual assignment across multiple topics.
 func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
-	coord := &Coordinator{}
-
 	consumers := makeTestConsumers("consumer-a", "consumer-b")
 
 	// Create partitions for two topics
@@ -296,7 +277,7 @@ func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
 		},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// consumer-b should get the remaining partitions
@@ -319,8 +300,6 @@ func TestCalculateAssignments_ManualWithMultipleTopics(t *testing.T) {
 // TestCalculateAssignments_AllManualNoRemainingPartitions tests the case where
 // all partitions are manually assigned, leaving nothing for auto-assignment.
 func TestCalculateAssignments_AllManualNoRemainingPartitions(t *testing.T) {
-	coord := &Coordinator{}
-
 	consumers := makeTestConsumers("consumer-a", "consumer-b", "consumer-c")
 	partitions := makeTestPartitions("topic-1", 4)
 
@@ -331,7 +310,7 @@ func TestCalculateAssignments_AllManualNoRemainingPartitions(t *testing.T) {
 		"consumer-b": {{Topic: "topic-1", Partition: 2}, {Topic: "topic-1", Partition: 3}},
 	}
 
-	result := coord.calculateAssignments(consumers, partitions, manualAssignments)
+	result := calculateAssignments(consumers, partitions, manualAssignments)
 	result = sortAssignments(result)
 
 	// consumer-c should have an empty assignment (no partitions left)

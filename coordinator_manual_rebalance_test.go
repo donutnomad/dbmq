@@ -56,7 +56,6 @@ func newTestCoordinator(matchResult map[string][]types.PartitionInfo) *Coordinat
 // 2. A 下线，B 拿到 p0
 // 3. A'（新 UUID）上线，p0 应该回到 A'
 func TestManualAssignment_ConsumerRestart_PartitionShouldReturn(t *testing.T) {
-	coord := &Coordinator{}
 	p := func(topic string, partition uint) types.PartitionInfo {
 		return types.PartitionInfo{Topic: topic, Partition: partition}
 	}
@@ -72,7 +71,7 @@ func TestManualAssignment_ConsumerRestart_PartitionShouldReturn(t *testing.T) {
 	manualForAB := map[string][]types.PartitionInfo{
 		consumerA: {p(topic, 0)},
 	}
-	result1 := coord.calculateAssignments(
+	result1 := calculateAssignments(
 		makeTestConsumers(consumerA, consumerB),
 		partitions,
 		manualForAB,
@@ -86,7 +85,7 @@ func TestManualAssignment_ConsumerRestart_PartitionShouldReturn(t *testing.T) {
 	t.Logf("阶段1 通过: A=%v, B=%v", result1[consumerA], result1[consumerB])
 
 	// ===== 阶段 2: A 下线，只有 B 在线 =====
-	result2 := coord.calculateAssignments(
+	result2 := calculateAssignments(
 		makeTestConsumers(consumerB),
 		partitions,
 		nil,
@@ -100,7 +99,7 @@ func TestManualAssignment_ConsumerRestart_PartitionShouldReturn(t *testing.T) {
 	manualForAPrimeB := map[string][]types.PartitionInfo{
 		consumerAPrime: {p(topic, 0)},
 	}
-	result3 := coord.calculateAssignments(
+	result3 := calculateAssignments(
 		makeTestConsumers(consumerAPrime, consumerB),
 		partitions,
 		manualForAPrimeB,
@@ -132,7 +131,7 @@ func TestIsRebalanceNeeded_NewMemberTriggers(t *testing.T) {
 
 	consumersWithNew := makeTestConsumersWithTopics(topics, "consumer-a-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(groupID, consumersWithNew, "test-topic:1", gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersWithNew, "test-topic:1", gen) {
 		t.Fatal("新成员上线后 isRebalanceNeeded 应该返回 true（成员数量变化 1→2）")
 	}
 }
@@ -156,7 +155,7 @@ func TestIsRebalanceNeeded_SameMemberCount_DifferentID(t *testing.T) {
 
 	consumersReplaced := makeTestConsumersWithTopics(topics, "consumer-a-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(groupID, consumersReplaced, "test-topic:1", gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersReplaced, "test-topic:1", gen) {
 		t.Fatal("成员 ID 变化后 isRebalanceNeeded 应该返回 true")
 	}
 }
@@ -183,7 +182,7 @@ func TestIsRebalanceNeeded_NoChange_ReturnsFalse(t *testing.T) {
 
 	consumers := makeTestConsumersWithTopics(topics, consumerA, consumerB)
 
-	if coord.isRebalanceNeeded(groupID, consumers, "test-topic:1", gen) {
+	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, "test-topic:1", gen) {
 		t.Fatal("没有任何变化时 isRebalanceNeeded 应该返回 false")
 	}
 }
@@ -219,7 +218,7 @@ func TestIsRebalanceNeeded_ManualHashChange_Triggers(t *testing.T) {
 
 	consumers := makeTestConsumersWithTopics(topics, "host:mac:uuid-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(groupID, consumers, topic+":1", gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, topic+":1", gen) {
 		t.Fatal("手动分配展开结果变化时 isRebalanceNeeded 应该返回 true")
 	}
 }
@@ -271,11 +270,11 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	coord := newTestCoordinator(manual1)
 	consumersRound1 := makeTestConsumersWithTopics(topics, consumerA, consumerB)
 
-	if !coord.isRebalanceNeeded(groupID, consumersRound1, partitionHash, gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound1, partitionHash, gen) {
 		t.Fatal("轮次1: snapshot 为空时应该需要 rebalance")
 	}
 
-	assign1 := coord.calculateAssignments(consumersRound1, partitions, manual1)
+	assign1 := calculateAssignments(consumersRound1, partitions, manual1)
 	coord.updateGroupSnapshot(groupID, gen, consumersRound1, partitionHash, manual1)
 
 	if !reflect.DeepEqual(assign1[consumerA], []types.PartitionInfo{p(topic, 0)}) {
@@ -288,11 +287,11 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: nil}
 	consumersRound2 := makeTestConsumersWithTopics(topics, consumerB)
 
-	if !coord.isRebalanceNeeded(groupID, consumersRound2, partitionHash, gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound2, partitionHash, gen) {
 		t.Fatal("轮次2: A 下线后应该需要 rebalance")
 	}
 
-	assign2 := coord.calculateAssignments(consumersRound2, partitions, nil)
+	assign2 := calculateAssignments(consumersRound2, partitions, nil)
 	coord.updateGroupSnapshot(groupID, gen, consumersRound2, partitionHash, nil)
 
 	if !reflect.DeepEqual(assign2[consumerB], []types.PartitionInfo{p(topic, 0)}) {
@@ -306,11 +305,11 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: manual3}
 	consumersRound3 := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(groupID, consumersRound3, partitionHash, gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound3, partitionHash, gen) {
 		t.Fatal("轮次3: A' 上线后应该需要 rebalance")
 	}
 
-	assign3 := coord.calculateAssignments(consumersRound3, partitions, manual3)
+	assign3 := calculateAssignments(consumersRound3, partitions, manual3)
 	coord.updateGroupSnapshot(groupID, gen, consumersRound3, partitionHash, manual3)
 
 	if !reflect.DeepEqual(assign3[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
@@ -322,7 +321,7 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	t.Logf("轮次3: A'=%v, B=%v", assign3[consumerAPrime], assign3[consumerB])
 
 	// ===== 轮次 4: 稳定状态 =====
-	if coord.isRebalanceNeeded(groupID, consumersRound3, partitionHash, gen) {
+	if coord.isRebalanceNeeded(context.Background(), groupID, consumersRound3, partitionHash, gen) {
 		t.Fatal("轮次4: 稳定状态不应该需要 rebalance")
 	}
 	t.Log("轮次4: 稳定状态确认")
@@ -347,7 +346,7 @@ func TestRaceCondition_NewConsumerDuringRebalance(t *testing.T) {
 	var gen uint = 1
 	coord := newTestCoordinator(nil)
 	consumersOnlyB := makeTestConsumersWithTopics(topics, consumerB)
-	assign1 := coord.calculateAssignments(consumersOnlyB, partitions, nil)
+	assign1 := calculateAssignments(consumersOnlyB, partitions, nil)
 	coord.updateGroupSnapshot(groupID, gen, consumersOnlyB, partitionHash, nil)
 	t.Logf("第一次 rebalance: B=%v", assign1[consumerB])
 
@@ -357,11 +356,11 @@ func TestRaceCondition_NewConsumerDuringRebalance(t *testing.T) {
 	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: manual}
 	consumersWithAPrime := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(groupID, consumersWithAPrime, partitionHash, gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersWithAPrime, partitionHash, gen) {
 		t.Fatal("A' 上线后 isRebalanceNeeded 必须返回 true")
 	}
 
-	assign2 := coord.calculateAssignments(consumersWithAPrime, partitions, manual)
+	assign2 := calculateAssignments(consumersWithAPrime, partitions, manual)
 	coord.updateGroupSnapshot(groupID, gen, consumersWithAPrime, partitionHash, manual)
 
 	if !reflect.DeepEqual(assign2[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
@@ -418,11 +417,11 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 	coord := newTestCoordinator(manual)
 	consumers := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	coord.calculateAssignments(consumers, partitions, manual)
+	calculateAssignments(consumers, partitions, manual)
 	coord.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
 
 	// 稳定状态：snapshot.generationID == 5，传入 currentGenerationID == 5
-	if coord.isRebalanceNeeded(groupID, consumers, partitionHash, gen) {
+	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
 		t.Fatal("稳定状态不应该需要 rebalance")
 	}
 
@@ -432,7 +431,7 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 	apiIncrementedGen := gen + 1
 
 	// 🔥 核心验证：协调器检测到 generation_id 不匹配，应该触发 rebalance
-	if !coord.isRebalanceNeeded(groupID, consumers, partitionHash, apiIncrementedGen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, apiIncrementedGen) {
 		t.Fatal("TriggerRebalance API 递增 generation_id 后，isRebalanceNeeded 应该返回 true")
 	}
 	t.Log("✓ 验证通过: API 递增 generation_id 后，协调器能检测到并触发 rebalance")
@@ -440,7 +439,7 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 	// === 阶段 3: 协调器执行 rebalance 后恢复稳定 ===
 	coord.updateGroupSnapshot(groupID, apiIncrementedGen, consumers, partitionHash, manual)
 
-	if coord.isRebalanceNeeded(groupID, consumers, partitionHash, apiIncrementedGen) {
+	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, apiIncrementedGen) {
 		t.Fatal("rebalance 完成后应该恢复稳定状态")
 	}
 	t.Log("✓ 验证通过: rebalance 完成后恢复稳定")
@@ -466,11 +465,11 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 	coord := newTestCoordinator(manual)
 	consumers := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(groupID, consumers, partitionHash, gen) {
+	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
 		t.Fatal("协调器重启后 snapshot 为空，应该需要 rebalance")
 	}
 
-	assign := coord.calculateAssignments(consumers, partitions, manual)
+	assign := calculateAssignments(consumers, partitions, manual)
 	coord.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
 
 	if !reflect.DeepEqual(assign[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
@@ -480,7 +479,7 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 		t.Fatalf("B 不应该有分区，实际: %v", assign[consumerB])
 	}
 
-	if coord.isRebalanceNeeded(groupID, consumers, partitionHash, gen) {
+	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
 		t.Fatal("rebalance 后稳定状态不应该再需要 rebalance")
 	}
 	t.Logf("协调器重启场景通过: A'=%v, B=%v", assign[consumerAPrime], assign[consumerB])

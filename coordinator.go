@@ -2,16 +2,15 @@ package dbmq
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	leader "github.com/donutnomad/dbleader"
 	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
 	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
 	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
@@ -28,18 +27,20 @@ import (
 	"github.com/donutnomad/dbmq/internal/repo/topicrepo"
 	"github.com/donutnomad/dbmq/internal/types"
 	"github.com/donutnomad/dbmq/logger"
+	"github.com/samber/lo"
 )
 
 const (
-	leaderLockPrefix    = "mq_coordinator_leader_lock_" // 全局领导者锁名称前缀
-	lockRefreshInterval = 10 * time.Second              // 锁刷新间隔，10秒
-	cleanupBatchSize    = 1000                          // 每批删除的消息数量
-	cleanupBatchSleep   = 100 * time.Millisecond        // 批处理间的睡眠时间
+	leaderLockPrefix  = "mq_coordinator_leader_lock_" // 全局领导者锁名称前缀
+	leaderLockTable   = "mq_coordinator_leader_lock"  // leader 选举锁表名
+	cleanupBatchSize  = 1000                          // 每批删除的消息数量
+	cleanupBatchSleep = 100 * time.Millisecond        // 批处理间的睡眠时间
 )
 
 // CoordinatorConfig 协调器配置结构
 type CoordinatorConfig struct {
 	LockSuffix             string        // 锁后缀，用于区分不同应用的协调器（必填）
+	NodeAddr               string        // 节点地址标识，用于 leader 选举（必填）
 	DB                     interfaces.DB // 数据库连接
 	HeartbeatTimeout       time.Duration // 消费者心跳超时时间，超过此时间认为消费者已死亡
 	RebalanceInterval      time.Duration // 重新均衡检查间隔
@@ -51,8 +52,7 @@ type CoordinatorConfig struct {
 // Coordinator 管理单个消费组及其重新均衡的协调器
 // 当它是领导者时，还承担消息保留清理的全局责任
 type Coordinator struct {
-	config   CoordinatorConfig // 协调器配置
-	lockName string            // 完整的锁名称（前缀+后缀）
+	config CoordinatorConfig // 协调器配置
 
 	// 依赖（domain 层接口）
 	topicRepo            topic.Repo
@@ -63,32 +63,13 @@ type Coordinator struct {
 	manualAssignmentRepo manualassignment.Repo
 	db                   interfaces.DB
 
-	isLeader atomic.Bool // 原子布尔值，标记是否为领导者
-
-	ctx     context.Context    // 根上下文，控制整个协调器生命周期
-	cancel  context.CancelFunc // 取消函数，用于停止所有goroutine
-	stopped atomic.Bool        // 原子布尔值，标记是否已停止
-
-	wg sync.WaitGroup // 等待组，用于优雅关闭
+	manager *leader.Manager // dbleader 管理器，负责 leader 选举和续约
 
 	mu             sync.Mutex
 	groupSnapshots map[string]*groupSnapshot // 缓存消费组成员和订阅/分区快照
 
 	logger           *slog.Logger
 	rebalancingLocks *groupLocks // 分消费组的重新均衡锁
-
-	leaderSessionMu sync.Mutex
-	leaderSession   *leaderSession
-	leaderSessionID uint64
-}
-
-// leaderSession 表示一次完整的领导者任期（包含持有锁的连接以及派生的上下文）
-type leaderSession struct {
-	id     uint64
-	conn   *sql.Conn
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{} // 当领导者主循环结束时关闭
 }
 
 // groupSnapshot 缓存每次成功重新均衡后的成员订阅和分区元数据
@@ -101,34 +82,33 @@ type groupSnapshot struct {
 
 // NewCoordinator 创建一个新的协调器
 // 拥有全局领导者锁的协调器还将执行系统级任务，如消息清理
-// LockSuffix 是必填参数，用于区分不同应用的协调器
+// LockSuffix 和 NodeAddr 是必填参数
 func NewCoordinator(config CoordinatorConfig) *Coordinator {
 	// 验证必填参数
 	if config.LockSuffix == "" {
 		panic("CoordinatorConfig.LockSuffix is required to distinguish different applications")
 	}
+	if config.NodeAddr == "" {
+		panic("CoordinatorConfig.NodeAddr is required for leader election")
+	}
 
 	// 设置默认值
-	if config.RebalanceInterval == 0 {
+	if config.RebalanceInterval == 0 { // 重平衡间隔
 		config.RebalanceInterval = 10 * time.Second
 	}
-	if config.HeartbeatTimeout == 0 {
+	if config.HeartbeatTimeout == 0 { // 消费心跳时间
 		config.HeartbeatTimeout = 30 * time.Second
 	}
-	if config.DefaultRetentionAge == 0 {
-		// 默认7天保留期
+	if config.DefaultRetentionAge == 0 { // 消息保留: 默认7天保留期
 		config.DefaultRetentionAge = 7 * 24 * time.Hour
 	}
-	if config.RetentionCheckInterval == 0 {
-		// 默认每小时检查一次
+	if config.RetentionCheckInterval == 0 { // 消息保留: 默认每小时检查一次
 		config.RetentionCheckInterval = 1 * time.Hour
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Coordinator{
+
+	lockName := leaderLockPrefix + config.LockSuffix
+	c := &Coordinator{
 		config:               config,
-		lockName:             leaderLockPrefix + config.LockSuffix,
-		ctx:                  ctx,
-		cancel:               cancel,
 		groupSnapshots:       make(map[string]*groupSnapshot),
 		rebalancingLocks:     newGroupLocks(),
 		topicRepo:            topicrepo.New(config.DB),
@@ -139,302 +119,69 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 		manualAssignmentRepo: manualassignmentrepo.New(config.DB),
 		db:                   config.DB,
 	}
+
+	store := leader.NewMysqlLockStore(config.DB, leaderLockTable)
+	c.manager = leader.NewManager(store, lockName, config.NodeAddr, []leader.LeaderTask{&coordinatorTask{c}})
+	return c
 }
 
 func (c *Coordinator) getLogger() *slog.Logger {
 	return logger.GetLogger().With("component", "coordinator", "lock_suffix", c.config.LockSuffix)
 }
 
-// Start 开始协调器的工作，包括领导者选举
-func (c *Coordinator) Start() {
-	// 检查是否已经停止，防止重复启动
-	if c.stopped.Load() {
-		c.getLogger().Debug("Coordinator has already been stopped, cannot start again")
-		return
-	}
-
-	c.wg.Add(1)
-	go c.leaderElectionLoop()
+// coordinatorTask 包装 Coordinator 实现 leader.LeaderTask 接口
+// 避免与 Coordinator.Start() 方法签名冲突
+type coordinatorTask struct {
+	c *Coordinator
 }
 
-// Stop 优雅关闭协调器，支持多次安全调用
+func (t *coordinatorTask) Name() string { return "coordinator" }
+
+// Start 实现 leader.LeaderTask 接口，被 dbleader.Manager 在获得锁后调用
+// 阻塞运行，ctx 取消时优雅退出
+func (t *coordinatorTask) Start(ctx context.Context) error {
+	c := t.c
+	c.getLogger().Debug("[LEADER] Coordinator leader loop started.")
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_ = cronRun(ctx, c.config.RebalanceInterval, 0, func(ctx context.Context) {
+			c.getLogger().Debug("[LEADER] Starting global rebalance scan...")
+			c.scanAndRebalanceAllGroups(ctx)
+		})
+	})
+	wg.Go(func() {
+		_ = cronRun(ctx, c.config.RetentionCheckInterval, 0, func(ctx context.Context) {
+			c.getLogger().Debug("[LEADER] Starting message retention cleanup...")
+			c.runRetentionCleanup(ctx)
+		})
+	})
+	wg.Wait()
+	return ctx.Err()
+}
+
+// Start 开始协调器的工作，包括领导者选举
+func (c *Coordinator) Start() {
+	c.manager.Start()
+}
+
+// Stop 优雅关闭协调器
 func (c *Coordinator) Stop() {
-	// 使用原子操作确保只执行一次停止逻辑
-	if !c.stopped.CompareAndSwap(false, true) {
-		// 已经停止过了，直接返回
-		return
-	}
 	c.getLogger().Debug("Coordinator stopping...")
-
-	// 取消所有goroutine的context
-	c.cancel()
-
-	// 等待所有goroutine完成
-	c.wg.Wait()
-
+	c.manager.Stop()
 	c.getLogger().Debug("Coordinator stopped successfully")
 }
 
 // IsLeader 返回此协调器实例是否为当前领导者
 func (c *Coordinator) IsLeader() bool {
-	return c.isLeader.Load()
+	return c.manager.IsLeader()
 }
 
-// IsStopped 返回此协调器是否已经停止
-func (c *Coordinator) IsStopped() bool {
-	return c.stopped.Load()
-}
-
-// setLeader 设置领导者状态，并在成为领导者时启动主工作循环
-func (c *Coordinator) setLeader(isLeader bool) {
-	wasLeader := c.isLeader.Swap(isLeader)
-	if isLeader && !wasLeader {
-		c.getLogger().Debug("Coordinator became the global leader.")
-	}
-	if !isLeader && wasLeader {
-		c.getLogger().Debug("Coordinator lost global leadership.")
-	}
-}
-
-// releaseConn 使用给定的连接释放MySQL锁，并确保连接被关闭
-func (c *Coordinator) releaseConn(conn *sql.Conn) {
-	if conn == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var released sql.NullInt64
-	if err := conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", c.lockName).Scan(&released); err != nil {
-		c.getLogger().Error("Error releasing global leader lock", "error", err)
-	} else if !released.Valid {
-		c.getLogger().Warn("Release lock returned NULL (lock may not exist)")
-	} else if released.Int64 == 0 {
-		c.getLogger().Warn("Release lock returned 0 (lock not owned by this session)")
-	} else {
-		c.getLogger().Debug("Coordinator released global leader lock.")
-	}
-	if err := conn.Close(); err != nil {
-		c.getLogger().Warn("Error closing leader lock connection", "error", err)
-	}
-}
-
-// ensureLeaderLockHealth 确保当前领导者连接仍然可用（用于刷新期间的健康检查）
-func (c *Coordinator) ensureLeaderLockHealth() {
-	session := c.getLeaderSession()
-	if session == nil {
-		c.getLogger().Warn("Leader flag is set but no leader session is tracked, forcing step-down.")
-		c.relinquishLeadership("missing leader session state")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := session.conn.PingContext(ctx); err != nil {
-		c.getLogger().Warn("Leader lock connection ping failed, relinquishing leadership.", "error", err)
-		c.relinquishLeadership("leader lock connection unhealthy")
-	}
-}
-
-// getLeaderSession 读取当前的领导者任期信息（只读快照）
-func (c *Coordinator) getLeaderSession() *leaderSession {
-	c.leaderSessionMu.Lock()
-	session := c.leaderSession
-	c.leaderSessionMu.Unlock()
-	return session
-}
-
-// startLeaderSession 基于新的 MySQL 连接创建一个领导者任期，并启动主循环
-func (c *Coordinator) startLeaderSession(conn *sql.Conn) {
-	if conn == nil {
-		c.getLogger().Error("Cannot start leader session with nil connection")
-		return
-	}
-	if c.getLeaderSession() != nil {
-		c.relinquishLeadership("replacing existing leader session")
-	}
-	leaderCtx, cancel := context.WithCancel(c.ctx)
-	sessionID := atomic.AddUint64(&c.leaderSessionID, 1)
-	session := &leaderSession{
-		id:     sessionID,
-		conn:   conn,
-		ctx:    leaderCtx,
-		cancel: cancel,
-		done:   make(chan struct{}),
-	}
-	c.leaderSessionMu.Lock()
-	c.leaderSession = session
-	c.leaderSessionMu.Unlock()
-
-	if !c.IsLeader() {
-		c.setLeader(true)
-	}
-	c.getLogger().Debug("Leader session started", "session_id", sessionID)
-
-	c.wg.Add(1)
-	go c.leaderLoop(session)
-}
-
-// relinquishLeadership 终止当前领导者任期，释放锁并更新状态
-func (c *Coordinator) relinquishLeadership(reason string) {
-	c.leaderSessionMu.Lock()
-	session := c.leaderSession
-	if session != nil {
-		c.leaderSession = nil
-	}
-	c.leaderSessionMu.Unlock()
-
-	if session == nil {
-		if c.IsLeader() {
-			c.setLeader(false)
-		}
-		return
-	}
-
-	if reason != "" {
-		c.getLogger().Debug("Relinquishing leadership", "reason", reason, "session_id", session.id)
-	}
-	session.cancel()
-	<-session.done
-	c.releaseConn(session.conn)
-	if c.IsLeader() {
-		c.setLeader(false)
-	}
-}
-
-// leaderElectionLoop 领导者选举循环
-func (c *Coordinator) leaderElectionLoop() {
-	defer c.wg.Done()
-	ticker := time.NewTicker(lockRefreshInterval)
-	defer ticker.Stop()
-
-	// 初始尝试获取领导权
-	c.attemptToBecomeLeader()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			c.relinquishLeadership("leader election loop context cancelled")
-			return
-		case <-ticker.C:
-			c.attemptToBecomeLeader()
-		}
-	}
-}
-
-// attemptToBecomeLeader 尝试成为领导者
-func (c *Coordinator) attemptToBecomeLeader() {
-	if c.IsStopped() {
-		c.getLogger().Debug("Coordinator stopped, not attempting to become leader")
-		return
-	}
-
-	if c.IsLeader() {
-		c.ensureLeaderLockHealth()
-		return
-	}
-
-	sqlDb, err := c.db.DB()
-	if err != nil {
-		c.getLogger().Error("Error getting database connection for leader election", "error", err)
-		return
-	}
-
-	conn, err := sqlDb.Conn(c.ctx)
-	if err != nil {
-		c.getLogger().Error("Error getting dedicated connection for leader election", "error", err)
-		return
-	}
-	// releaseConn 标记用于 defer：只有在确认为领导者时才保留连接，其他场景都立即关闭
-	releaseConn := true
-	defer func() {
-		if releaseConn {
-			if err := conn.Close(); err != nil {
-				c.getLogger().Warn("Error closing leader lock connection", "error", err)
-			}
-		}
-	}()
-
-	var timeout = int(lockRefreshInterval / time.Second / 2)
-	c.getLogger().Debug("Attempting to acquire leader lock", "timeout_seconds", timeout)
-	lockCtx, cancel := context.WithTimeout(c.ctx, time.Duration(timeout+2)*time.Second)
-	defer cancel()
-
-	var result int
-	if err := conn.QueryRowContext(lockCtx, "SELECT GET_LOCK(?, ?)", c.lockName, timeout).Scan(&result); err != nil {
-		c.getLogger().Error("Error executing GET_LOCK", "error", err)
-		return
-	}
-
-	c.getLogger().Debug("GET_LOCK result", "result", result)
-	switch result {
-	case 0:
-		// GET_LOCK 返回0表示锁被其他会话持有；连接会在 defer 中关闭
-		if c.IsLeader() {
-			c.getLogger().Debug("Coordinator lost leadership (unable to acquire lock).")
-			c.relinquishLeadership("GET_LOCK returned 0")
-		}
-	case 1:
-		if c.ctx.Err() != nil {
-			// 如果在获取期间协调器已经退出，立即释放锁，避免遗留
-			c.getLogger().Warn("Acquired leader lock while coordinator is stopping, releasing immediately")
-			releaseConn = false
-			c.releaseConn(conn)
-			return
-		}
-		releaseConn = false // 交给 leaderSession 管理连接生命周期
-		c.getLogger().Debug("Coordinator acquired leadership.")
-		c.startLeaderSession(conn)
-	default:
-		// MySQL 理论上只返回0/1/NULL；这里兜底并关闭连接（defer 会处理）
-		c.getLogger().Warn("Unexpected GET_LOCK result", "result", result)
-	}
-}
-
-// leaderLoop 领导者主工作循环（绑定在特定的领导者任期上）
-// 只要 session.ctx 被取消，循环就会立刻退出，确保不会与新的领导者并行执行
-func (c *Coordinator) leaderLoop(session *leaderSession) {
-	defer c.wg.Done()
-	defer close(session.done)
-
-	c.getLogger().Debug("[LEADER] Coordinator leader loop started.", "session_id", session.id)
-	rebalanceTicker := time.NewTicker(c.config.RebalanceInterval)
-	defer rebalanceTicker.Stop()
-	cleanupTicker := time.NewTicker(c.config.RetentionCheckInterval)
-	defer cleanupTicker.Stop()
-
-	// 启动时立即运行一次，使用领导者上下文，确保中途撤权时可以立刻取消
-	c.scanAndRebalanceAllGroups(session.ctx)
-	c.runRetentionCleanup(session.ctx)
-
-	for {
-		select {
-		case <-session.ctx.Done():
-			c.getLogger().Debug("[LEADER] Leader session context cancelled, exiting loop.", "session_id", session.id)
-			return
-		case <-rebalanceTicker.C:
-			c.getLogger().Debug("[LEADER] Starting global rebalance scan...", "session_id", session.id)
-			c.scanAndRebalanceAllGroups(session.ctx)
-		case <-cleanupTicker.C:
-			c.getLogger().Debug("[LEADER] Starting message retention cleanup...", "session_id", session.id)
-			c.runRetentionCleanup(session.ctx)
-		}
-	}
-}
-
-// runRetentionCleanup 运行消息保留清理
-// 根据Topic配置删除过期的消息
+// runRetentionCleanup 根据Topic配置删除过期的消息
 func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
-	if ctx == nil {
-		ctx = c.ctx
-	}
-	// 使用协调器的context作为父context，确保在协调器停止时能够快速退出
+	// 使用传入的context作为父context，确保在领导权丢失时能够快速退出
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute) // 清理的慷慨超时时间
 	defer cancel()
-
-	// 如果协调器已停止，不执行清理操作
-	if c.IsStopped() {
-		c.getLogger().Debug("Coordinator stopped, skipping message retention cleanup.")
-		return
-	}
 
 	c.getLogger().Debug("Starting message retention cleanup cycle.")
 	startTime := time.Now()
@@ -523,12 +270,8 @@ func (c *Coordinator) runRetentionCleanup(ctx context.Context) {
 	c.getLogger().Debug(fmt.Sprintf("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount))
 }
 
-// scanAndRebalanceAllGroups 由领导者循环驱动，扫描并触发所有消费组的重新均衡
-// parentCtx 为领导者任期派生出来的上下文，可在撤权时立刻取消
+// scanAndRebalanceAllGroups 扫描并触发所有消费组的重新均衡
 func (c *Coordinator) scanAndRebalanceAllGroups(parentCtx context.Context) {
-	if parentCtx == nil {
-		parentCtx = c.ctx
-	}
 	ctx, cancel := context.WithTimeout(parentCtx, 1*time.Minute)
 	defer cancel()
 
@@ -564,9 +307,6 @@ func (c *Coordinator) scanAndRebalanceAllGroups(parentCtx context.Context) {
 // 7. 在事务中持久化新分配
 // 8. 更新内存状态
 func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID string) error {
-	if parentCtx == nil {
-		parentCtx = c.ctx
-	}
 	// ========== 第一步：获取分组锁，确保重新均衡的串行执行 ==========
 	// 尝试获取重新均衡锁。如果已被占用，说明另一个重新均衡循环正在运行。
 	// 这是一个关键的并发控制机制，避免同一消费组的多个重新均衡操作并发执行，
@@ -596,31 +336,29 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		return fmt.Errorf("[LEADER] failed to find active consumers: %w", err)
 	}
 
-	// 记录本轮活跃的消费者ID集合，仅用于日志输出
-	activeConsumerIDs := make(map[string]struct{}, len(activeConsumers))
-	for _, consumer := range activeConsumers {
-		activeConsumerIDs[consumer.ConsumerID] = struct{}{}
-	}
-
+	// 获取消费者的分区数量
 	allPartitions, partitionHash, err := c.getAllPartitionsForConsumers(ctx, activeConsumers)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to get partitions for consumers: %w", err)
 	}
 
 	// 获取当前 generation_id，用于检测外部触发的重新均衡（如 TriggerRebalance API）
-	var currentGenerationID uint
-	if gen, err := c.groupRepo.GetGeneration(ctx, groupID); err != nil {
+	gen, err := c.groupRepo.GetGeneration(ctx, groupID)
+	if err != nil {
 		return fmt.Errorf("[LEADER] failed to get generation: %w", err)
-	} else if gen != nil {
+	}
+
+	var currentGenerationID uint = 0
+	if gen != nil {
 		currentGenerationID = gen.GenerationID
 	}
 
-	if !c.isRebalanceNeeded(groupID, activeConsumers, partitionHash, currentGenerationID) {
+	if !c.isRebalanceNeeded(ctx, groupID, activeConsumers, partitionHash, currentGenerationID) {
 		return nil // 没有变化，无需重新均衡
 	}
 
 	c.getLogger().Info(fmt.Sprintf("[LEADER] Rebalance needed for group '%s'. Old members: %v, New members: %v",
-		groupID, c.getMemberIDs(groupID), mapKeys(activeConsumerIDs)))
+		groupID, c.getMemberIDs(groupID), getHeartbeatConsumerIDs(activeConsumers)))
 
 	// ========== 第四步：开始重新均衡协议 - 代际隔离 ==========
 	// 特殊情况：如果没有活跃消费者，只需原子递增代际并清空所有分配
@@ -634,29 +372,21 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 		return nil
 	}
 
-	// 获取所有消费者的 ID 列表
-	consumerIDs := make([]string, 0, len(activeConsumers))
-	for _, c := range activeConsumers {
-		consumerIDs = append(consumerIDs, c.ConsumerID)
-	}
-
 	// 查询手动分配配置
-	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
+	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, getHeartbeatConsumerIDs(activeConsumers))
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to get manual assignments: %w", err)
 	}
-
 	// 分配分区（传入手动配置）
-	newAssignments := c.calculateAssignments(activeConsumers, allPartitions, manualAssignments)
-
+	newAssignments := calculateAssignments(activeConsumers, allPartitions, manualAssignments)
 	// 原子地递增代际 ID 并持久化分区分配，消除两阶段提交竞态窗口
 	newGenerationID, err := c.groupRepo.IncrementAndUpdateAssignments(ctx, groupID, newAssignments)
 	if err != nil {
 		return fmt.Errorf("[LEADER] failed to increment generation and update assignments: %w", err)
 	}
-
 	// 记录新的消费组快照
 	c.updateGroupSnapshot(groupID, newGenerationID, activeConsumers, partitionHash, manualAssignments)
+
 	c.getLogger().Info(fmt.Sprintf("[LEADER] Rebalance for group '%s' to generation %d completed successfully.", groupID, newGenerationID))
 	return nil
 }
@@ -664,7 +394,7 @@ func (c *Coordinator) rebalanceIfNeeded(parentCtx context.Context, groupID strin
 // isRebalanceNeeded 检查是否需要对指定消费组进行重新均衡。
 // 除了成员集合外，还会比较每个成员的订阅主题、Topic/Partition元数据哈希，
 // 以及 generation_id（检测外部触发的重新均衡，如 TriggerRebalance API）。
-func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, currentGenerationID uint) bool {
+func (c *Coordinator) isRebalanceNeeded(ctx context.Context, groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, currentGenerationID uint) bool {
 	c.mu.Lock()
 	snapshot := c.groupSnapshots[groupID]
 	c.mu.Unlock()
@@ -702,11 +432,7 @@ func (c *Coordinator) isRebalanceNeeded(groupID string, consumers []*heartbeat.H
 	}
 
 	// 检查手动分配规则是否变化
-	ctx := context.Background()
-	consumerIDs := make([]string, 0, len(consumers))
-	for _, c := range consumers {
-		consumerIDs = append(consumerIDs, c.ConsumerID)
-	}
+	consumerIDs := getHeartbeatConsumerIDs(consumers)
 
 	manualAssignments, err := c.manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
 	if err != nil {
@@ -747,66 +473,6 @@ func (c *Coordinator) updateGroupSnapshot(groupID string, generationID uint, con
 	c.mu.Unlock()
 }
 
-func hashSubscribedTopics(topics []string) string {
-	if len(topics) == 0 {
-		return ""
-	}
-	sorted := slices.Clone(topics)
-	sort.Strings(sorted)
-	return strings.Join(sorted, "|")
-}
-
-// hashManualAssignments 计算手动分配规则的哈希值，用于检测规则变化
-func hashManualAssignments(assignments map[string][]types.PartitionInfo) string {
-	if len(assignments) == 0 {
-		return ""
-	}
-
-	// 收集所有条目并排序，确保结果可重现
-	type entry struct {
-		consumerID string
-		partitions []types.PartitionInfo
-	}
-
-	entries := make([]entry, 0, len(assignments))
-	for consumerID, partitions := range assignments {
-		// 克隆并排序分区列表
-		sortedParts := slices.Clone(partitions)
-		utils.SortPartitionsByTopicAndPartition(sortedParts)
-		entries = append(entries, entry{
-			consumerID: consumerID,
-			partitions: sortedParts,
-		})
-	}
-
-	// 按 consumerID 排序
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].consumerID < entries[j].consumerID
-	})
-
-	// 构建哈希字符串
-	var parts []string
-	for _, e := range entries {
-		for _, p := range e.partitions {
-			parts = append(parts, fmt.Sprintf("%s:%s:%d", e.consumerID, p.Topic, p.Partition))
-		}
-	}
-
-	return strings.Join(parts, "|")
-}
-
-func mapKeys(m map[string]struct{}) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // getMemberIDs 获取指定消费组当前缓存的成员ID列表。
 func (c *Coordinator) getMemberIDs(groupID string) []string {
 	c.mu.Lock()
@@ -828,20 +494,14 @@ func (c *Coordinator) getMemberIDs(groupID string) []string {
 // 并返回这些主题的所有分区列表及一个Topic/Partition哈希。
 // 该哈希用于检测Topic扩容或缩容等元数据变化。
 func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumers []*heartbeat.Heartbeat) ([]types.PartitionInfo, string, error) {
-	// 使用map去重，收集所有唯一的订阅主题
-	subscribedTopics := make(map[string]struct{})
+	// 收集Topic
+	var topicNames []string
 	for _, consumer := range consumers {
-		// 将该消费者的所有订阅主题加入到全局集合中
 		for _, topicName := range consumer.SubscribedTopics {
-			subscribedTopics[topicName] = struct{}{}
+			topicNames = append(topicNames, topicName)
 		}
 	}
-
-	// 将主题集合转换为切片，便于数据库查询
-	topicNames := make([]string, 0, len(subscribedTopics))
-	for topicName := range subscribedTopics {
-		topicNames = append(topicNames, topicName)
-	}
+	topicNames = lo.Uniq(topicNames)
 
 	// 从数据库查询主题的元数据信息
 	dbTopics, err := c.topicRepo.FindByNames(ctx, topicNames)
@@ -859,7 +519,7 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 		if partitionHashBuilder.Len() > 0 {
 			partitionHashBuilder.WriteString("|")
 		}
-		fmt.Fprintf(&partitionHashBuilder, "%s:%d", t.Name, t.PartitionCount)
+		_, _ = fmt.Fprintf(&partitionHashBuilder, "%s:%d", t.Name, t.PartitionCount)
 		// 根据主题的分区数量，生成从0到PartitionCount-1的所有分区
 		for i := uint(0); i < t.PartitionCount; i++ {
 			allPartitions = append(allPartitions, types.PartitionInfo{Topic: t.Name, Partition: i})
@@ -871,7 +531,7 @@ func (c *Coordinator) getAllPartitionsForConsumers(ctx context.Context, consumer
 // calculateAssignments 使用稳定的轮询策略在消费者之间分配分区，支持手动分配覆盖。
 // 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销。
 // manualAssignments 参数允许为特定消费者指定固定的分区分配，这些分区不会参与自动轮询分配。
-func (c *Coordinator) calculateAssignments(
+func calculateAssignments(
 	consumers []*heartbeat.Heartbeat,
 	partitions []types.PartitionInfo,
 	manualAssignments map[string][]types.PartitionInfo,
@@ -932,6 +592,60 @@ func (c *Coordinator) calculateAssignments(
 	}
 
 	return assignments
+}
+
+func getHeartbeatConsumerIDs(hs []*heartbeat.Heartbeat) []string {
+	return lo.Map(hs, func(item *heartbeat.Heartbeat, index int) string {
+		return item.ConsumerID
+	})
+}
+
+func hashSubscribedTopics(topics []string) string {
+	if len(topics) == 0 {
+		return ""
+	}
+	sorted := slices.Clone(topics)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "|")
+}
+
+// hashManualAssignments 计算手动分配规则的哈希值，用于检测规则变化
+func hashManualAssignments(assignments map[string][]types.PartitionInfo) string {
+	if len(assignments) == 0 {
+		return ""
+	}
+
+	// 收集所有条目并排序，确保结果可重现
+	type entry struct {
+		consumerID string
+		partitions []types.PartitionInfo
+	}
+
+	entries := make([]entry, 0, len(assignments))
+	for consumerID, partitions := range assignments {
+		// 克隆并排序分区列表
+		sortedParts := slices.Clone(partitions)
+		utils.SortPartitionsByTopicAndPartition(sortedParts)
+		entries = append(entries, entry{
+			consumerID: consumerID,
+			partitions: sortedParts,
+		})
+	}
+
+	// 按 consumerID 排序
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].consumerID < entries[j].consumerID
+	})
+
+	// 构建哈希字符串
+	var parts []string
+	for _, e := range entries {
+		for _, p := range e.partitions {
+			parts = append(parts, fmt.Sprintf("%s:%s:%d", e.consumerID, p.Topic, p.Partition))
+		}
+	}
+
+	return strings.Join(parts, "|")
 }
 
 // CleanupExpiredMessages 执行消息清理，删除过期的消息。

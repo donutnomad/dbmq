@@ -48,6 +48,7 @@ require (
 	github.com/docker/docker v28.5.1+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/donutnomad/dbleader v0.0.0-20260331061149-f6f5f747e59a // indirect
 	github.com/donutnomad/gg v0.0.0-20260110043427-f34493c8cfac // indirect
 	github.com/donutnomad/gogen v0.0.0-20260228064700-5d99da3371a1 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
