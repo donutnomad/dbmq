@@ -1,0 +1,177 @@
+package dbmq
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
+	"github.com/donutnomad/dbmq/internal/domain/manualassignment"
+	"github.com/donutnomad/dbmq/internal/domain/topic"
+	"github.com/donutnomad/dbmq/internal/pkg/utils"
+	"github.com/donutnomad/dbmq/internal/types"
+	"github.com/donutnomad/dbmq/logger"
+	"github.com/samber/lo"
+)
+
+// getAllPartitionsForConsumers 收集活跃消费者订阅的所有唯一主题，
+// 并返回这些主题的所有分区列表及一个Topic/Partition哈希。
+// 该哈希用于检测Topic扩容或缩容等元数据变化。
+func getAllPartitionsForConsumers(ctx context.Context, topicRepo topic.Repo, consumers []*heartbeat.Heartbeat) ([]types.PartitionInfo, string, error) {
+	// 收集Topic
+	var topicNames []string
+	for _, consumer := range consumers {
+		for _, topicName := range consumer.SubscribedTopics {
+			topicNames = append(topicNames, topicName)
+		}
+	}
+	topicNames = lo.Uniq(topicNames)
+
+	// 从数据库查询主题的元数据信息
+	dbTopics, err := topicRepo.FindByNames(ctx, topicNames)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to find topics by name: %w", err)
+	}
+
+	// 为每个主题生成所有分区的完整列表
+	var allPartitions []types.PartitionInfo
+	sort.Slice(dbTopics, func(i, j int) bool {
+		return dbTopics[i].Name < dbTopics[j].Name
+	})
+	var partitionHashBuilder strings.Builder
+	for _, t := range dbTopics {
+		if partitionHashBuilder.Len() > 0 {
+			partitionHashBuilder.WriteString("|")
+		}
+		_, _ = fmt.Fprintf(&partitionHashBuilder, "%s:%d", t.Name, t.PartitionCount)
+		// 根据主题的分区数量，生成从0到PartitionCount-1的所有分区
+		for i := uint(0); i < t.PartitionCount; i++ {
+			allPartitions = append(allPartitions, types.PartitionInfo{Topic: t.Name, Partition: i})
+		}
+	}
+	return allPartitions, partitionHashBuilder.String(), nil
+}
+
+// canRebalance 检查是否需要对指定消费组进行重新均衡。
+// 除了成员集合外，还会比较每个成员的订阅主题、Topic/Partition元数据哈希，
+// 以及 generation_id（检测外部触发的重新均衡，如 TriggerRebalance API）。
+func canRebalance(ctx context.Context, snapshot *groupSnapshot, manualAssignmentRepo manualassignment.Repo, groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, currentGenerationID uint) bool {
+	log := logger.GetLogger().With("component", "coordinator")
+
+	if snapshot == nil {
+		return len(consumers) > 0 || partitionHash != ""
+	}
+
+	// 检查 generation_id 是否被外部修改（如 TriggerRebalance API 递增了 generations 表）
+	if currentGenerationID != snapshot.generationID {
+		log.Info("[LEADER] 检测到 generation_id 被外部修改，强制触发 rebalance",
+			"group_id", groupID, "snapshot_generation", snapshot.generationID, "current_generation", currentGenerationID,
+		)
+		return true
+	}
+
+	// 检查消费者数量变化
+	if len(consumers) != len(snapshot.memberTopics) {
+		return true
+	}
+
+	// 检查订阅 Topic 变化
+	for _, consumer := range consumers {
+		topicHash := hashSubscribedTopics(consumer.SubscribedTopics)
+		if cachedHash, ok := snapshot.memberTopics[consumer.ConsumerID]; !ok || cachedHash != topicHash {
+			return true
+		}
+	}
+
+	// 检查分区变化
+	if snapshot.partitionHash != partitionHash {
+		return true
+	}
+
+	// 检查手动分配规则是否变化
+	consumerIDs := getHeartbeatConsumerIDs(consumers)
+
+	manualAssignments, err := manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
+	if err != nil {
+		// 查询失败时保守触发 rebalance
+		log.Warn("[LEADER] Failed to check manual assignments, triggering rebalance", "error", err)
+		return true
+	}
+
+	currentManualHash := hashManualAssignments(manualAssignments)
+	if snapshot.manualAssignmentHash != currentManualHash {
+		log.Info("[LEADER] 🎯 检测到手动分配规则变化，触发 rebalance",
+			"group_id", groupID, "old_hash", snapshot.manualAssignmentHash, "new_hash", currentManualHash,
+		)
+		return true
+	}
+
+	return false
+}
+
+// calculateAssignments 使用稳定的轮询策略在消费者之间分配分区，支持手动分配覆盖。
+// 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销。
+// manualAssignments 参数允许为特定消费者指定固定的分区分配，这些分区不会参与自动轮询分配。
+func calculateAssignments(
+	consumers []*heartbeat.Heartbeat,
+	partitions []types.PartitionInfo,
+	manualAssignments map[string][]types.PartitionInfo,
+) map[string][]types.PartitionInfo {
+	assignments := make(map[string][]types.PartitionInfo)
+	if len(consumers) == 0 {
+		return assignments
+	}
+
+	// 对消费者按ID排序，确保分配顺序的一致性。这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
+	utils.SortHeartbeatsByID(consumers)
+
+	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
+	utils.SortPartitionsByTopicAndPartition(partitions)
+
+	// Step 1: 处理手动分配的消费者
+	// 记录已被手动分配的分区，避免重复分配
+	manualAssignedPartitions := make(map[types.PartitionInfo]struct{})
+	var autoConsumers []*heartbeat.Heartbeat
+
+	for _, consumer := range consumers {
+		if manualParts, hasManual := manualAssignments[consumer.ConsumerID]; hasManual && len(manualParts) > 0 {
+			// 手动分配：直接分配配置的分区
+			assignments[consumer.ConsumerID] = manualParts
+			for _, p := range manualParts {
+				manualAssignedPartitions[p] = struct{}{}
+			}
+		} else {
+			// 自动模式：加入待分配列表
+			autoConsumers = append(autoConsumers, consumer)
+			assignments[consumer.ConsumerID] = []types.PartitionInfo{}
+		}
+	}
+
+	// Step 2: 从分区池中移除已手动分配的分区
+	var remainingPartitions []types.PartitionInfo
+	for _, p := range partitions {
+		if _, isManual := manualAssignedPartitions[p]; !isManual {
+			remainingPartitions = append(remainingPartitions, p)
+		}
+	}
+
+	// Step 3: 剩余分区按轮询策略分配给自动模式的消费者
+	if len(autoConsumers) > 0 && len(remainingPartitions) > 0 {
+		// 提取自动模式消费者的ID列表
+		autoConsumerIDs := make([]string, 0, len(autoConsumers))
+		for _, consumer := range autoConsumers {
+			autoConsumerIDs = append(autoConsumerIDs, consumer.ConsumerID)
+		}
+
+		// 使用轮询算法分配剩余分区
+		// 第i个分区分配给第(i % 消费者数量)个消费者
+		// 这确保了分区的均匀分布，负载均衡效果最优
+		for i, p := range remainingPartitions {
+			consumerID := autoConsumerIDs[i%len(autoConsumerIDs)]
+			assignments[consumerID] = append(assignments[consumerID], p)
+		}
+	}
+
+	return assignments
+}

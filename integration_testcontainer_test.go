@@ -1629,37 +1629,37 @@ func TestTC_MultiCoordinatorLeaderElection(t *testing.T) {
 		}
 	}()
 
-	// 等待Leader选举
-	time.Sleep(2 * time.Second)
-
 	// 应该只有一个Leader
-	leaderCount := 0
 	var leaderIdx int
-	for i, c := range coordinators {
-		if c.IsLeader() {
-			leaderCount++
-			leaderIdx = i
+	require.Eventually(t, func() bool {
+		leaderCount := 0
+		for i, c := range coordinators {
+			if c.IsLeader() {
+				leaderCount++
+				leaderIdx = i
+			}
 		}
-	}
-	assert.Equal(t, 1, leaderCount, "Should have exactly one leader")
+		return leaderCount == 1
+	}, 10*time.Second, 100*time.Millisecond, "Should have exactly one leader")
 	t.Logf("Leader is coordinator %d", leaderIdx)
 
 	// 停止当前Leader
 	coordinators[leaderIdx].Stop()
 	t.Logf("Stopped leader (coordinator %d)", leaderIdx)
 
-	// 等待新Leader选举
-	time.Sleep(3 * time.Second)
-
 	// 应该有一个新Leader
-	newLeaderCount := 0
-	for i, c := range coordinators {
-		if i != leaderIdx && c.IsLeader() {
-			newLeaderCount++
-			t.Logf("New leader is coordinator %d", i)
+	var newLeaderIdx int
+	require.Eventually(t, func() bool {
+		newLeaderCount := 0
+		for i, c := range coordinators {
+			if i != leaderIdx && c.IsLeader() {
+				newLeaderCount++
+				newLeaderIdx = i
+			}
 		}
-	}
-	assert.Equal(t, 1, newLeaderCount, "Should have a new leader after old leader stops")
+		return newLeaderCount == 1
+	}, 25*time.Second, 100*time.Millisecond, "Should have a new leader after old leader stops")
+	t.Logf("New leader is coordinator %d", newLeaderIdx)
 }
 
 // =============================================================================

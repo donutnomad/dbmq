@@ -75,6 +75,8 @@ github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4
 github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
 github.com/donutnomad/dbleader v0.0.0-20260331061149-f6f5f747e59a h1:cCATBMn8ue/r6NN/gQzkVkgwYtQb9NDOQ2G5njT2fbI=
 github.com/donutnomad/dbleader v0.0.0-20260331061149-f6f5f747e59a/go.mod h1:T8mBds8piD2vDwB5ADRmKnjNEceNZt2u1mjPayWRzdI=
+github.com/donutnomad/dbleader v0.0.0-20260501020519-6cd63dc1eb42 h1:vwWFucrRhwMCLMQ4bCN8HPtq0n4FWp3dVXvPDIGAF7o=
+github.com/donutnomad/dbleader v0.0.0-20260501020519-6cd63dc1eb42/go.mod h1:f057E0YDBVGbRKOSfOZQnCUM5FVgJ+OwFsOTiiHoUJ0=
 github.com/donutnomad/eths v0.1.29 h1:NyGPewMm0zjgFvHI6SnN9ekaiWq5QO/NG4LyCSyqo8M=
 github.com/donutnomad/eths v0.1.29/go.mod h1:GTgV5ro4U1z8c9y1kM2Sf9i4tCfkHeFpuUsBMNIae2M=
 github.com/donutnomad/gg v0.0.0-20260110043427-f34493c8cfac h1:NC/7o24o4diPGRtqlqfv0siJRB199P4PbkBH1dyam1A=
@@ -85,6 +87,8 @@ github.com/donutnomad/gogen v0.0.0-20260205050133-0e5ac0c283d7 h1:LOVfuOKFqtqOi9
 github.com/donutnomad/gogen v0.0.0-20260205050133-0e5ac0c283d7/go.mod h1:pg2xdJzku0ZYZE5fAdsyG3bvpUhXAKf8GwuK3zh5yJg=
 github.com/donutnomad/gogen v0.0.0-20260228064700-5d99da3371a1 h1:yfJOn5QMfcjIyjUP80yQxihzBsX7n2xPccvl4avbdVQ=
 github.com/donutnomad/gogen v0.0.0-20260228064700-5d99da3371a1/go.mod h1:pg2xdJzku0ZYZE5fAdsyG3bvpUhXAKf8GwuK3zh5yJg=
+github.com/donutnomad/gt v0.0.0-20260422030153-7cd543b671e7 h1:g9J3a4SbfC+T8WmqlL2K8ah4qEMUK82Mt5G1wN/ZNWk=
+github.com/donutnomad/gt v0.0.0-20260422030153-7cd543b671e7/go.mod h1:WB1QspkFeDpCHZ4oJrk3myQVCryxvc/0estvci/AHhQ=
 github.com/donutnomad/solana-web3 v0.0.0-20250313072913-99732fd085a1 h1:VZpfIVPczawQQBak3CZs+hMRaH+pc6T/6dWe2wlw81U=
 github.com/donutnomad/solana-web3 v0.0.0-20250313072913-99732fd085a1/go.mod h1:xiLdph2USiAq2zV4a8HiADyZWbzhccz3MTdDVFdHVdI=
 github.com/donutnomad/xchain v0.0.0-20260104030312-0248f6195579 h1:qfnuFjcl7OLzupD+WjvAQFhMUJEkpDPlG/9ZUb+7Rww=

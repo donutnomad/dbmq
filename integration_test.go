@@ -4,6 +4,7 @@ package dbmq
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"testing"
@@ -15,6 +16,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func integrationJSONValue(s string) []byte {
+	b, _ := json.Marshal(s)
+	return b
+}
 
 func TestIntegration_FullFlow(t *testing.T) {
 	dbClient, redisClient := setupIntegrationTest(t)
@@ -56,7 +62,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	testKey := "test-key"
-	testValue := []byte("hello world")
+	testValue := integrationJSONValue("hello world")
 	sentMsg := &ProducerMessage{
 		Topic: topicReq.Name,
 		Key:   testKey,
@@ -231,24 +237,25 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
 			Key:   msg.key,
-			Value: []byte(msg.value),
+			Value: integrationJSONValue(msg.value),
 		})
 		require.NoError(t, err)
 	}
 
 	// 5. 消费者轮询消息（不依赖Redis通知）
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	var allMessages []ConsumerMessage
 	for _, consumer := range consumers {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		receivedMsgs, err := consumer.Poll(ctx, 5*time.Second)
+		cancel()
 		require.NoError(t, err)
 		allMessages = append(allMessages, receivedMsgs...)
 
 		if len(receivedMsgs) > 0 {
 			consumer.Acknowledge(receivedMsgs...)
-			err = consumer.CommitSync(ctx)
+			commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = consumer.CommitSync(commitCtx)
+			cancel()
 			require.NoError(t, err)
 		}
 	}
@@ -321,7 +328,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 		_, err := producer.Send(context.Background(), ProducerMessage{
 			Topic: topicReq.Name,
 			Key:   fmt.Sprintf("key-%d", i),
-			Value: []byte(fmt.Sprintf("value-%d", i)),
+			Value: integrationJSONValue(fmt.Sprintf("value-%d", i)),
 		})
 		require.NoError(t, err)
 	}
@@ -427,7 +434,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// Send old messages
 	for i := 0; i < 2; i++ {
-		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: []byte("old")})
+		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: integrationJSONValue("old")})
 		require.NoError(t, err)
 		// Manually update timestamp to be older than retention period
 		err = dbClient.Model(&messagerepo.MessagePO{}).Where("id = ?", result.Offset).Update("created_at", time.Now().Add(-1*time.Hour)).Error
@@ -437,7 +444,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// Send new messages
 	for i := 0; i < 2; i++ {
-		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: []byte("new")})
+		result, err := producer.Send(context.Background(), ProducerMessage{Topic: topicReq.Name, Value: integrationJSONValue("new")})
 		require.NoError(t, err)
 		newMsgIDs = append(newMsgIDs, result.Offset)
 	}
@@ -556,7 +563,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 	_, err = producer.Send(context.Background(), ProducerMessage{
 		Topic: topicReq.Name,
 		Key:   "test-key",
-		Value: []byte("test-value"),
+		Value: integrationJSONValue("test-value"),
 	})
 	require.NoError(t, err)
 
@@ -575,7 +582,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 
 	if len(receivedMsgs) > 0 {
 		assert.Equal(t, "test-key", receivedMsgs[0].Key)
-		assert.Equal(t, "test-value", string(receivedMsgs[0].Value))
+		assert.Equal(t, integrationJSONValue("test-value"), receivedMsgs[0].Value)
 
 		// 提交偏移量
 		consumer.Acknowledge(receivedMsgs...)
@@ -658,9 +665,7 @@ func TestIntegration_ConsumerInitialization(t *testing.T) {
 		"Generation ID should be set by coordinator")
 
 	// 关键断言 4: 验证有分区分配
-	var partitions []heartbeatrepo.PartitionInfo
-	err = hb.AssignedPartitions.Scan(&partitions)
-	require.NoError(t, err)
+	partitions := []heartbeatrepo.PartitionInfo(hb.AssignedPartitions)
 	assert.NotEmpty(t, partitions, "Consumer should have partition assignments")
 }
 
@@ -743,9 +748,7 @@ func TestIntegration_ConcurrentConsumerInitialization(t *testing.T) {
 			"concurrent-test-group", consumer.ID()).First(&hb).Error
 		require.NoError(t, err)
 
-		var partitions []heartbeatrepo.PartitionInfo
-		err = hb.AssignedPartitions.Scan(&partitions)
-		require.NoError(t, err)
+		partitions := []heartbeatrepo.PartitionInfo(hb.AssignedPartitions)
 
 		for _, p := range partitions {
 			key := fmt.Sprintf("%s-%d", p.Topic, p.Partition)

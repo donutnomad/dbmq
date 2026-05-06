@@ -14,7 +14,7 @@ import (
 	"gorm.io/datatypes"
 )
 
-// TestTC_OfflineFilterExtended 验证 GetConsumerGroupExtended 过滤离线超过1小时的成员
+// TestTC_OfflineFilterExtended 验证 GetConsumerGroupExtended 只返回在线成员
 func TestTC_OfflineFilterExtended(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
@@ -26,11 +26,7 @@ func TestTC_OfflineFilterExtended(t *testing.T) {
 	// 插入 generation 记录
 	db.Exec("INSERT INTO mq_consumer_group_generations (group_id, generation_id, protocol_type) VALUES (?, 1, 'consumer')", groupID)
 
-	// 准备4种消费者：
-	// 1. 在线消费者
-	// 2. 离线不到1小时的消费者（应该返回）
-	// 3. 刚好离线1小时的消费者（应该返回，边界）
-	// 4. 离线超过1小时的消费者（不应该返回）
+	// 准备4种消费者：在线消费者会返回，离线消费者会过滤。
 	offlineAt30m := now.Add(-30 * time.Minute)
 	offlineAt60m := now.Add(-60 * time.Minute)
 	offlineAt2h := now.Add(-2 * time.Hour)
@@ -87,20 +83,20 @@ func TestTC_OfflineFilterExtended(t *testing.T) {
 	extended, err := consumerQuery.GetConsumerGroupExtended(ctx, groupID)
 	require.NoError(t, err)
 
-	// 验证：应该返回3个成员（在线 + 离线30m + 离线60m），不返回离线2h的
+	// 验证：只返回在线消费者
 	memberIDs := make([]string, len(extended.Members))
 	for i, m := range extended.Members {
 		memberIDs[i] = m.ConsumerID
 	}
 
-	assert.Len(t, extended.Members, 3, "应该返回3个成员，过滤掉离线超过1小时的")
+	assert.Len(t, extended.Members, 1, "应该只返回在线成员")
 	assert.Contains(t, memberIDs, "consumer-online", "在线消费者应该被返回")
-	assert.Contains(t, memberIDs, "consumer-offline-30m", "离线30分钟的消费者应该被返回")
-	assert.Contains(t, memberIDs, "consumer-offline-60m", "离线刚好60分钟的消费者应该被返回（边界）")
-	assert.NotContains(t, memberIDs, "consumer-offline-2h", "离线超过1小时的消费者不应该被返回")
+	assert.NotContains(t, memberIDs, "consumer-offline-30m", "离线消费者不应该被返回")
+	assert.NotContains(t, memberIDs, "consumer-offline-60m", "离线消费者不应该被返回")
+	assert.NotContains(t, memberIDs, "consumer-offline-2h", "离线消费者不应该被返回")
 }
 
-// TestTC_OfflineFilterMetrics 验证 GetConsumerGroupMetrics 过滤离线超过1小时的成员
+// TestTC_OfflineFilterMetrics 验证 GetConsumerGroupMetrics 只返回在线成员
 func TestTC_OfflineFilterMetrics(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
@@ -163,16 +159,16 @@ func TestTC_OfflineFilterMetrics(t *testing.T) {
 	metrics, err := consumerQuery.GetConsumerGroupMetrics(ctx, groupID)
 	require.NoError(t, err)
 
-	// 验证：应该返回2个成员（在线 + 离线30m），不返回离线3h的
+	// 验证：只返回在线消费者
 	memberIDs := make([]string, len(metrics.Members))
 	for i, m := range metrics.Members {
 		memberIDs[i] = m.ConsumerID
 	}
 
-	assert.Len(t, metrics.Members, 2, "应该返回2个成员，过滤掉离线超过1小时的")
+	assert.Len(t, metrics.Members, 1, "应该只返回在线成员")
 	assert.Contains(t, memberIDs, "metrics-consumer-online", "在线消费者应该被返回")
-	assert.Contains(t, memberIDs, "metrics-consumer-offline-30m", "离线30分钟的消费者应该被返回")
-	assert.NotContains(t, memberIDs, "metrics-consumer-offline-3h", "离线超过1小时的消费者不应该被返回")
+	assert.NotContains(t, memberIDs, "metrics-consumer-offline-30m", "离线消费者不应该被返回")
+	assert.NotContains(t, memberIDs, "metrics-consumer-offline-3h", "离线消费者不应该被返回")
 }
 
 // TestTC_OfflineFilterNotAffectOnlineWithNilOfflineAt 验证 offline=false 且 offline_at=nil 的消费者不受影响
@@ -213,7 +209,7 @@ func TestTC_OfflineFilterNotAffectOnlineWithNilOfflineAt(t *testing.T) {
 	assert.Equal(t, "online-nil-offlineat", extended.Members[0].ConsumerID)
 }
 
-// TestTC_OfflineFilterAllOfflineOver1Hour 验证所有成员都离线超过1小时时返回空列表
+// TestTC_OfflineFilterAllOfflineOver1Hour 验证所有成员都离线时返回空列表
 func TestTC_OfflineFilterAllOfflineOver1Hour(t *testing.T) {
 	cleanupTables(t)
 	ctx := context.Background()
@@ -259,11 +255,11 @@ func TestTC_OfflineFilterAllOfflineOver1Hour(t *testing.T) {
 	// 验证 Extended
 	extended, err := consumerQuery.GetConsumerGroupExtended(ctx, groupID)
 	require.NoError(t, err)
-	assert.Empty(t, extended.Members, "所有成员离线超过1小时时应该返回空列表")
+	assert.Empty(t, extended.Members, "所有成员离线时应该返回空列表")
 
 	// 验证 Metrics
 	metrics, err := consumerQuery.GetConsumerGroupMetrics(ctx, groupID)
 	require.NoError(t, err)
-	assert.Empty(t, metrics.Members, "所有成员离线超过1小时时 Members 应该为空")
+	assert.Empty(t, metrics.Members, "所有成员离线时 Members 应该为空")
 	assert.Equal(t, "Dead", metrics.State, "所有成员都被过滤后状态应为 Dead")
 }

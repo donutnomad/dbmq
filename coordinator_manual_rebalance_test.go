@@ -2,12 +2,16 @@ package dbmq
 
 import (
 	"context"
-	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
 	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
 	"github.com/donutnomad/dbmq/internal/domain/manualassignment"
+	"github.com/donutnomad/dbmq/internal/domain/message"
+	"github.com/donutnomad/dbmq/internal/domain/topic"
 	"github.com/donutnomad/dbmq/internal/types"
 )
 
@@ -42,13 +46,147 @@ func makeTestConsumersWithTopics(topics []string, ids ...string) []*heartbeat.He
 	return consumers
 }
 
-// newTestCoordinator 创建带 mock repo 的测试协调器
-func newTestCoordinator(matchResult map[string][]types.PartitionInfo) *Coordinator {
-	return &Coordinator{
-		groupSnapshots:       make(map[string]*groupSnapshot),
-		manualAssignmentRepo: &mockManualAssignmentRepo{matchResult: matchResult},
-		logger:               slog.Default(),
+// newTestSnapshotInfo 创建带 mock repo 的测试快照状态
+func newTestSnapshotInfo(matchResult map[string][]types.PartitionInfo) (*snapshotInfo, *mockManualAssignmentRepo) {
+	repo := &mockManualAssignmentRepo{matchResult: matchResult}
+	return newSnapshotInfo(), repo
+}
+
+func testCanRebalance(ctx context.Context, snapshots *snapshotInfo, repo *mockManualAssignmentRepo, groupID string, consumers []*heartbeat.Heartbeat, partitionHash string, currentGenerationID uint) bool {
+	snapshots.mu.Lock()
+	snapshot := snapshots.groupSnapshots[groupID]
+	snapshots.mu.Unlock()
+
+	return canRebalance(ctx, snapshot, repo, groupID, consumers, partitionHash, currentGenerationID)
+}
+
+type rebalanceHeartbeatRepo struct {
+	active []*heartbeat.Heartbeat
+}
+
+func (m *rebalanceHeartbeatRepo) Get(_ context.Context, _, _ string) (*heartbeat.Heartbeat, error) {
+	return nil, nil
+}
+
+func (m *rebalanceHeartbeatRepo) Upsert(_ context.Context, _, _ string, _ []string) error {
+	return nil
+}
+
+func (m *rebalanceHeartbeatRepo) MarkOffline(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *rebalanceHeartbeatRepo) Delete(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *rebalanceHeartbeatRepo) FindActive(_ context.Context, _ string, _ time.Duration) ([]*heartbeat.Heartbeat, error) {
+	return m.active, nil
+}
+
+func (m *rebalanceHeartbeatRepo) FindAll(_ context.Context, _ string, _ time.Duration) ([]*heartbeat.Heartbeat, error) {
+	return m.active, nil
+}
+
+type rebalanceTopicRepo struct {
+	topics []*topic.Topic
+}
+
+func (m *rebalanceTopicRepo) Get(_ context.Context, topicName string) (*topic.Topic, error) {
+	for _, topicInfo := range m.topics {
+		if topicInfo.Name == topicName {
+			return topicInfo, nil
+		}
 	}
+	return nil, nil
+}
+
+func (m *rebalanceTopicRepo) GetAll(_ context.Context) ([]*topic.Topic, error) {
+	return m.topics, nil
+}
+
+func (m *rebalanceTopicRepo) FindByNames(_ context.Context, topicNames []string) ([]*topic.Topic, error) {
+	nameSet := make(map[string]struct{}, len(topicNames))
+	for _, name := range topicNames {
+		nameSet[name] = struct{}{}
+	}
+	var result []*topic.Topic
+	for _, topicInfo := range m.topics {
+		if _, ok := nameSet[topicInfo.Name]; ok {
+			result = append(result, topicInfo)
+		}
+	}
+	return result, nil
+}
+
+type rebalanceGroupRepo struct {
+	generation uint
+	increments int
+}
+
+func (m *rebalanceGroupRepo) GetGeneration(_ context.Context, groupID string) (*consumergroup.Generation, error) {
+	return &consumergroup.Generation{GroupID: groupID, GenerationID: m.generation}, nil
+}
+
+func (m *rebalanceGroupRepo) IncrementGenerationID(_ context.Context, _ string) (uint, error) {
+	m.generation++
+	m.increments++
+	return m.generation, nil
+}
+
+func (m *rebalanceGroupRepo) IncrementAndUpdateAssignments(_ context.Context, _ string, _ map[string][]types.PartitionInfo) (uint, error) {
+	m.generation++
+	m.increments++
+	return m.generation, nil
+}
+
+func (m *rebalanceGroupRepo) FindAllActiveGroups(_ context.Context, _ time.Duration) ([]string, error) {
+	return []string{"test-group"}, nil
+}
+
+func (m *rebalanceGroupRepo) FindAllGroups(_ context.Context) ([]string, error) {
+	return []string{"test-group"}, nil
+}
+
+type rebalanceProgressRepo struct{}
+
+func (rebalanceProgressRepo) GetCommittedOffsets(context.Context, string, []types.PartitionInfo) ([]*consumerprogress.Progress, error) {
+	return nil, nil
+}
+func (rebalanceProgressRepo) CommitOffset(context.Context, string, uint, types.PartitionInfo, int64) error {
+	return nil
+}
+func (rebalanceProgressRepo) BatchCommitOffsets(context.Context, string, uint, map[types.PartitionInfo]int64) error {
+	return nil
+}
+func (rebalanceProgressRepo) BatchCommitOffsetsWithWatermark(context.Context, string, uint, map[types.PartitionInfo]consumerprogress.ProgressWithWatermark) error {
+	return nil
+}
+func (rebalanceProgressRepo) CommitWithSubscriptionRegistration(context.Context, string, uint, types.PartitionInfo, int64, int64) error {
+	return nil
+}
+func (rebalanceProgressRepo) GetLowWatermarks(context.Context) (map[types.PartitionInfo]int64, error) {
+	return nil, nil
+}
+
+type rebalanceMessageRepo struct{}
+
+func (rebalanceMessageRepo) CreateBatch(context.Context, []*message.Message) error { return nil }
+func (rebalanceMessageRepo) Fetch(context.Context, string, uint, int64, int) ([]*message.Message, error) {
+	return nil, nil
+}
+func (rebalanceMessageRepo) FetchBatch(context.Context, []message.FetchRequest) ([]*message.Message, error) {
+	return nil, nil
+}
+func (rebalanceMessageRepo) GetLatestID(context.Context, string, uint) (int64, error) { return 0, nil }
+func (rebalanceMessageRepo) GetLatestIDs(context.Context, []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
+	return nil, nil
+}
+func (rebalanceMessageRepo) DeleteConsumed(context.Context, string, uint, int64, time.Time, int) (int64, error) {
+	return 0, nil
+}
+func (rebalanceMessageRepo) DeleteExpired(context.Context, string, uint, time.Time, int) (int64, error) {
+	return 0, nil
 }
 
 // TestManualAssignment_ConsumerRestart_PartitionShouldReturn 模拟场景：
@@ -115,12 +253,12 @@ func TestManualAssignment_ConsumerRestart_PartitionShouldReturn(t *testing.T) {
 
 // TestIsRebalanceNeeded_NewMemberTriggers 新成员上线时应该触发 rebalance
 func TestIsRebalanceNeeded_NewMemberTriggers(t *testing.T) {
-	coord := newTestCoordinator(nil)
+	snapshots, repo := newTestSnapshotInfo(nil)
 	groupID := "test-group"
 	topics := []string{"test-topic"}
 	var gen uint = 10
 
-	coord.groupSnapshots[groupID] = &groupSnapshot{
+	snapshots.groupSnapshots[groupID] = &groupSnapshot{
 		generationID: gen,
 		memberTopics: map[string]string{
 			"consumer-b": hashSubscribedTopics(topics),
@@ -131,19 +269,19 @@ func TestIsRebalanceNeeded_NewMemberTriggers(t *testing.T) {
 
 	consumersWithNew := makeTestConsumersWithTopics(topics, "consumer-a-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersWithNew, "test-topic:1", gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersWithNew, "test-topic:1", gen) {
 		t.Fatal("新成员上线后 isRebalanceNeeded 应该返回 true（成员数量变化 1→2）")
 	}
 }
 
 // TestIsRebalanceNeeded_SameMemberCount_DifferentID 成员数相同但 ID 不同时应触发
 func TestIsRebalanceNeeded_SameMemberCount_DifferentID(t *testing.T) {
-	coord := newTestCoordinator(nil)
+	snapshots, repo := newTestSnapshotInfo(nil)
 	groupID := "test-group"
 	topics := []string{"test-topic"}
 	var gen uint = 10
 
-	coord.groupSnapshots[groupID] = &groupSnapshot{
+	snapshots.groupSnapshots[groupID] = &groupSnapshot{
 		generationID: gen,
 		memberTopics: map[string]string{
 			"consumer-a-old": hashSubscribedTopics(topics),
@@ -155,14 +293,14 @@ func TestIsRebalanceNeeded_SameMemberCount_DifferentID(t *testing.T) {
 
 	consumersReplaced := makeTestConsumersWithTopics(topics, "consumer-a-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersReplaced, "test-topic:1", gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersReplaced, "test-topic:1", gen) {
 		t.Fatal("成员 ID 变化后 isRebalanceNeeded 应该返回 true")
 	}
 }
 
 // TestIsRebalanceNeeded_NoChange_ReturnsFalse 无变化时不应触发
 func TestIsRebalanceNeeded_NoChange_ReturnsFalse(t *testing.T) {
-	coord := newTestCoordinator(nil)
+	snapshots, repo := newTestSnapshotInfo(nil)
 	groupID := "test-group"
 	topics := []string{"test-topic"}
 	var gen uint = 10
@@ -170,7 +308,7 @@ func TestIsRebalanceNeeded_NoChange_ReturnsFalse(t *testing.T) {
 	consumerA := "consumer-a"
 	consumerB := "consumer-b"
 
-	coord.groupSnapshots[groupID] = &groupSnapshot{
+	snapshots.groupSnapshots[groupID] = &groupSnapshot{
 		generationID: gen,
 		memberTopics: map[string]string{
 			consumerA: hashSubscribedTopics(topics),
@@ -182,8 +320,46 @@ func TestIsRebalanceNeeded_NoChange_ReturnsFalse(t *testing.T) {
 
 	consumers := makeTestConsumersWithTopics(topics, consumerA, consumerB)
 
-	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, "test-topic:1", gen) {
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, "test-topic:1", gen) {
 		t.Fatal("没有任何变化时 isRebalanceNeeded 应该返回 false")
+	}
+}
+
+func TestCoordinatorTask_TryRebalance_StableSnapshotSkipsGenerationIncrement(t *testing.T) {
+	groupID := "test-group"
+	topicName := "test-topic"
+	consumers := makeTestConsumersWithTopics([]string{topicName}, "consumer-a")
+	groupRepo := &rebalanceGroupRepo{}
+
+	task := &coordinatorTask{
+		cfg: &CoordinatorConfig{
+			HeartbeatTimeout: 30 * time.Second,
+			RebalanceTimeout: time.Second,
+		},
+		rebalancingLocks: newGroupLocks(),
+		snapshotInfo:     newSnapshotInfo(),
+		repos: repos{
+			topicRepo:            &rebalanceTopicRepo{topics: []*topic.Topic{{Name: topicName, PartitionCount: 1}}},
+			messageRepo:          rebalanceMessageRepo{},
+			heartbeatRepo:        &rebalanceHeartbeatRepo{active: consumers},
+			groupRepo:            groupRepo,
+			progressRepo:         rebalanceProgressRepo{},
+			manualAssignmentRepo: &mockManualAssignmentRepo{},
+		},
+	}
+
+	if err := task.tryRebalance(context.Background(), groupID); err != nil {
+		t.Fatalf("第一次 rebalance 失败: %v", err)
+	}
+	if groupRepo.increments != 1 {
+		t.Fatalf("第一次 rebalance 应该递增一次 generation，实际: %d", groupRepo.increments)
+	}
+
+	if err := task.tryRebalance(context.Background(), groupID); err != nil {
+		t.Fatalf("稳定状态 rebalance 检查失败: %v", err)
+	}
+	if groupRepo.increments != 1 {
+		t.Fatalf("稳定状态不应该再次递增 generation，实际: %d", groupRepo.increments)
 	}
 }
 
@@ -202,11 +378,11 @@ func TestIsRebalanceNeeded_ManualHashChange_Triggers(t *testing.T) {
 		"host:mac:uuid-new": {p0},
 	}
 
-	coord := newTestCoordinator(newManual)
+	snapshots, repo := newTestSnapshotInfo(newManual)
 	groupID := "test-group"
 	topics := []string{topic}
 
-	coord.groupSnapshots[groupID] = &groupSnapshot{
+	snapshots.groupSnapshots[groupID] = &groupSnapshot{
 		generationID: gen,
 		memberTopics: map[string]string{
 			"host:mac:uuid-new": hashSubscribedTopics(topics),
@@ -218,7 +394,7 @@ func TestIsRebalanceNeeded_ManualHashChange_Triggers(t *testing.T) {
 
 	consumers := makeTestConsumersWithTopics(topics, "host:mac:uuid-new", "consumer-b")
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, topic+":1", gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, topic+":1", gen) {
 		t.Fatal("手动分配展开结果变化时 isRebalanceNeeded 应该返回 true")
 	}
 }
@@ -267,15 +443,15 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	// ===== 轮次 1: A 和 B 都在线，手动分配 p0 给 A =====
 	var gen uint = 1
 	manual1 := map[string][]types.PartitionInfo{consumerA: {p(topic, 0)}}
-	coord := newTestCoordinator(manual1)
+	snapshots, repo := newTestSnapshotInfo(manual1)
 	consumersRound1 := makeTestConsumersWithTopics(topics, consumerA, consumerB)
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound1, partitionHash, gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersRound1, partitionHash, gen) {
 		t.Fatal("轮次1: snapshot 为空时应该需要 rebalance")
 	}
 
 	assign1 := calculateAssignments(consumersRound1, partitions, manual1)
-	coord.updateGroupSnapshot(groupID, gen, consumersRound1, partitionHash, manual1)
+	snapshots.updateGroupSnapshot(groupID, gen, consumersRound1, partitionHash, manual1)
 
 	if !reflect.DeepEqual(assign1[consumerA], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("轮次1: A 应该得到 p0，实际: %v", assign1)
@@ -284,15 +460,15 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 
 	// ===== 轮次 2: A 下线，只有 B =====
 	gen = 2
-	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: nil}
+	repo.matchResult = nil
 	consumersRound2 := makeTestConsumersWithTopics(topics, consumerB)
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound2, partitionHash, gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersRound2, partitionHash, gen) {
 		t.Fatal("轮次2: A 下线后应该需要 rebalance")
 	}
 
 	assign2 := calculateAssignments(consumersRound2, partitions, nil)
-	coord.updateGroupSnapshot(groupID, gen, consumersRound2, partitionHash, nil)
+	snapshots.updateGroupSnapshot(groupID, gen, consumersRound2, partitionHash, nil)
 
 	if !reflect.DeepEqual(assign2[consumerB], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("轮次2: B 应该自动分配得到 p0，实际: %v", assign2)
@@ -302,15 +478,15 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	// ===== 轮次 3: A'（新 UUID）上线 =====
 	gen = 3
 	manual3 := map[string][]types.PartitionInfo{consumerAPrime: {p(topic, 0)}}
-	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: manual3}
+	repo.matchResult = manual3
 	consumersRound3 := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersRound3, partitionHash, gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersRound3, partitionHash, gen) {
 		t.Fatal("轮次3: A' 上线后应该需要 rebalance")
 	}
 
 	assign3 := calculateAssignments(consumersRound3, partitions, manual3)
-	coord.updateGroupSnapshot(groupID, gen, consumersRound3, partitionHash, manual3)
+	snapshots.updateGroupSnapshot(groupID, gen, consumersRound3, partitionHash, manual3)
 
 	if !reflect.DeepEqual(assign3[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("轮次3: A' 应该得到 p0，实际: %v", assign3[consumerAPrime])
@@ -321,7 +497,7 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	t.Logf("轮次3: A'=%v, B=%v", assign3[consumerAPrime], assign3[consumerB])
 
 	// ===== 轮次 4: 稳定状态 =====
-	if coord.isRebalanceNeeded(context.Background(), groupID, consumersRound3, partitionHash, gen) {
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumersRound3, partitionHash, gen) {
 		t.Fatal("轮次4: 稳定状态不应该需要 rebalance")
 	}
 	t.Log("轮次4: 稳定状态确认")
@@ -344,24 +520,24 @@ func TestRaceCondition_NewConsumerDuringRebalance(t *testing.T) {
 
 	// 第一次 rebalance：只有 B
 	var gen uint = 1
-	coord := newTestCoordinator(nil)
+	snapshots, repo := newTestSnapshotInfo(nil)
 	consumersOnlyB := makeTestConsumersWithTopics(topics, consumerB)
 	assign1 := calculateAssignments(consumersOnlyB, partitions, nil)
-	coord.updateGroupSnapshot(groupID, gen, consumersOnlyB, partitionHash, nil)
+	snapshots.updateGroupSnapshot(groupID, gen, consumersOnlyB, partitionHash, nil)
 	t.Logf("第一次 rebalance: B=%v", assign1[consumerB])
 
 	// 下一轮 scan: A' 上线
 	gen = 2
 	manual := map[string][]types.PartitionInfo{consumerAPrime: {p(topic, 0)}}
-	coord.manualAssignmentRepo = &mockManualAssignmentRepo{matchResult: manual}
+	repo.matchResult = manual
 	consumersWithAPrime := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumersWithAPrime, partitionHash, gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumersWithAPrime, partitionHash, gen) {
 		t.Fatal("A' 上线后 isRebalanceNeeded 必须返回 true")
 	}
 
 	assign2 := calculateAssignments(consumersWithAPrime, partitions, manual)
-	coord.updateGroupSnapshot(groupID, gen, consumersWithAPrime, partitionHash, manual)
+	snapshots.updateGroupSnapshot(groupID, gen, consumersWithAPrime, partitionHash, manual)
 
 	if !reflect.DeepEqual(assign2[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("A' 应该得到 p0，实际: %v", assign2[consumerAPrime])
@@ -414,14 +590,14 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 	// === 阶段 1: 正常 rebalance 后进入稳定状态 ===
 	var gen uint = 5
 	manual := map[string][]types.PartitionInfo{consumerAPrime: {p(topic, 0)}}
-	coord := newTestCoordinator(manual)
+	snapshots, repo := newTestSnapshotInfo(manual)
 	consumers := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
 	calculateAssignments(consumers, partitions, manual)
-	coord.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
+	snapshots.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
 
 	// 稳定状态：snapshot.generationID == 5，传入 currentGenerationID == 5
-	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, gen) {
 		t.Fatal("稳定状态不应该需要 rebalance")
 	}
 
@@ -431,15 +607,15 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 	apiIncrementedGen := gen + 1
 
 	// 🔥 核心验证：协调器检测到 generation_id 不匹配，应该触发 rebalance
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, apiIncrementedGen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, apiIncrementedGen) {
 		t.Fatal("TriggerRebalance API 递增 generation_id 后，isRebalanceNeeded 应该返回 true")
 	}
 	t.Log("✓ 验证通过: API 递增 generation_id 后，协调器能检测到并触发 rebalance")
 
 	// === 阶段 3: 协调器执行 rebalance 后恢复稳定 ===
-	coord.updateGroupSnapshot(groupID, apiIncrementedGen, consumers, partitionHash, manual)
+	snapshots.updateGroupSnapshot(groupID, apiIncrementedGen, consumers, partitionHash, manual)
 
-	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, apiIncrementedGen) {
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, apiIncrementedGen) {
 		t.Fatal("rebalance 完成后应该恢复稳定状态")
 	}
 	t.Log("✓ 验证通过: rebalance 完成后恢复稳定")
@@ -462,15 +638,15 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 	}
 
 	manual := map[string][]types.PartitionInfo{consumerAPrime: {p(topic, 0)}}
-	coord := newTestCoordinator(manual)
+	snapshots, repo := newTestSnapshotInfo(manual)
 	consumers := makeTestConsumersWithTopics(topics, consumerAPrime, consumerB)
 
-	if !coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, gen) {
 		t.Fatal("协调器重启后 snapshot 为空，应该需要 rebalance")
 	}
 
 	assign := calculateAssignments(consumers, partitions, manual)
-	coord.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
+	snapshots.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
 
 	if !reflect.DeepEqual(assign[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("A' 应该得到 p0，实际: %v", assign[consumerAPrime])
@@ -479,7 +655,7 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 		t.Fatalf("B 不应该有分区，实际: %v", assign[consumerB])
 	}
 
-	if coord.isRebalanceNeeded(context.Background(), groupID, consumers, partitionHash, gen) {
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, gen) {
 		t.Fatal("rebalance 后稳定状态不应该再需要 rebalance")
 	}
 	t.Logf("协调器重启场景通过: A'=%v, B=%v", assign[consumerAPrime], assign[consumerB])

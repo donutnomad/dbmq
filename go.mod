@@ -48,9 +48,10 @@ require (
 	github.com/docker/docker v28.5.1+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/donutnomad/dbleader v0.0.0-20260331061149-f6f5f747e59a // indirect
+	github.com/donutnomad/dbleader v0.0.0-20260501020519-6cd63dc1eb42 // indirect
 	github.com/donutnomad/gg v0.0.0-20260110043427-f34493c8cfac // indirect
 	github.com/donutnomad/gogen v0.0.0-20260228064700-5d99da3371a1 // indirect
+	github.com/donutnomad/gt v0.0.0-20260422030153-7cd543b671e7 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect

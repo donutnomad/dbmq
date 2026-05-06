@@ -1,19 +1,22 @@
+//go:build integration
+
 package dbmq
 
 import (
 	"context"
 	"fmt"
-	"github.com/donutnomad/dbmq/internal/db/migration"
-	"github.com/donutnomad/dbmq/internal/interfaces"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm/logger"
 	"log"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/donutnomad/dbmq/internal/db/migration"
+	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const (
@@ -35,13 +38,7 @@ func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 	// Create a unique DB name for this test run to ensure isolation
 	dbName := fmt.Sprintf("dbmq_test_%d", time.Now().UnixNano())
 
-	mysqlConf := MySQLConfig{
-		Host:     testMySQLHost,
-		Port:     testMySQLPort,
-		User:     testMySQLUser,
-		Password: testMySQLPassword,
-		DBName:   dbName,
-	}
+	mysqlConf := integrationMySQLConfig(t, dbName)
 
 	// Create the database
 	err := CreateDatabaseIfNotExists(mysqlConf)
@@ -58,7 +55,7 @@ func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 	require.NoError(t, err, "Failed to apply schemas to test database")
 
 	// Connect to Redis
-	redisConf := RedisConfig{Host: testRedisHost, Port: testRedisPort, DB: testRedisDB}
+	redisConf := integrationRedisConfig(t)
 	redisClient, err := InitRedis(redisConf)
 	require.NoError(t, err, "Failed to connect to redis")
 
@@ -75,7 +72,7 @@ func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 
 		// A separate connection to drop the database
 		rootConf := MySQLConfig{
-			Host: testMySQLHost, Port: testMySQLPort, User: testMySQLUser, Password: testMySQLPassword,
+			Host: mysqlConf.Host, Port: mysqlConf.Port, User: mysqlConf.User, Password: mysqlConf.Password,
 		}
 		rootDB, _ := InitMySQL(rootConf)
 		rootDB.Exec(fmt.Sprintf("DROP DATABASE %s", dbName))
@@ -84,6 +81,52 @@ func setupIntegrationTest(t *testing.T) (interfaces.DB, redis.UniversalClient) {
 	})
 
 	return dbClient, redisClient
+}
+
+func integrationMySQLConfig(t *testing.T, dbName string) MySQLConfig {
+	t.Helper()
+
+	if globalEnv != nil && globalEnv.MySQLContainer != nil {
+		host, err := globalEnv.MySQLContainer.Host(globalEnv.ctx)
+		require.NoError(t, err)
+		port, err := globalEnv.MySQLContainer.MappedPort(globalEnv.ctx, "3306")
+		require.NoError(t, err)
+		portNumber, err := strconv.Atoi(port.Port())
+		require.NoError(t, err)
+
+		return MySQLConfig{
+			Host:     host,
+			Port:     portNumber,
+			User:     "root",
+			Password: "testpassword",
+			DBName:   dbName,
+		}
+	}
+
+	return MySQLConfig{
+		Host:     testMySQLHost,
+		Port:     testMySQLPort,
+		User:     testMySQLUser,
+		Password: testMySQLPassword,
+		DBName:   dbName,
+	}
+}
+
+func integrationRedisConfig(t *testing.T) RedisConfig {
+	t.Helper()
+
+	if globalEnv != nil && globalEnv.RedisContainer != nil {
+		host, err := globalEnv.RedisContainer.Host(globalEnv.ctx)
+		require.NoError(t, err)
+		port, err := globalEnv.RedisContainer.MappedPort(globalEnv.ctx, "6379")
+		require.NoError(t, err)
+		portNumber, err := strconv.Atoi(port.Port())
+		require.NoError(t, err)
+
+		return RedisConfig{Host: host, Port: portNumber, DB: testRedisDB}
+	}
+
+	return RedisConfig{Host: testRedisHost, Port: testRedisPort, DB: testRedisDB}
 }
 
 // DropAllTables 删除所有mq_开头的表
