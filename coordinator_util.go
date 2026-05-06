@@ -71,28 +71,15 @@ func canRebalance(ctx context.Context, snapshot *groupSnapshot, manualAssignment
 		return true
 	}
 
-	// 检查消费者数量变化
-	if len(consumers) != len(snapshot.memberTopics) {
+	if !hasSameMemberTopics(snapshot.memberTopics, consumers) {
 		return true
 	}
 
-	// 检查订阅 Topic 变化
-	for _, consumer := range consumers {
-		topicHash := hashSubscribedTopics(consumer.SubscribedTopics)
-		if cachedHash, ok := snapshot.memberTopics[consumer.ConsumerID]; !ok || cachedHash != topicHash {
-			return true
-		}
-	}
-
-	// 检查分区变化
 	if snapshot.partitionHash != partitionHash {
 		return true
 	}
 
-	// 检查手动分配规则是否变化
-	consumerIDs := getHeartbeatConsumerIDs(consumers)
-
-	manualAssignments, err := manualAssignmentRepo.GetMatching(ctx, groupID, consumerIDs)
+	manualAssignments, err := manualAssignmentRepo.GetMatching(ctx, groupID, getHeartbeatConsumerIDs(consumers))
 	if err != nil {
 		// 查询失败时保守触发 rebalance
 		log.Warn("[LEADER] Failed to check manual assignments, triggering rebalance", "error", err)
@@ -110,6 +97,17 @@ func canRebalance(ctx context.Context, snapshot *groupSnapshot, manualAssignment
 	return false
 }
 
+func hasSameMemberTopics(memberTopics map[string]string, consumers []*heartbeat.Heartbeat) bool {
+	if len(consumers) != len(memberTopics) {
+		return false
+	}
+
+	return lo.EveryBy(consumers, func(consumer *heartbeat.Heartbeat) bool {
+		topicHash, ok := memberTopics[consumer.ConsumerID]
+		return ok && topicHash == hashSubscribedTopics(consumer.SubscribedTopics)
+	})
+}
+
 // calculateAssignments 使用稳定的轮询策略在消费者之间分配分区，支持手动分配覆盖。
 // 通过对消费者和分区进行排序，确保分配结果是确定性的，并在消费者增减时最小化分区迁移的开销。
 // manualAssignments 参数允许为特定消费者指定固定的分区分配，这些分区不会参与自动轮询分配。
@@ -118,58 +116,42 @@ func calculateAssignments(
 	partitions []types.PartitionInfo,
 	manualAssignments map[string][]types.PartitionInfo,
 ) map[string][]types.PartitionInfo {
-	assignments := make(map[string][]types.PartitionInfo)
+	assignments := make(map[string][]types.PartitionInfo, len(consumers))
 	if len(consumers) == 0 {
 		return assignments
 	}
 
-	// 对消费者按ID排序，确保分配顺序的一致性。这是实现稳定分配的核心，避免相同条件下产生不同的分配结果
 	utils.SortHeartbeatsByID(consumers)
-
-	// 先按主题排序，再按分区号排序，确保分配的逻辑顺序
 	utils.SortPartitionsByTopicAndPartition(partitions)
 
-	// Step 1: 处理手动分配的消费者
-	// 记录已被手动分配的分区，避免重复分配
 	manualAssignedPartitions := make(map[types.PartitionInfo]struct{})
-	var autoConsumers []*heartbeat.Heartbeat
+	autoConsumerIDs := make([]string, 0, len(consumers))
 
 	for _, consumer := range consumers {
-		if manualParts, hasManual := manualAssignments[consumer.ConsumerID]; hasManual && len(manualParts) > 0 {
-			// 手动分配：直接分配配置的分区
-			assignments[consumer.ConsumerID] = manualParts
-			for _, p := range manualParts {
-				manualAssignedPartitions[p] = struct{}{}
+		consumerID := consumer.ConsumerID
+		manualParts := manualAssignments[consumerID]
+
+		if len(manualParts) > 0 {
+			assignments[consumerID] = manualParts
+			for _, partition := range manualParts {
+				manualAssignedPartitions[partition] = struct{}{}
 			}
-		} else {
-			// 自动模式：加入待分配列表
-			autoConsumers = append(autoConsumers, consumer)
-			assignments[consumer.ConsumerID] = []types.PartitionInfo{}
+			continue
 		}
+
+		assignments[consumerID] = []types.PartitionInfo{}
+		autoConsumerIDs = append(autoConsumerIDs, consumerID)
 	}
 
-	// Step 2: 从分区池中移除已手动分配的分区
-	var remainingPartitions []types.PartitionInfo
-	for _, p := range partitions {
-		if _, isManual := manualAssignedPartitions[p]; !isManual {
-			remainingPartitions = append(remainingPartitions, p)
-		}
-	}
+	remainingPartitions := lo.Filter(partitions, func(partition types.PartitionInfo, _ int) bool {
+		_, assigned := manualAssignedPartitions[partition]
+		return !assigned
+	})
 
-	// Step 3: 剩余分区按轮询策略分配给自动模式的消费者
-	if len(autoConsumers) > 0 && len(remainingPartitions) > 0 {
-		// 提取自动模式消费者的ID列表
-		autoConsumerIDs := make([]string, 0, len(autoConsumers))
-		for _, consumer := range autoConsumers {
-			autoConsumerIDs = append(autoConsumerIDs, consumer.ConsumerID)
-		}
-
-		// 使用轮询算法分配剩余分区
-		// 第i个分区分配给第(i % 消费者数量)个消费者
-		// 这确保了分区的均匀分布，负载均衡效果最优
-		for i, p := range remainingPartitions {
+	if len(autoConsumerIDs) > 0 {
+		for i, partition := range remainingPartitions {
 			consumerID := autoConsumerIDs[i%len(autoConsumerIDs)]
-			assignments[consumerID] = append(assignments[consumerID], p)
+			assignments[consumerID] = append(assignments[consumerID], partition)
 		}
 	}
 

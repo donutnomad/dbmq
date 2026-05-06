@@ -125,6 +125,7 @@ func cleanupTables(t *testing.T) {
 		"mq_consumer_group_generations",
 		"mq_topics",
 		"mq_manual_partition_assignments",
+		"mq_coordinator_leader_lock",
 	}
 	for _, table := range tables {
 		globalEnv.DB.Exec("DELETE FROM " + table)
@@ -152,7 +153,7 @@ func TestTC_MultiProducerMultiConsumer(t *testing.T) {
 
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc1",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -261,7 +262,7 @@ func TestTC_ConsumerOnlineOffline(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc2",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
@@ -379,7 +380,7 @@ func TestTC_AssignedButNotConsuming(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc3",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -461,7 +462,7 @@ func TestTC_ConsumeStrategy(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc4",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -564,7 +565,7 @@ func TestTC_AutoCommitVsManualCommit(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc5",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -652,7 +653,7 @@ func TestTC_GenerationIDIsolation(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc6",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
@@ -714,7 +715,7 @@ func TestTC_HighConcurrencyStress(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc7",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -819,7 +820,7 @@ func TestTC_ConsumerStateErrors(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc8",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -882,7 +883,7 @@ func TestTC_HeartbeatTimeout(t *testing.T) {
 
 	// 使用很短的心跳超时
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc9",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  1 * time.Second, // 1秒超时
@@ -1002,7 +1003,7 @@ func TestTC_ConsumerSubscribeNonexistentTopic(t *testing.T) {
 	ctx := context.Background()
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc11",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1066,7 +1067,7 @@ func TestTC_ConcurrentRebalanceStability(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc13",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
@@ -1159,7 +1160,7 @@ func TestTC_AcknowledgeWrongMessage(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc14",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1220,7 +1221,7 @@ func TestTC_AutoCommitMode(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc15",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1309,7 +1310,7 @@ func TestTC_ContextCancellation(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc16",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1355,7 +1356,7 @@ func TestTC_EmptyPoll(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc17",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1539,7 +1540,7 @@ func TestTC_MessageRetentionCleanup(t *testing.T) {
 
 	// 启动协调器，配置快速清理
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:             "tc-retention",
+		LockTable:              integrationLeaderLockTable,
 		NodeAddr:               "test-node",
 		DB:                     globalEnv.DB,
 		HeartbeatTimeout:       3 * time.Second,
@@ -1614,7 +1615,7 @@ func TestTC_MultiCoordinatorLeaderElection(t *testing.T) {
 	coordinators := make([]*Coordinator, 3)
 	for i := range 3 {
 		c := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-election", // 相同的锁后缀，竞争同一个Leader
+			LockTable:         integrationLeaderLockTable, // 相同的锁表，竞争同一个Leader
 			DB:                globalEnv.DB,
 			NodeAddr:          fmt.Sprintf("test-node-%d", i),
 			HeartbeatTimeout:  3 * time.Second,
@@ -1675,7 +1676,7 @@ func TestTC_MessageProcessingDuringRebalance(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc-rebalance-msg",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  2 * time.Second,
@@ -1822,7 +1823,7 @@ func TestTC_ConsumerMetadataMethods(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc-metadata",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -1888,7 +1889,7 @@ func TestTC_CommitMessage(t *testing.T) {
 	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "tc-commit-msg",
+		LockTable:         integrationLeaderLockTable,
 		DB:                globalEnv.DB,
 		NodeAddr:          "test-node",
 		HeartbeatTimeout:  3 * time.Second,
@@ -2206,7 +2207,7 @@ func TestTC_PollLoop(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-pollloop",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2273,7 +2274,7 @@ func TestTC_PollLoop(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-pollloop-to",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2359,7 +2360,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-manual-exact",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2431,7 +2432,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-manual-prefix",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2501,7 +2502,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-manual-mixed",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2625,7 +2626,7 @@ func TestTC_ManualPartitionAssignment(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-manual-rebal",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2745,7 +2746,7 @@ func TestTC_DeleteTopicCascade(t *testing.T) {
 		require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-cascade",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,
@@ -2840,7 +2841,7 @@ func TestTC_DeleteTopicCascade(t *testing.T) {
 		}
 
 		coordinator := NewCoordinator(CoordinatorConfig{
-			LockSuffix:        "tc-recreate",
+			LockTable:         integrationLeaderLockTable,
 			DB:                globalEnv.DB,
 			NodeAddr:          "test-node",
 			HeartbeatTimeout:  3 * time.Second,

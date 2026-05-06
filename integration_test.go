@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const integrationLeaderLockTable = "mq_coordinator_leader_lock"
+
 func integrationJSONValue(s string) []byte {
 	b, _ := json.Marshal(s)
 	return b
@@ -39,7 +41,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 2. Start Coordinator
 	coordConf := CoordinatorConfig{
-		LockSuffix:        "test",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
@@ -149,7 +151,7 @@ func TestIntegration_MultiConsumerGroups(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
-		LockSuffix:        "test",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
@@ -289,7 +291,7 @@ func TestIntegration_ConsumerFailover(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
-		LockSuffix:        "test",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  3 * time.Second, // 较短的超时时间以便快速故障检测
@@ -407,7 +409,7 @@ func TestIntegration_MessageCleanup(t *testing.T) {
 
 	// 2. Start the Coordinator.
 	coordConf := CoordinatorConfig{
-		LockSuffix:             "test",
+		LockTable:              integrationLeaderLockTable,
 		NodeAddr:               "test-node",
 		DB:                     dbClient,
 		HeartbeatTimeout:       5 * time.Second,
@@ -521,7 +523,7 @@ func TestIntegration_RedisNotification(t *testing.T) {
 
 	// 2. 启动协调器
 	coordConf := CoordinatorConfig{
-		LockSuffix:        "test",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
@@ -615,7 +617,7 @@ func TestIntegration_ConsumerInitialization(t *testing.T) {
 
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "test-init",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,
@@ -683,7 +685,7 @@ func TestIntegration_ConcurrentConsumerInitialization(t *testing.T) {
 
 	// 启动协调器
 	coordinator := NewCoordinator(CoordinatorConfig{
-		LockSuffix:        "test-concurrent",
+		LockTable:         integrationLeaderLockTable,
 		NodeAddr:          "test-node",
 		DB:                dbClient,
 		HeartbeatTimeout:  5 * time.Second,

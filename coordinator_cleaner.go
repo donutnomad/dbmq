@@ -61,7 +61,7 @@ func (c *cleanerTask) clean(ctx context.Context) {
 
 	ite := iter.Seq2[types.PartitionInfo, time.Duration](func(yield func(info types.PartitionInfo, v time.Duration) bool) {
 		for _, t := range allTopics {
-			var dur time.Duration = 0
+			var dur time.Duration
 			retentionMs, _ := t.GetConfig("retention_ms")
 			if retentionMs > 0 {
 				dur = time.Duration(retentionMs) * time.Millisecond

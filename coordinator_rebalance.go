@@ -147,6 +147,14 @@ func (t *coordinatorTask) tryRebalance(parentCtx context.Context, groupID string
 	return nil
 }
 
+// groupSnapshot 缓存每次成功重新均衡后的成员订阅和分区元数据
+type groupSnapshot struct {
+	generationID         uint              // 最后一次成功 rebalance 后的 generation_id
+	memberTopics         map[string]string // consumerID -> 订阅Topic哈希，用于检测订阅变更
+	partitionHash        string            // 相关Topic及分区数量的哈希，用于检测Topic/分区变化
+	manualAssignmentHash string            // 手动分配规则的哈希，用于检测手动分配变化
+}
+
 type snapshotInfo struct {
 	mu             sync.Mutex
 	groupSnapshots map[string]*groupSnapshot // 缓存消费组成员和订阅/分区快照
