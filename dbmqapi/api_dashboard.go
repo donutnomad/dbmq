@@ -40,7 +40,7 @@ func (a *dashboardAPI) GetDashboardData(ctx context.Context) (DashboardDataResp,
 	})
 	g.Go(func() error {
 		var err error
-		groups, err = a.deps.ConsumerQuery.GetAllConsumerGroupsMetrics(gCtx)
+		groups, err = a.deps.ConsumerQuery.GetAllConsumerGroupsSummary(gCtx)
 		return err
 	})
 	if err := g.Wait(); err != nil {
@@ -60,22 +60,11 @@ func (a *dashboardAPI) GetDashboardData(ctx context.Context) (DashboardDataResp,
 
 	groupResps := make([]ConsumerGroupResp, 0, len(groups))
 	for _, g := range groups {
-		partitionLags := make([]PartitionLagResp, len(g.PartitionLags))
-		for j, lag := range g.PartitionLags {
-			partitionLags[j] = PartitionLagResp{
-				Topic:         lag.Topic,
-				Partition:     lag.Partition,
-				CurrentOffset: lag.CurrentOffset,
-				LatestOffset:  lag.LatestOffset,
-				Lag:           lag.Lag,
-			}
-		}
 		groupResps = append(groupResps, ConsumerGroupResp{
-			GroupID:       g.GroupID,
-			State:         g.State,
-			MemberCount:   len(g.Members),
-			TotalLag:      g.Lag,
-			PartitionLags: partitionLags,
+			GroupID:     g.GroupID,
+			State:       g.State,
+			MemberCount: len(g.Members),
+			TotalLag:    g.Lag,
 		})
 	}
 

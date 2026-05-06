@@ -3,6 +3,8 @@ package dbmqapi
 import (
 	"context"
 	"fmt"
+
+	"github.com/donutnomad/dbmq/internal/query"
 )
 
 // ConsumerGroupAPI 消费组管理 API
@@ -31,44 +33,36 @@ func NewConsumerGroupAPI(deps *Deps) ConsumerGroupAPI {
 	return &consumerGroupAPI{deps: deps}
 }
 
+func buildPartitionLagResponses(lags []query.PartitionLagMetrics) []PartitionLagResp {
+	partitionLags := make([]PartitionLagResp, len(lags))
+	for i, lag := range lags {
+		partitionLags[i] = PartitionLagResp{
+			Topic:              lag.Topic,
+			Partition:          lag.Partition,
+			CurrentOffset:      lag.CurrentOffset,
+			LatestOffset:       lag.LatestOffset,
+			Lag:                lag.Lag,
+			ConsumedMessages:   lag.ConsumedMessages,
+			RemainingMessages:  lag.RemainingMessages,
+			ConsumedPercentage: lag.ConsumedPercentage,
+		}
+	}
+	return partitionLags
+}
+
 func (a *consumerGroupAPI) List(ctx context.Context) ([]ConsumerGroupResp, error) {
-	groups, err := a.deps.ConsumerQuery.GetAllConsumerGroupsMetrics(ctx)
+	groups, err := a.deps.ConsumerQuery.GetAllConsumerGroupsSummary(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]ConsumerGroupResp, len(groups))
 	for i, g := range groups {
-		partitionLags := make([]PartitionLagResp, len(g.PartitionLags))
-		for j, lag := range g.PartitionLags {
-			// 计算消费进度
-			consumed := lag.CurrentOffset
-			remaining := lag.Lag
-			var percentage float64
-			if lag.LatestOffset > 0 {
-				percentage = float64(consumed) / float64(lag.LatestOffset) * 100
-			} else {
-				percentage = 100
-			}
-
-			partitionLags[j] = PartitionLagResp{
-				Topic:              lag.Topic,
-				Partition:          lag.Partition,
-				CurrentOffset:      lag.CurrentOffset,
-				LatestOffset:       lag.LatestOffset,
-				Lag:                lag.Lag,
-				ConsumedMessages:   consumed,
-				RemainingMessages:  remaining,
-				ConsumedPercentage: percentage,
-			}
-		}
-
 		result[i] = ConsumerGroupResp{
-			GroupID:       g.GroupID,
-			State:         g.State,
-			MemberCount:   len(g.Members),
-			TotalLag:      g.Lag,
-			PartitionLags: partitionLags,
+			GroupID:     g.GroupID,
+			State:       g.State,
+			MemberCount: len(g.Members),
+			TotalLag:    g.Lag,
 		}
 	}
 
@@ -81,36 +75,12 @@ func (a *consumerGroupAPI) Get(ctx context.Context, groupId string) (ConsumerGro
 		return ConsumerGroupResp{}, err
 	}
 
-	partitionLags := make([]PartitionLagResp, len(group.PartitionLags))
-	for i, lag := range group.PartitionLags {
-		// 计算消费进度
-		consumed := lag.CurrentOffset
-		remaining := lag.Lag
-		var percentage float64
-		if lag.LatestOffset > 0 {
-			percentage = float64(consumed) / float64(lag.LatestOffset) * 100
-		} else {
-			percentage = 100 // 没有消息时视为100%
-		}
-
-		partitionLags[i] = PartitionLagResp{
-			Topic:              lag.Topic,
-			Partition:          lag.Partition,
-			CurrentOffset:      lag.CurrentOffset,
-			LatestOffset:       lag.LatestOffset,
-			Lag:                lag.Lag,
-			ConsumedMessages:   consumed,
-			RemainingMessages:  remaining,
-			ConsumedPercentage: percentage,
-		}
-	}
-
 	return ConsumerGroupResp{
 		GroupID:       group.GroupID,
 		State:         group.State,
 		MemberCount:   len(group.Members),
 		TotalLag:      group.Lag,
-		PartitionLags: partitionLags,
+		PartitionLags: buildPartitionLagResponses(group.PartitionLags),
 	}, nil
 }
 

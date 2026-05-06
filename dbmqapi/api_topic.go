@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/donutnomad/dbmq"
+	"github.com/donutnomad/dbmq/internal/query"
 )
 
 // TopicAPI Topic 管理 API
@@ -37,15 +38,10 @@ type topicAPI struct {
 	deps *Deps
 }
 
-func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error) {
-	topics, err := a.deps.TopicQuery.GetAllTopicsMetrics(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+func buildTopicResponses(topics []query.TopicMetrics, statsByTopic map[string][]query.PartitionStats, includePartitionStats bool) []TopicResp {
 	result := make([]TopicResp, len(topics))
 	for i, topic := range topics {
-		result[i] = TopicResp{
+		resp := TopicResp{
 			Name:           topic.TopicName,
 			PartitionCount: uint(topic.PartitionCount),
 			MessageCount:   topic.MessageCount,
@@ -53,34 +49,52 @@ func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, err
 			CreatedAt:      topic.CreatedAt.Format(time.RFC3339),
 		}
 
-		if req.IncludePartitionStats && topic.PartitionCount > 0 {
+		if includePartitionStats && topic.PartitionCount > 0 {
 			partitionStats := make([]PartitionStats, topic.PartitionCount)
-			for p := range topic.PartitionCount {
-				// 使用查询层获取分区统计信息
-				stats, err := a.deps.TopicQuery.GetPartitionStats(ctx, topic.TopicName, uint(p))
-				if err != nil {
-					partitionStats[p] = PartitionStats{
-						Partition:      uint(p),
-						FirstMessageID: -1,
-						LastMessageID:  -1,
-					}
-				} else {
-					partitionStats[p] = PartitionStats{
-						Partition:      stats.Partition,
-						FirstMessageID: stats.FirstMessageID,
-						LastMessageID:  stats.LastMessageID,
-						MessageCount:   stats.MessageCount,
-						SizeBytes:      stats.SizeBytes,
-						CreatedAt:      stats.CreatedAt,
-						UpdatedAt:      stats.UpdatedAt,
+			for partition := range topic.PartitionCount {
+				partitionStats[partition] = PartitionStats{
+					Partition:      uint(partition),
+					FirstMessageID: -1,
+					LastMessageID:  -1,
+				}
+			}
+			for _, stat := range statsByTopic[topic.TopicName] {
+				if int(stat.Partition) < topic.PartitionCount {
+					partitionStats[stat.Partition] = PartitionStats{
+						Partition:      stat.Partition,
+						FirstMessageID: stat.FirstMessageID,
+						LastMessageID:  stat.LastMessageID,
+						MessageCount:   stat.MessageCount,
+						SizeBytes:      stat.SizeBytes,
+						CreatedAt:      stat.CreatedAt,
+						UpdatedAt:      stat.UpdatedAt,
 					}
 				}
 			}
-			result[i].PartitionStats = partitionStats
+			resp.PartitionStats = partitionStats
+		}
+
+		result[i] = resp
+	}
+
+	return result
+}
+
+func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error) {
+	topics, err := a.deps.TopicQuery.GetAllTopicsMetrics(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	statsByTopic := map[string][]query.PartitionStats(nil)
+	if req.IncludePartitionStats {
+		statsByTopic, err = a.deps.TopicQuery.GetAllTopicPartitionStats(ctx)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return result, nil
+	return buildTopicResponses(topics, statsByTopic, req.IncludePartitionStats), nil
 }
 
 func (a *topicAPI) Get(ctx context.Context, topicName string) (TopicResp, error) {

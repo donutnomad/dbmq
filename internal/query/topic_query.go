@@ -24,12 +24,25 @@ type TopicQuery interface {
 	GetTopicMetrics(ctx context.Context, topicName string) (*TopicMetrics, error)
 	// GetAllTopicsMetrics 获取所有 Topic 监控指标
 	GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error)
+	// GetAllTopicPartitionStats 获取所有 Topic 的分区统计
+	GetAllTopicPartitionStats(ctx context.Context) (map[string][]PartitionStats, error)
 }
 
 // topicQueryMySQL Topic 查询 MySQL 实现
 type topicQueryMySQL struct {
 	db interfaces.DB
 }
+
+const allTopicPartitionStatsSelectSQL = `
+	topic,
+	` + "`partition`" + `,
+	COALESCE(MIN(id), -1) AS first_message_id,
+	COALESCE(MAX(id), -1) AS last_message_id,
+	COUNT(*) AS message_count,
+	COALESCE(SUM(LENGTH(body)), 0) AS size_bytes,
+	COALESCE(MIN(created_at), '') AS created_at,
+	COALESCE(MAX(created_at), '') AS updated_at
+`
 
 // NewTopicQuery 创建 Topic 查询实例
 func NewTopicQuery(db interfaces.DB) TopicQuery {
@@ -255,4 +268,41 @@ func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetri
 	}
 
 	return metricsSlice, nil
+}
+
+func (q *topicQueryMySQL) GetAllTopicPartitionStats(ctx context.Context) (map[string][]PartitionStats, error) {
+	type partitionStatRow struct {
+		Topic          string `gorm:"column:topic"`
+		Partition      uint   `gorm:"column:partition"`
+		FirstMessageID int64  `gorm:"column:first_message_id"`
+		LastMessageID  int64  `gorm:"column:last_message_id"`
+		MessageCount   int64  `gorm:"column:message_count"`
+		SizeBytes      int64  `gorm:"column:size_bytes"`
+		CreatedAt      string `gorm:"column:created_at"`
+		UpdatedAt      string `gorm:"column:updated_at"`
+	}
+
+	var rows []partitionStatRow
+	err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+		Select(allTopicPartitionStatsSelectSQL).
+		Group("topic, `partition`").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get partition stats: %w", err)
+	}
+
+	statsByTopic := make(map[string][]PartitionStats)
+	for _, row := range rows {
+		statsByTopic[row.Topic] = append(statsByTopic[row.Topic], PartitionStats{
+			Partition:      row.Partition,
+			FirstMessageID: row.FirstMessageID,
+			LastMessageID:  row.LastMessageID,
+			MessageCount:   row.MessageCount,
+			SizeBytes:      row.SizeBytes,
+			CreatedAt:      row.CreatedAt,
+			UpdatedAt:      row.UpdatedAt,
+		})
+	}
+
+	return statsByTopic, nil
 }

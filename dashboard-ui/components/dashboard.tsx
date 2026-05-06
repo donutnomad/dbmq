@@ -104,7 +104,7 @@ export function Dashboard() {
         <div className="page-shell">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center space-x-4">
-              <h1 className="text-xl font-medium text-gray-900">DBMQ 监控仪表板</h1>
+              <h1 className="text-xl font-medium text-gray-900">Message Console</h1>
             </div>
             <div className="flex items-center space-x-4">
               <Link href="/clusters">

@@ -23,7 +23,9 @@ CREATE TABLE `mq_messages` (
     INDEX `idx_created_at` (`created_at`),
     INDEX `idx_message_key` (`message_key`),
     INDEX `idx_consume_pull` (`topic`, `partition`, `id`),
-    INDEX `idx_topic_partition_created` (`topic`, `partition`, `created_at`)
+    INDEX `idx_topic_partition_created` (`topic`, `partition`, `created_at`),
+    INDEX `idx_topic_created_id` (`topic`, `created_at` DESC, `id` DESC),
+    INDEX `idx_topic_partition_created_id` (`topic`, `partition`, `created_at` DESC, `id` DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息持久化日志表';
 
 -- 消费组代际与元数据表
