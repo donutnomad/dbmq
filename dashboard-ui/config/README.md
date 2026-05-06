@@ -74,7 +74,7 @@ cd dashboard-ui
 npm run dev
 
 # 3. 查看调试信息
-# 访问 http://localhost:3001/manual-assignments
+# 访问 http://localhost:3001/consumer-groups?id=Custodian_ApprovalFlow_ApprovalNode
 # 页面底部会显示当前使用的 API URL
 ```
 

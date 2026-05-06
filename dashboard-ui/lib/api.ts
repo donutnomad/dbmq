@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, RMQConsumerInfo, ResendMessagesRequest, ResendMessagesResponse } from './types';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse } from './types';
 import { apiConfig } from '@/config/api.config';
 
 // 创建axios实例
@@ -132,6 +132,16 @@ export class DBMQAPIClient {
     }
   }
 
+  // 删除消费组
+  static async deleteConsumerGroup(groupId: string): Promise<void> {
+    const response = await apiClient.delete<APIResponse>(
+      `/consumer-groups/${encodeURIComponent(groupId)}`
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete consumer group');
+    }
+  }
+
   // 获取Topic消息
   static async getTopicMessages(
     topicName: string,
@@ -203,8 +213,17 @@ export class DBMQAPIClient {
   // 获取手动分配列表
   static async getManualAssignments(groupId: string): Promise<ManualAssignment[]> {
     const response = await apiClient.get<APIResponse<ManualAssignment[]>>(
-      `/manual-assignments/?group_id=${encodeURIComponent(groupId)}`
+      `/manual-assignments?group_id=${encodeURIComponent(groupId)}`
     );
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch manual assignments');
+  }
+
+  // 获取全部手动分配列表
+  static async getAllManualAssignments(): Promise<ManualAssignment[]> {
+    const response = await apiClient.get<APIResponse<ManualAssignment[]>>('/manual-assignments');
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -213,7 +232,7 @@ export class DBMQAPIClient {
 
   // 创建手动分配
   static async createManualAssignment(data: CreateManualAssignmentRequest): Promise<ManualAssignment> {
-    const response = await apiClient.post<APIResponse<ManualAssignment>>('/manual-assignments/', data);
+    const response = await apiClient.post<APIResponse<ManualAssignment>>('/manual-assignments', data);
     if (response.data.success && response.data.data) {
       return response.data.data;
     }
@@ -271,31 +290,6 @@ export class DBMQAPIClient {
       return response.data.data;
     }
     throw new Error(response.data.error || 'Failed to fetch topic metrics');
-  }
-
-  // 获取 RMQ 消费者列表
-  static async getRMQConsumers(): Promise<RMQConsumerInfo[]> {
-    const response = await apiClient.get<APIResponse<RMQConsumerInfo[]>>('/rmq/consumers');
-    if (response.data.success && response.data.data) {
-      return response.data.data;
-    }
-    throw new Error(response.data.error || 'Failed to fetch RMQ consumers');
-  }
-
-  // 暂停 RMQ 消费者
-  static async pauseConsumer(consumerId: string): Promise<void> {
-    const response = await apiClient.post<APIResponse>(`/rmq/consumers/${encodeURIComponent(consumerId)}/pause`);
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Failed to pause consumer');
-    }
-  }
-
-  // 恢复 RMQ 消费者
-  static async resumeConsumer(consumerId: string): Promise<void> {
-    const response = await apiClient.post<APIResponse>(`/rmq/consumers/${encodeURIComponent(consumerId)}/resume`);
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Failed to resume consumer');
-    }
   }
 
   // 重发消息

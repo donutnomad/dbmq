@@ -1,34 +1,30 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DashboardData, TopicMetrics, ConsumerGroupMetrics, DBMQStats } from '@/lib/types';
+import { DashboardData, TopicMetrics, ConsumerGroupMetrics, DBMQStats, ManualAssignment } from '@/lib/types';
 import { DBMQAPIClient, getAccessToken, clearAccessToken } from '@/lib/api';
 import { formatNumber, formatUptime, formatBytes } from '@/lib/utils';
 import { StatCard } from '@/components/ui/card';
-import { StatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Database,
   Users,
   MessageSquare,
-  Clock,
   RefreshCw,
   Plus,
-  Settings,
-  Settings2,
   Send,
   Activity,
-  Zap,
   Server,
   HardDrive,
-  Radio,
   LogOut,
+  SlidersHorizontal,
 } from 'lucide-react';
 import Link from 'next/link';
 
 export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [dbmqStats, setDbmqStats] = useState<DBMQStats | null>(null);
+  const [manualAssignments, setManualAssignments] = useState<ManualAssignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -37,12 +33,14 @@ export function Dashboard() {
   // 加载仪表板数据
   const loadData = async () => {
     try {
-      const [dashboardData, stats] = await Promise.all([
+      const [dashboardData, stats, assignmentData] = await Promise.all([
         DBMQAPIClient.getDashboardData(),
         DBMQAPIClient.getDBMQStats().catch(() => null),
+        DBMQAPIClient.getAllManualAssignments().catch(() => []),
       ]);
       setData(dashboardData);
       setDbmqStats(stats);
+      setManualAssignments(assignmentData);
       setError(null);
       setLastUpdate(new Date());
     } catch (err) {
@@ -103,25 +101,16 @@ export function Dashboard() {
     <div className="min-h-screen bg-gray-50">
       {/* 头部 - 使用更现代的设计 */}
       <header className="bg-white shadow-sm">
-        <div className="max-w-[98%] mx-auto px-4">
+        <div className="page-shell">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center space-x-4">
               <h1 className="text-xl font-medium text-gray-900">DBMQ 监控仪表板</h1>
-              <StatusBadge status="online" className="px-3 py-1">
-                系统运行中
-              </StatusBadge>
             </div>
             <div className="flex items-center space-x-4">
               <Link href="/clusters">
                 <Button size="sm" variant="outline" className="text-blue-600 hover:text-blue-800">
                   <Server className="h-4 w-4 mr-1" />
                   集群管理
-                </Button>
-              </Link>
-              <Link href="/consumers">
-                <Button size="sm" variant="outline" className="text-teal-600 hover:text-teal-800">
-                  <Radio className="h-4 w-4 mr-1" />
-                  消费者管理
                 </Button>
               </Link>
               <div className="flex items-center">
@@ -166,9 +155,9 @@ export function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[98%] mx-auto px-4 py-4">
+      <main className="page-shell py-4">
         {/* 统计卡片 - 更紧凑的布局 */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <StatCard
             title="Topic 总数"
             value={data?.topics?.length || 0}
@@ -193,18 +182,6 @@ export function Dashboard() {
             icon={<MessageSquare className="h-5 w-5 text-purple-500" />}
             className="bg-purple-50 border-none"
           />
-          <StatCard
-            title="系统运行时间"
-            value={formatUptime(data?.system?.uptime)}
-            icon={<Clock className="h-5 w-5 text-orange-500" />}
-            className="bg-orange-50 border-none"
-          />
-          <StatCard
-            title="服务状态"
-            value={<StatusBadge status="online" className="px-2 py-0.5">运行中</StatusBadge>}
-            icon={<Zap className="h-5 w-5 text-indigo-500" />}
-            className="bg-indigo-50 border-none"
-          />
         </div>
 
         {/* DBMQ 系统统计面板 */}
@@ -223,15 +200,7 @@ export function Dashboard() {
               </Link>
             </div>
             <div className="p-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                <div className="p-3 bg-gray-50 rounded-lg">
-                  <div className="text-xs text-gray-500 mb-1">Broker ID</div>
-                  <div className="text-lg font-semibold text-gray-900">{dbmqStats.broker.brokerId}</div>
-                </div>
-                <div className="p-3 bg-gray-50 rounded-lg">
-                  <div className="text-xs text-gray-500 mb-1">主机地址</div>
-                  <div className="text-sm font-semibold text-gray-900">{dbmqStats.broker.host}:{dbmqStats.broker.port}</div>
-                </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <div className="text-xs text-gray-500 mb-1">系统版本</div>
                   <div className="text-lg font-semibold text-gray-900">{dbmqStats.system.version}</div>
@@ -246,7 +215,7 @@ export function Dashboard() {
                 </div>
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <div className="text-xs text-gray-500 mb-1">Broker 运行时间</div>
-                  <div className="text-sm font-semibold text-gray-900">{dbmqStats.broker.uptime}</div>
+                  <div className="text-sm font-semibold text-gray-900">{formatUptime(dbmqStats.broker.uptime)}</div>
                 </div>
               </div>
             </div>
@@ -256,7 +225,7 @@ export function Dashboard() {
         {/* 内容区域 - 更现代的设计 */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <TopicsList topics={data?.topics || []} />
-          <ConsumerGroupsList consumerGroups={data?.consumerGroups || []} />
+          <ConsumerGroupsList consumerGroups={data?.consumerGroups || []} manualAssignments={manualAssignments} />
         </div>
       </main>
     </div>
@@ -292,15 +261,12 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 消息数
               </th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                状态
-              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {topics.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-4 text-center text-gray-500">
+                <td colSpan={3} className="px-4 py-4 text-center text-gray-500">
                   暂无 Topic 数据
                 </td>
               </tr>
@@ -335,14 +301,6 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
                         {formatNumber(topic.messageCount || 0)}
                       </Link>
                     </td>
-                    <td className="px-4 py-2 whitespace-nowrap">
-                      <Link
-                        href={`/topics/?name=${encodeURIComponent(topicName)}`}
-                        className="block w-full h-full"
-                      >
-                        <StatusBadge status={topic.status || 'active'} />
-                      </Link>
-                    </td>
                   </tr>
                 );
               })
@@ -355,7 +313,19 @@ function TopicsList({ topics }: { topics: TopicMetrics[] }) {
 }
 
 // 消费组列表组件 - 现代化设计
-function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupMetrics[] }) {
+function ConsumerGroupsList({
+  consumerGroups,
+  manualAssignments,
+}: {
+  consumerGroups: ConsumerGroupMetrics[];
+  manualAssignments: ManualAssignment[];
+}) {
+  const [manualOnly, setManualOnly] = useState(false);
+  const manualGroupIds = new Set(manualAssignments.map(item => item.group_id));
+  const visibleGroups = manualOnly
+    ? consumerGroups.filter(group => manualGroupIds.has(group.groupId || group.name || ''))
+    : consumerGroups;
+
   return (
     <div className="bg-white rounded-lg shadow-sm">
       <div className="p-4 flex justify-between items-center">
@@ -363,18 +333,23 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
           <Users className="h-4 w-4 mr-2 text-blue-500" />
           消费组列表
         </h2>
-        <Link href="/manual-assignments">
-          <Button size="sm" variant="outline" className="text-purple-600 hover:text-purple-800">
-            <Settings2 className="h-4 w-4 mr-1" />
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={manualOnly ? "secondary" : "outline"}
+            onClick={() => setManualOnly(value => !value)}
+            className={manualOnly ? "text-purple-700" : "text-purple-600 hover:text-purple-800"}
+          >
+            <SlidersHorizontal className="h-4 w-4 mr-1" />
             手动分配
           </Button>
-        </Link>
-        <Link href="/producer">
-          <Button size="sm" variant="outline" className="text-blue-600 hover:text-blue-800">
-            <Send className="h-4 w-4 mr-1" />
-            发送消息
-          </Button>
-        </Link>
+          <Link href="/producer">
+            <Button size="sm" variant="outline" className="text-blue-600 hover:text-blue-800">
+              <Send className="h-4 w-4 mr-1" />
+              发送消息
+            </Button>
+          </Link>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full">
@@ -382,9 +357,6 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
             <tr className="bg-gray-50">
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 消费组 ID
-              </th>
-              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                状态
               </th>
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 成员数
@@ -395,14 +367,14 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {consumerGroups.length === 0 ? (
+            {visibleGroups.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-4 text-center text-gray-500">
-                  暂无消费组数据
+                <td colSpan={3} className="px-4 py-4 text-center text-gray-500">
+                  {manualOnly ? '暂无手动分配的消费组' : '暂无消费组数据'}
                 </td>
               </tr>
             ) : (
-              [...consumerGroups].sort((a, b) => {
+              [...visibleGroups].sort((a, b) => {
                 const stateA = a.state || a.status || '';
                 const stateB = b.state || b.status || '';
                 const isDeadA = stateA === 'Dead' ? 1 : 0;
@@ -410,27 +382,31 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                 return isDeadA - isDeadB;
               }).map((group) => {
                 const groupId = group.groupId || group.name || '--';
+                const isDead = (group.state || group.status || '') === 'Dead';
+                const hasManualAssignment = manualGroupIds.has(groupId);
                 return (
-                  <tr key={groupId} className="hover:bg-gray-50 transition-colors group">
+                  <tr
+                    key={groupId}
+                    className={`transition-colors group ${
+                      isDead ? 'bg-gray-100 text-gray-400 hover:bg-gray-100' : 'hover:bg-gray-50'
+                    }`}
+                  >
                     <td className="px-4 py-2 whitespace-nowrap">
                       <Link
                         href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
-                        <span className="text-sm text-gray-900 group-hover:text-gray-700">
+                        <span className={`text-sm ${isDead ? 'text-gray-400' : 'text-gray-900 group-hover:text-gray-700'}`}>
                           {groupId}
                         </span>
+                        {hasManualAssignment && (
+                          <span className="ml-2 rounded border border-purple-200 bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700">
+                            手动
+                          </span>
+                        )}
                       </Link>
                     </td>
-                    <td className="px-4 py-2 whitespace-nowrap">
-                      <Link
-                        href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
-                        className="block w-full h-full"
-                      >
-                        <StatusBadge status={group.state || group.status || 'unknown'} />
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
+                    <td className={`px-4 py-2 whitespace-nowrap text-xs ${isDead ? 'text-gray-400' : 'text-gray-600'}`}>
                       <Link
                         href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
@@ -438,7 +414,7 @@ function ConsumerGroupsList({ consumerGroups }: { consumerGroups: ConsumerGroupM
                         {group.memberCount || group.members?.length || 0}
                       </Link>
                     </td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-600">
+                    <td className={`px-4 py-2 whitespace-nowrap text-xs ${isDead ? 'text-gray-400' : 'text-gray-600'}`}>
                       <Link
                         href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"

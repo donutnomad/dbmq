@@ -6,11 +6,14 @@ import (
 
 	"github.com/donutnomad/dbmq"
 	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
+	"github.com/donutnomad/dbmq/internal/domain/heartbeat"
 	"github.com/donutnomad/dbmq/internal/domain/manualassignment"
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/gin-gonic/gin"
 )
+
+//go:generate go tool gogen ./...
 
 type Deps struct {
 	DB            interfaces.DB
@@ -23,6 +26,7 @@ type Deps struct {
 	Producer             *dbmq.Producer // 用于重发消息
 	ManualAssignmentRepo manualassignment.Repo
 	ConsumerGroupRepo    consumergroup.Repo
+	HeartbeatRepo        heartbeat.Repo
 	StartTime            func() int64 // 返回启动时间戳（秒）
 }
 

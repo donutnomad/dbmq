@@ -52,6 +52,18 @@ func (r *mysqlRepo) GetByGroup(ctx context.Context, groupID string) ([]*manualas
 	return ToDomainSlice(assignments), nil
 }
 
+func (r *mysqlRepo) GetAll(ctx context.Context) ([]*manualassignment.Assignment, error) {
+	var assignments []AssignmentPO
+	err := r.db.WithContext(ctx).
+		Model(&AssignmentPO{}).
+		Order("group_id ASC, id ASC").
+		Find(&assignments).Error
+	if err != nil {
+		return nil, err
+	}
+	return ToDomainSlice(assignments), nil
+}
+
 func (r *mysqlRepo) Delete(ctx context.Context, id int64) error {
 	result := r.db.WithContext(ctx).Delete(&AssignmentPO{}, id)
 	if result.Error != nil {
@@ -61,6 +73,12 @@ func (r *mysqlRepo) Delete(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (r *mysqlRepo) DeleteByGroup(ctx context.Context, groupID string) error {
+	return r.db.WithContext(ctx).
+		Where("`group_id` = ?", groupID).
+		Delete(&AssignmentPO{}).Error
 }
 
 func (r *mysqlRepo) GetMatching(ctx context.Context, groupID string, consumerIDs []string) (map[string][]types.PartitionInfo, error) {

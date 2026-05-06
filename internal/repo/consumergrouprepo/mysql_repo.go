@@ -8,7 +8,9 @@ import (
 
 	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
 	"github.com/donutnomad/dbmq/internal/interfaces"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
+	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 	"github.com/donutnomad/dbmq/internal/types"
 
 	"gorm.io/datatypes"
@@ -140,6 +142,21 @@ func (r *mysqlRepo) FindAllGroups(ctx context.Context) ([]string, error) {
 	sql := `SELECT DISTINCT group_id FROM (SELECT group_id FROM mq_consumer_heartbeats UNION SELECT group_id FROM mq_consumer_group_generations) AS all_groups`
 	err := r.db.WithContext(ctx).Raw(sql).Pluck("group_id", &groupIDs).Error
 	return groupIDs, err
+}
+
+func (r *mysqlRepo) Delete(ctx context.Context, groupID string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := heartbeatrepo.New(tx).DeleteByGroup(ctx, groupID); err != nil {
+			return err
+		}
+		if err := consumerprogressrepo.New(tx).DeleteByGroup(ctx, groupID); err != nil {
+			return err
+		}
+		if err := manualassignmentrepo.New(tx).DeleteByGroup(ctx, groupID); err != nil {
+			return err
+		}
+		return tx.Where("`group_id` = ?", groupID).Delete(&GenerationPO{}).Error
+	})
 }
 
 // 编译时接口实现检查

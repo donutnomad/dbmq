@@ -39,7 +39,7 @@ export default function CreateTopicPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-[98%] mx-auto px-4">
+      <div className="page-shell">
         {/* 头部 */}
         <div className="mb-8">
           <Link 

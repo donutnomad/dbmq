@@ -21,4 +21,6 @@ type Repo interface {
 	FindAllActiveGroups(ctx context.Context, timeout time.Duration) ([]string, error)
 	// FindAllGroups 查找所有消费组
 	FindAllGroups(ctx context.Context) ([]string, error)
+	// Delete 删除消费组代际
+	Delete(ctx context.Context, groupID string) error
 }

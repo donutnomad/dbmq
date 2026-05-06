@@ -12,6 +12,7 @@ import (
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
+	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
 	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,7 @@ func newDeps(db interfaces.DB) *Deps {
 		Producer:             dbmq.MustNewProducer(dbmq.ProducerConfig{DB: db}), // 创建 Producer 用于重发消息
 		ManualAssignmentRepo: manualassignmentrepo.New(db),
 		ConsumerGroupRepo:    consumergrouprepo.New(db),
+		HeartbeatRepo:        heartbeatrepo.New(db),
 		StartTime:            func() int64 { return now.Unix() },
 	}
 }

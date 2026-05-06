@@ -218,17 +218,6 @@ export interface CreateManualAssignmentRequest {
   partition: number;
 }
 
-// RMQ 消费者信息
-export interface RMQConsumerInfo {
-  consumerId: string;
-  queueName: string;
-  prefetchCount: number;
-  exclusive: boolean;
-  lastHeartbeat: string;
-  offline: boolean;
-  paused: boolean;
-} 
-
 // 重发消息相关类型
 export interface ResendMessageItem {
   topic: string;

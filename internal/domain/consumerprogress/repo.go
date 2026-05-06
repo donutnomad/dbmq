@@ -20,4 +20,6 @@ type Repo interface {
 	CommitWithSubscriptionRegistration(ctx context.Context, groupID string, generationID uint, partition types.PartitionInfo, lastConsumedMessageID, subscriptionStartWatermark int64) error
 	// GetLowWatermarks 获取消费组低水位线
 	GetLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error)
+	// DeleteByGroup 删除消费组的消费进度
+	DeleteByGroup(ctx context.Context, groupID string) error
 }

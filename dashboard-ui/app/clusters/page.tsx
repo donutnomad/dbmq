@@ -153,7 +153,7 @@ export default function ClustersPage() {
     <div className="min-h-screen bg-gray-50">
       {/* 头部 */}
       <header className="bg-white shadow-sm">
-        <div className="max-w-[98%] mx-auto px-4">
+        <div className="page-shell">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center space-x-4">
               <Link href="/" className="text-gray-500 hover:text-gray-700">
@@ -204,7 +204,7 @@ export default function ClustersPage() {
         </div>
       </header>
 
-      <main className="max-w-[98%] mx-auto px-4 py-4">
+      <main className="page-shell py-4">
         {/* 集群概览统计 */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
           <StatCard

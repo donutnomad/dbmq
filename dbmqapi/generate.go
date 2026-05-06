@@ -241,6 +241,20 @@ func (a *ConsumerGroupAPIWrap) TriggerRebalance(ctx *gin.Context) {
 	onGinResponse[MessageResp](ctx, result, err)
 }
 
+// Delete
+// @Summary 删除消费组
+// @Tags Consumer-Group
+// @Accept json
+// @Produce json
+// @Param groupId path string true "groupId"
+// @Success 200 {object} MessageResp
+// @Router /dbmq/api/v1/consumer-groups/{groupId} [delete]
+func (a *ConsumerGroupAPIWrap) Delete(ctx *gin.Context) {
+	groupId := ctx.Param("groupId")
+	result, err := a.inner.Delete(ctx.Request.Context(), groupId)
+	onGinResponse[MessageResp](ctx, result, err)
+}
+
 func (a *ConsumerGroupAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	var handlers []gin.HandlerFunc
 	if a.handler != nil {
@@ -265,10 +279,19 @@ func (a *ConsumerGroupAPIWrap) BindTriggerRebalance(router gin.IRoutes, preHandl
 	a.bind(router, "POST", "/dbmq/api/v1/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
 }
 
+func (a *ConsumerGroupAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Delete)
+}
+
 func (a *ConsumerGroupAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	a.BindList(router, preHandlers...)
 	a.BindGet(router, preHandlers...)
 	a.BindTriggerRebalance(router, preHandlers...)
+	a.BindDelete(router, preHandlers...)
 }
 
 type DBMQAPIWrap struct {

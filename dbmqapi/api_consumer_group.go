@@ -2,6 +2,7 @@ package dbmqapi
 
 import (
 	"context"
+	"fmt"
 )
 
 // ConsumerGroupAPI 消费组管理 API
@@ -17,6 +18,9 @@ type ConsumerGroupAPI interface {
 	// TriggerRebalance 强制触发消费组重新均衡
 	// @POST(/{groupId}/rebalance)
 	TriggerRebalance(ctx context.Context, groupId string) (MessageResp, error)
+	// Delete 删除消费组
+	// @DELETE(/{groupId})
+	Delete(ctx context.Context, groupId string) (MessageResp, error)
 }
 
 type consumerGroupAPI struct {
@@ -122,4 +126,20 @@ func (a *consumerGroupAPI) TriggerRebalance(ctx context.Context, groupId string)
 	return MessageResp{
 		Message: "重新均衡已触发，更改将在下一个检查周期内生效",
 	}, nil
+}
+
+func (a *consumerGroupAPI) Delete(ctx context.Context, groupId string) (MessageResp, error) {
+	activeMembers, err := a.deps.HeartbeatRepo.FindActive(ctx, groupId, defaultHeartbeatTimeout)
+	if err != nil {
+		return MessageResp{}, err
+	}
+	if len(activeMembers) > 0 {
+		return MessageResp{}, fmt.Errorf("active consumer group cannot be deleted")
+	}
+
+	if err := a.deps.ConsumerGroupRepo.Delete(ctx, groupId); err != nil {
+		return MessageResp{}, err
+	}
+
+	return MessageResp{Message: "消费组已删除"}, nil
 }

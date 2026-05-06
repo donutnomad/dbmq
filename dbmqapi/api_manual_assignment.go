@@ -53,7 +53,13 @@ func (a *manualAssignmentAPI) Create(ctx context.Context, req CreateManualAssign
 }
 
 func (a *manualAssignmentAPI) List(ctx context.Context, req ListManualAssignmentsReq) ([]ManualAssignmentResp, error) {
-	assignments, err := a.repo.GetByGroup(ctx, req.GroupID)
+	var assignments []*manualassignment.Assignment
+	var err error
+	if req.GroupID == "" {
+		assignments, err = a.repo.GetAll(ctx)
+	} else {
+		assignments, err = a.repo.GetByGroup(ctx, req.GroupID)
+	}
 	if err != nil {
 		return nil, err
 	}

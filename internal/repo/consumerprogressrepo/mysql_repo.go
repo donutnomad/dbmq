@@ -137,5 +137,11 @@ func (r *mysqlRepo) GetLowWatermarks(ctx context.Context) (map[types.PartitionIn
 	return watermarks, nil
 }
 
+func (r *mysqlRepo) DeleteByGroup(ctx context.Context, groupID string) error {
+	return r.db.WithContext(ctx).
+		Where("`group_id` = ?", groupID).
+		Delete(&ProgressPO{}).Error
+}
+
 // 编译时接口实现检查
 var _ consumerprogress.Repo = (*mysqlRepo)(nil)

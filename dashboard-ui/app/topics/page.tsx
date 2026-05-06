@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, Suspense } from 'react';
-import {useSearchParams} from 'next/navigation';
+import {useRouter, useSearchParams} from 'next/navigation';
 import { DBMQAPIClient } from '@/lib/api';
-import { TopicMetrics, Message, PartitionStats } from '@/lib/types';
+import { TopicMetrics, Message, PartitionStats, ConsumerGroupMetrics, GroupMember } from '@/lib/types';
 import { formatNumber, formatBytes, formatTimestamp } from '@/lib/utils';
 import { StatCard } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -25,7 +25,9 @@ import {
   Copy,
   Download,
   X,
-  Send
+  Send,
+  Trash2,
+  Users,
 } from 'lucide-react';
 import Link from 'next/link';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -35,10 +37,14 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 function TopicDetailContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const topicName = searchParams.get('name') as string;
 
   const [topic, setTopic] = useState<TopicMetrics | null>(null);
+  const [hasSubscribers, setHasSubscribers] = useState(false);
+  const [subscribedGroups, setSubscribedGroups] = useState<ConsumerGroupMetrics[]>([]);
+  const [deletingTopic, setDeletingTopic] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -65,6 +71,23 @@ function TopicDetailContent() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalMessages, setTotalMessages] = useState(0);
 
+  const memberConsumesTopic = useCallback((member: GroupMember, targetTopic: string): boolean => {
+    if (member.subscribedTopics?.includes(targetTopic)) {
+      return true;
+    }
+
+    const assignment = member.assignment;
+    if (!assignment || typeof assignment !== 'object') {
+      return false;
+    }
+
+    if (Array.isArray(assignment)) {
+      return assignment.some(item => item.Topic === targetTopic);
+    }
+
+    return Object.prototype.hasOwnProperty.call(assignment, targetTopic);
+  }, []);
+
   // 监听加载状态变化
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -88,6 +111,22 @@ function TopicDetailContent() {
       setLoading(true);
       const topicData = await DBMQAPIClient.getTopic(topicName);
       setTopic(topicData);
+      const groups = await DBMQAPIClient.getConsumerGroups();
+      const topicGroups = groups.filter(group => (group.partitionLags || []).some(lag => lag.topic === topicName));
+      setHasSubscribers(topicGroups.length > 0);
+      const detailedGroups = await Promise.all(
+        topicGroups.map(async (group) => {
+          const groupId = group.groupId || group.name;
+          if (!groupId) return group;
+          try {
+            return await DBMQAPIClient.getConsumerGroup(groupId);
+          } catch (err) {
+            console.warn('Failed to load consumer group detail:', groupId, err);
+            return group;
+          }
+        })
+      );
+      setSubscribedGroups(detailedGroups);
       setError(null);
 
       // 加载分区统计信息
@@ -112,6 +151,22 @@ function TopicDetailContent() {
       setLoading(false);
     }
   }, [topicName]);
+
+  const handleDeleteTopic = useCallback(async () => {
+    if (hasSubscribers || deletingTopic) return;
+    if (!confirm(`确定要删除 Topic ${topicName} 吗？`)) return;
+
+    setDeletingTopic(true);
+    try {
+      await DBMQAPIClient.deleteTopic(topicName);
+      router.push('/');
+    } catch (err) {
+      console.error('Failed to delete topic:', err);
+      alert('删除 Topic 失败: ' + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      setDeletingTopic(false);
+    }
+  }, [topicName, hasSubscribers, deletingTopic, router]);
 
   // 加载消息列表
   const loadMessages = useCallback(async () => {
@@ -399,7 +454,7 @@ function TopicDetailContent() {
       <div className="min-h-screen bg-gray-50">
         {/* 头部 */}
         <header className="bg-white shadow-sm">
-          <div className="mx-4 xl:mx-8">
+          <div className="page-shell">
             <div className="flex items-center py-4">
               <Link
                   href="/"
@@ -412,7 +467,19 @@ function TopicDetailContent() {
                 <h1 className="text-xl font-medium text-gray-900">Topic 详情</h1>
                 <p className="text-sm text-gray-600">{decodeURIComponent(topicName)}</p>
               </div>
-              <Button
+              <div className="flex items-center gap-2">
+                <Button
+                    size="sm"
+                    variant="outline"
+                    className={hasSubscribers ? 'text-gray-300' : 'text-red-600 hover:text-red-800 border-red-200 hover:bg-red-50'}
+                    disabled={hasSubscribers || deletingTopic}
+                    title={hasSubscribers ? 'Topic 有消费组订阅，无法删除' : '删除 Topic'}
+                    onClick={handleDeleteTopic}
+                >
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  {deletingTopic ? '删除中...' : '删除'}
+                </Button>
+                <Button
                   onClick={() => {
                     loadTopicDetail();
                     loadMessages();
@@ -420,14 +487,15 @@ function TopicDetailContent() {
                   size="sm"
                   variant="outline"
                   className="text-gray-600 hover:text-gray-800"
-              >
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              </Button>
+                >
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
             </div>
           </div>
         </header>
 
-        <main className="mx-4 xl:mx-8 py-6">
+        <main className="page-shell py-6">
           {/* 统计卡片 */}
           <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
             <StatCard
@@ -454,6 +522,76 @@ function TopicDetailContent() {
                 icon={<Hash className="h-5 w-5 text-indigo-500" />}
                 className="bg-indigo-50 border-none"
             />
+          </div>
+
+          {/* 消费组 */}
+          <div className="bg-white rounded-lg mb-6">
+            <div className="px-4 py-3 border-b border-gray-100">
+              <h3 className="text-sm font-medium text-gray-900 flex items-center">
+                <Users className="h-4 w-4 mr-2 text-blue-500" />
+                消费组
+              </h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                <tr className="bg-gray-50">
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">消费组</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">分区数</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">待消费</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">消费者</th>
+                </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                {subscribedGroups.length > 0 ? (
+                  subscribedGroups.map((group) => {
+                    const groupId = group.groupId || group.name || '--';
+                    const topicLags = (group.partitionLags || []).filter(lag => lag.topic === topicName);
+                    const totalLag = topicLags.reduce((sum, lag) => sum + (lag.lag || 0), 0);
+                    const topicMembers = (group.members || []).filter(member => memberConsumesTopic(member, topicName));
+
+                    return (
+                      <tr key={groupId} className="hover:bg-gray-50">
+                        <td className="px-4 py-2">
+                          <Link
+                            href={`/consumer-groups?id=${encodeURIComponent(groupId)}`}
+                            className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                          >
+                            {groupId}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-700">
+                          {topicLags.length}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-700">
+                          {formatNumber(totalLag)}
+                        </td>
+                        <td className="px-4 py-2">
+                          {topicMembers.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {topicMembers.map((member) => (
+                                <Badge key={member.memberId} variant="outline" className="max-w-[260px] truncate bg-blue-50 text-blue-700 border-blue-200">
+                                  {member.memberId}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-500">暂无成员数据</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-4 text-sm text-gray-500 text-center">
+                      暂无消费组消费此 Topic
+                    </td>
+                  </tr>
+                )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* 分区详情 */}

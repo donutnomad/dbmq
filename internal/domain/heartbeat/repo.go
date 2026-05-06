@@ -15,6 +15,8 @@ type Repo interface {
 	MarkOffline(ctx context.Context, groupID, consumerID string) error
 	// Delete 删除消费者心跳记录
 	Delete(ctx context.Context, groupID, consumerID string) error
+	// DeleteByGroup 删除消费组的所有消费者心跳记录
+	DeleteByGroup(ctx context.Context, groupID string) error
 	// FindActive 查找活跃消费者
 	FindActive(ctx context.Context, groupID string, timeout time.Duration) ([]*Heartbeat, error)
 	// FindAll 查找所有消费者（包括离线）

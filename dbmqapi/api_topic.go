@@ -119,6 +119,23 @@ func (a *topicAPI) Create(ctx context.Context, req CreateTopicReq) (MessageResp,
 }
 
 func (a *topicAPI) Delete(ctx context.Context, topicName string) (MessageResp, error) {
+	groups, err := a.deps.ConsumerQuery.GetAllConsumerGroupsMetrics(ctx)
+	if err != nil {
+		return MessageResp{}, err
+	}
+	for _, group := range groups {
+		for _, assignedTopic := range group.AssignedTopics {
+			if assignedTopic == topicName {
+				return MessageResp{}, fmt.Errorf("topic %s is subscribed by consumer group %s", topicName, group.GroupID)
+			}
+		}
+		for _, lag := range group.PartitionLags {
+			if lag.Topic == topicName {
+				return MessageResp{}, fmt.Errorf("topic %s is subscribed by consumer group %s", topicName, group.GroupID)
+			}
+		}
+	}
+
 	if err := a.deps.AdminClient.DeleteTopics(ctx, []string{topicName}); err != nil {
 		return MessageResp{}, err
 	}

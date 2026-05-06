@@ -30,20 +30,31 @@ export function formatBytes(bytes: number | undefined | null): string {
 }
 
 // 格式化运行时间
-export function formatUptime(seconds: number | undefined | null): string {
-  if (!seconds) return '--';
-  
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  
+export function formatUptime(value: number | string | undefined | null): string {
+  if (value === undefined || value === null || value === '') return '--';
+
+  const seconds = typeof value === 'string'
+    ? Number(value.replace(/s$/i, ''))
+    : value;
+
+  if (!Number.isFinite(seconds) || seconds < 0) return '--';
+
+  const totalSeconds = Math.floor(seconds);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
   if (days > 0) {
-    return `${days}天 ${hours}小时`;
-  } else if (hours > 0) {
-    return `${hours}小时 ${minutes}分钟`;
-  } else {
-    return `${minutes}分钟`;
+    return `${days}天 ${hours}小时 ${minutes}分钟`;
   }
+  if (hours > 0) {
+    return `${hours}小时 ${minutes}分钟`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分钟 ${remainingSeconds}秒`;
+  }
+  return `${remainingSeconds}秒`;
 }
 
 // 格式化时间戳

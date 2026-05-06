@@ -170,7 +170,7 @@ export default function ProducerPage() {
     <div className="min-h-screen bg-gray-50">
       {/* 头部 */}
       <header className="bg-white border-b border-gray-200">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="page-shell">
           <div className="flex justify-between items-center py-6">
             <div className="flex items-center">
               <Link 
@@ -189,7 +189,7 @@ export default function ProducerPage() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="page-shell py-8">
         {/* 消息提示 */}
         {message && (
           <div className={`mb-6 p-4 rounded-md ${

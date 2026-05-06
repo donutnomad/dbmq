@@ -285,7 +285,7 @@ type ManualAssignmentResp struct {
 
 // ListManualAssignmentsReq 查询手动分区分配列表请求
 type ListManualAssignmentsReq struct {
-	GroupID string `form:"group_id" binding:"required"` // 消费组 ID
+	GroupID string `form:"group_id"` // 消费组 ID，为空时返回全部
 }
 
 // ==================== Dashboard API Types ====================

@@ -84,6 +84,12 @@ func (r *mysqlRepo) Delete(ctx context.Context, groupID, consumerID string) erro
 		Delete(&HeartbeatPO{}).Error
 }
 
+func (r *mysqlRepo) DeleteByGroup(ctx context.Context, groupID string) error {
+	return r.db.WithContext(ctx).
+		Where("`group_id` = ?", groupID).
+		Delete(&HeartbeatPO{}).Error
+}
+
 func (r *mysqlRepo) FindActive(ctx context.Context, groupID string, timeout time.Duration) ([]*heartbeat.Heartbeat, error) {
 	var activeConsumers []HeartbeatPO
 	err := r.db.WithContext(ctx).
