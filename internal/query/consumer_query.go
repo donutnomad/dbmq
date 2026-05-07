@@ -35,6 +35,10 @@ type ConsumerQuery interface {
 	GetAllConsumerGroupsMetrics(ctx context.Context) ([]ConsumerGroupMetrics, error)
 	// GetAllConsumerGroupsSummary 获取所有消费组摘要信息
 	GetAllConsumerGroupsSummary(ctx context.Context) ([]ConsumerGroupMetrics, error)
+	// GetConsumerGroupsByTopic 获取消费指定 Topic 的消费组信息
+	GetConsumerGroupsByTopic(ctx context.Context, topic string) ([]ConsumerGroupMetrics, error)
+	// GetAllConsumers 获取所有消费者信息
+	GetAllConsumers(ctx context.Context) ([]ConsumerMetrics, error)
 }
 
 // consumerQueryMySQL 消费组查询 MySQL 实现
@@ -68,13 +72,17 @@ const partitionLagByGroupSQL = `
 const totalLagByGroupsSQL = `
 	SELECT
 		p.group_id,
-		COALESCE(SUM(CASE WHEN m.id > p.last_consumed_message_id THEN 1 ELSE 0 END), 0) AS total_lag
+		COUNT(m.id) AS total_lag
 	FROM mq_consumer_group_consumption_progress p
 	LEFT JOIN mq_messages m
-		ON m.topic = p.topic AND m.` + "`partition`" + ` = p.` + "`partition`" + `
+		ON m.topic = p.topic
+		AND m.` + "`partition`" + ` = p.` + "`partition`" + `
+		AND m.id > p.last_consumed_message_id
 	WHERE p.group_id IN ?
 	GROUP BY p.group_id
 `
+
+const consumerHeartbeatTimeout = 30 * time.Second
 
 // NewConsumerQuery 创建消费组查询实例
 func NewConsumerQuery(db interfaces.DB) ConsumerQuery {
@@ -661,17 +669,65 @@ func (q *consumerQueryMySQL) GetAllConsumerGroupsMetrics(ctx context.Context) ([
 	return metricsSlice, nil
 }
 
+func (q *consumerQueryMySQL) GetAllConsumers(ctx context.Context) ([]ConsumerMetrics, error) {
+	var heartbeats []heartbeatrepo.HeartbeatPO
+	if err := q.db.WithContext(ctx).
+		Model(&heartbeatrepo.HeartbeatPO{}).
+		Order("offline ASC, group_id ASC, consumer_id ASC").
+		Find(&heartbeats).Error; err != nil {
+		return nil, err
+	}
+
+	timeoutCutoff := time.Now().Add(-consumerHeartbeatTimeout)
+	result := make([]ConsumerMetrics, 0, len(heartbeats))
+	for _, hb := range heartbeats {
+		assignment := make([]PartitionInfo, 0, len(hb.AssignedPartitions))
+		for _, part := range hb.AssignedPartitions {
+			assignment = append(assignment, PartitionInfo{
+				Topic:     part.Topic,
+				Partition: part.Partition,
+			})
+		}
+
+		status := "online"
+		switch {
+		case hb.Offline:
+			status = "offline"
+		case hb.LastHeartbeat.Before(timeoutCutoff):
+			status = "timeout"
+		}
+
+		result = append(result, ConsumerMetrics{
+			GroupID:          hb.GroupID,
+			ConsumerID:       hb.ConsumerID,
+			ClientID:         hb.ConsumerID,
+			Host:             "localhost",
+			GenerationID:     int(hb.GenerationID),
+			Offline:          hb.Offline,
+			Status:           status,
+			LastHeartbeat:    hb.LastHeartbeat,
+			OfflineAt:        hb.OfflineAt,
+			SubscribedTopics: append([]string{}, hb.SubscribedTopics...),
+			Assignment:       assignment,
+		})
+	}
+
+	return result, nil
+}
+
 func (q *consumerQueryMySQL) GetAllConsumerGroupsSummary(ctx context.Context) ([]ConsumerGroupMetrics, error) {
 	type generationRow struct {
 		GroupID      string `gorm:"column:group_id"`
 		GenerationID int    `gorm:"column:generation_id"`
 	}
 	var allGenerations []generationRow
+
 	if err := q.db.WithContext(ctx).Table("mq_consumer_group_generations").
 		Select("group_id, generation_id").
 		Find(&allGenerations).Error; err != nil {
 		return nil, fmt.Errorf("failed to get all groups: %w", err)
 	}
+
 	if len(allGenerations) == 0 {
 		return nil, nil
 	}
@@ -750,6 +806,125 @@ func (q *consumerQueryMySQL) GetAllConsumerGroupsSummary(ctx context.Context) ([
 			metrics.State = "Active"
 		}
 
+		result = append(result, metrics)
+	}
+
+	return result, nil
+}
+
+func (q *consumerQueryMySQL) GetConsumerGroupsByTopic(ctx context.Context, topic string) ([]ConsumerGroupMetrics, error) {
+	var progressRecords []consumerprogressrepo.ProgressPO
+	if err := q.db.WithContext(ctx).Model(&consumerprogressrepo.ProgressPO{}).
+		Where("topic = ?", topic).
+		Order("group_id ASC, `partition` ASC").
+		Find(&progressRecords).Error; err != nil {
+		return nil, err
+	}
+	if len(progressRecords) == 0 {
+		return nil, nil
+	}
+
+	groupIDs := make([]string, 0, len(progressRecords))
+	progressByGroup := make(map[string][]consumerprogressrepo.ProgressPO)
+	for _, record := range progressRecords {
+		if _, ok := progressByGroup[record.GroupID]; !ok {
+			groupIDs = append(groupIDs, record.GroupID)
+		}
+		progressByGroup[record.GroupID] = append(progressByGroup[record.GroupID], record)
+	}
+
+	var allHeartbeats []heartbeatrepo.HeartbeatPO
+	if err := q.db.WithContext(ctx).
+		Where("group_id IN ?", groupIDs).
+		Where("offline = ? AND last_heartbeat > DATE_SUB(NOW(), INTERVAL 1 HOUR)", false).
+		Order("group_id ASC, consumer_id ASC").
+		Find(&allHeartbeats).Error; err != nil {
+		return nil, err
+	}
+	heartbeatsByGroup := make(map[string][]heartbeatrepo.HeartbeatPO)
+	for _, hb := range allHeartbeats {
+		heartbeatsByGroup[hb.GroupID] = append(heartbeatsByGroup[hb.GroupID], hb)
+	}
+
+	type msgStatRow struct {
+		Partition  uint  `gorm:"column:partition"`
+		LatestID   int64 `gorm:"column:latest_id"`
+		TotalCount int64 `gorm:"column:total_count"`
+	}
+	var msgStats []msgStatRow
+	if err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+		Select("`partition`, COALESCE(MAX(id), -1) AS latest_id, COUNT(*) AS total_count").
+		Where("topic = ?", topic).
+		Group("`partition`").
+		Find(&msgStats).Error; err != nil {
+		return nil, err
+	}
+	msgStatMap := make(map[uint]msgStatRow, len(msgStats))
+	for _, stat := range msgStats {
+		msgStatMap[stat.Partition] = stat
+	}
+
+	lagCountMap, err := q.batchLoadLagCounts(ctx, progressRecords)
+	if err != nil {
+		return nil, err
+	}
+
+	heartbeatTimeout := 30 * time.Second
+	cutoff := time.Now().Add(-heartbeatTimeout)
+	result := make([]ConsumerGroupMetrics, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		heartbeats := heartbeatsByGroup[groupID]
+		metrics := ConsumerGroupMetrics{
+			GroupID:        groupID,
+			ProtocolType:   "consumer",
+			AssignedTopics: []string{topic},
+			Members:        make([]ConsumerMemberMetrics, 0, len(heartbeats)),
+			PartitionLags:  make([]PartitionLagMetrics, 0, len(progressByGroup[groupID])),
+		}
+
+		var onlineCount int
+		for _, item := range heartbeats {
+			var assignment []PartitionInfo
+			for _, p := range item.AssignedPartitions {
+				if p.Topic == topic {
+					assignment = append(assignment, PartitionInfo{Topic: p.Topic, Partition: p.Partition})
+				}
+			}
+			metrics.Members = append(metrics.Members, ConsumerMemberMetrics{
+				ConsumerID:    item.ConsumerID,
+				ClientID:      item.ConsumerID,
+				Host:          "localhost",
+				LastHeartbeat: item.LastHeartbeat,
+				Assignment:    assignment,
+			})
+			if !item.Offline && !item.LastHeartbeat.Before(cutoff) {
+				onlineCount++
+				metrics.LastHeartbeat = item.LastHeartbeat
+			}
+		}
+		if onlineCount == 0 {
+			metrics.State = "Dead"
+		} else {
+			metrics.State = "Active"
+		}
+
+		var totalLag int64
+		for i := range progressByGroup[groupID] {
+			progress := &progressByGroup[groupID][i]
+			stat := msgStatMap[progress.Partition]
+			key := lagLookupKey{Topic: progress.Topic, Partition: progress.Partition}
+			partitionLag := buildPartitionLagMetrics(
+				progress.Topic,
+				int(progress.Partition),
+				progress,
+				stat.LatestID,
+				stat.TotalCount,
+				lagCountMap[key],
+			)
+			metrics.PartitionLags = append(metrics.PartitionLags, partitionLag)
+			totalLag += partitionLag.Lag
+		}
+		metrics.Lag = totalLag
 		result = append(result, metrics)
 	}
 

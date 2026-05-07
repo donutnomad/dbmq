@@ -59,7 +59,7 @@ export function JsonViewer({
 
   return (
     <div className={cn(
-      "json-viewer-container rounded-md overflow-auto",
+      "json-viewer-container w-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden rounded-md",
       theme === 'dark' ? 'bg-gray-900' : 'bg-white',
       className
     )}>
@@ -67,6 +67,8 @@ export function JsonViewer({
         value={jsonData}
         collapsed={collapsed}
         style={{
+          width: 'max-content',
+          minWidth: '100%',
           backgroundColor: theme === 'dark' ? '#1e293b' : '#ffffff',
           padding: '1rem',
           fontSize: '0.875rem',
@@ -75,6 +77,7 @@ export function JsonViewer({
         displayDataTypes={false}
         displayObjectSize={true}
         enableClipboard={true}
+        shortenTextAfterLength={0}
       />
     </div>
   );

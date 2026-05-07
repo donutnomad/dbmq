@@ -3,6 +3,7 @@ package dbmqapi
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/donutnomad/dbmq/internal/query"
 )
@@ -50,23 +51,51 @@ func buildPartitionLagResponses(lags []query.PartitionLagMetrics) []PartitionLag
 	return partitionLags
 }
 
+func buildConsumerMemberResponses(members []query.ConsumerMemberMetrics, includeMembers bool) []ConsumerMemberDTO {
+	if !includeMembers || len(members) == 0 {
+		return nil
+	}
+
+	result := make([]ConsumerMemberDTO, len(members))
+	for i, member := range members {
+		assignment := make(map[string][]int)
+		for _, part := range member.Assignment {
+			assignment[part.Topic] = append(assignment[part.Topic], int(part.Partition))
+		}
+
+		result[i] = ConsumerMemberDTO{
+			MemberID:      member.ConsumerID,
+			ClientID:      member.ClientID,
+			Host:          member.Host,
+			LastHeartbeat: member.LastHeartbeat.Format(time.RFC3339),
+			Assignment:    assignment,
+		}
+	}
+	return result
+}
+
+func buildConsumerGroupResponses(groups []query.ConsumerGroupMetrics, includeMembers bool) []ConsumerGroupResp {
+	result := make([]ConsumerGroupResp, len(groups))
+	for i, g := range groups {
+		result[i] = ConsumerGroupResp{
+			GroupID:       g.GroupID,
+			State:         g.State,
+			MemberCount:   len(g.Members),
+			TotalLag:      g.Lag,
+			PartitionLags: buildPartitionLagResponses(g.PartitionLags),
+			Members:       buildConsumerMemberResponses(g.Members, includeMembers),
+		}
+	}
+	return result
+}
+
 func (a *consumerGroupAPI) List(ctx context.Context) ([]ConsumerGroupResp, error) {
 	groups, err := a.deps.ConsumerQuery.GetAllConsumerGroupsSummary(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]ConsumerGroupResp, len(groups))
-	for i, g := range groups {
-		result[i] = ConsumerGroupResp{
-			GroupID:     g.GroupID,
-			State:       g.State,
-			MemberCount: len(g.Members),
-			TotalLag:    g.Lag,
-		}
-	}
-
-	return result, nil
+	return buildConsumerGroupResponses(groups, false), nil
 }
 
 func (a *consumerGroupAPI) Get(ctx context.Context, groupId string) (ConsumerGroupResp, error) {

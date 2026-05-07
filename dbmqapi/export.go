@@ -29,6 +29,7 @@ func registerAPIs(routes gin.IRoutes, dashboardPath, accessToken string, deps *D
 	NewHealthAPIWrap(NewHealthAPI(deps), h).BindAll(routes)
 	NewDashboardAPIWrap(NewDashboardAPI(deps), h).BindAll(routes)
 	NewTopicAPIWrap(NewTopicAPI(deps), h).BindAll(routes)
+	NewConsumerAPIWrap(NewConsumerAPI(deps), h).BindAll(routes)
 	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(deps), h).BindAll(routes)
 	NewDBMQAPIWrap(NewDBMQAPI(deps), h).BindAll(routes)
 	NewClusterAPIWrap(NewClusterAPI(deps), h).BindAll(routes)

@@ -90,6 +90,14 @@ func (r *mysqlRepo) DeleteByGroup(ctx context.Context, groupID string) error {
 		Delete(&HeartbeatPO{}).Error
 }
 
+func (r *mysqlRepo) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {
+	result := r.db.WithContext(ctx).
+		Where("`last_heartbeat` < ?", before).
+		Limit(limit).
+		Delete(&HeartbeatPO{})
+	return result.RowsAffected, result.Error
+}
+
 func (r *mysqlRepo) FindActive(ctx context.Context, groupID string, timeout time.Duration) ([]*heartbeat.Heartbeat, error) {
 	var activeConsumers []HeartbeatPO
 	err := r.db.WithContext(ctx).

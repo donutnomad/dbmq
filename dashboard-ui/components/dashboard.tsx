@@ -18,6 +18,7 @@ import {
   HardDrive,
   LogOut,
   SlidersHorizontal,
+  UserSquare2,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -25,6 +26,7 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [dbmqStats, setDbmqStats] = useState<DBMQStats | null>(null);
   const [manualAssignments, setManualAssignments] = useState<ManualAssignment[]>([]);
+  const [hasAccessToken, setHasAccessToken] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -33,14 +35,10 @@ export function Dashboard() {
   // 加载仪表板数据
   const loadData = async () => {
     try {
-      const [dashboardData, stats, assignmentData] = await Promise.all([
-        DBMQAPIClient.getDashboardData(),
-        DBMQAPIClient.getDBMQStats().catch(() => null),
-        DBMQAPIClient.getAllManualAssignments().catch(() => []),
-      ]);
+      const dashboardData = await DBMQAPIClient.getDashboardData();
       setData(dashboardData);
-      setDbmqStats(stats);
-      setManualAssignments(assignmentData);
+      setDbmqStats(dashboardData.stats || null);
+      setManualAssignments(dashboardData.manualAssignments || []);
       setError(null);
       setLastUpdate(new Date());
     } catch (err) {
@@ -67,8 +65,12 @@ export function Dashboard() {
     };
   }, [autoRefresh]);
 
+  useEffect(() => {
+    setHasAccessToken(Boolean(getAccessToken()));
+  }, []);
+
   // 计算统计数据
-  const totalMessages = data?.topics?.reduce((sum, topic) => sum + (topic.messageCount || 0), 0) || 0;
+  const totalMessages = dbmqStats?.cluster?.totalMessages || 0;
 
   if (loading) {
     return (
@@ -113,6 +115,12 @@ export function Dashboard() {
                   集群管理
                 </Button>
               </Link>
+              <Link href="/consumers">
+                <Button size="sm" variant="outline" className="text-indigo-600 hover:text-indigo-800">
+                  <UserSquare2 className="h-4 w-4 mr-1" />
+                  消费者
+                </Button>
+              </Link>
               <div className="flex items-center">
                 <label className="flex items-center cursor-pointer">
                   <input
@@ -139,9 +147,13 @@ export function Dashboard() {
               <Button onClick={loadData} size="sm" variant="outline" disabled={loading}>
                 <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               </Button>
-              {getAccessToken() && (
+              {hasAccessToken && (
                 <Button
-                  onClick={() => { clearAccessToken(); window.location.reload(); }}
+                  onClick={() => {
+                    clearAccessToken();
+                    setHasAccessToken(false);
+                    window.location.reload();
+                  }}
                   size="sm"
                   variant="outline"
                   className="text-red-500 hover:text-red-700"
@@ -166,7 +178,7 @@ export function Dashboard() {
           />
           <StatCard
             title="消费组总数"
-            value={data?.consumerGroups?.length || 0}
+            value={dbmqStats?.cluster?.consumerGroupCount || 0}
             icon={<Users className="h-5 w-5 text-green-500" />}
             className="bg-green-50 border-none"
           />
@@ -419,7 +431,7 @@ function ConsumerGroupsList({
                         href={`/consumer-groups/?id=${encodeURIComponent(groupId)}`}
                         className="block w-full h-full"
                       >
-                        {formatNumber(group.lag || 0)}
+                        {formatNumber(group.totalLag ?? group.lag ?? 0)}
                       </Link>
                     </td>
                   </tr>

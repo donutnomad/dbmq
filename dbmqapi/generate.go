@@ -17,6 +17,13 @@ func NewClusterAPIWrap(inner ClusterAPI, handler ClusterAPIHandler) *ClusterAPIW
 	}
 }
 
+func NewConsumerAPIWrap(inner ConsumerAPI, handler ConsumerAPIHandler) *ConsumerAPIWrap {
+	return &ConsumerAPIWrap{
+		inner:   inner,
+		handler: handler,
+	}
+}
+
 func NewConsumerGroupAPIWrap(inner ConsumerGroupAPI, handler ConsumerGroupAPIHandler) *ConsumerGroupAPIWrap {
 	return &ConsumerGroupAPIWrap{
 		inner:   inner,
@@ -67,6 +74,10 @@ func NewTopicProxyAPIWrap(inner TopicProxyAPI, handler TopicProxyAPIHandler) *To
 }
 
 type ClusterAPIHandler interface {
+	PreHandlers() []gin.HandlerFunc
+}
+
+type ConsumerAPIHandler interface {
 	PreHandlers() []gin.HandlerFunc
 }
 
@@ -182,6 +193,48 @@ func (a *ClusterAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerF
 	a.BindList(router, preHandlers...)
 	a.BindGetMetrics(router, preHandlers...)
 	a.BindGetBrokers(router, preHandlers...)
+}
+
+type ConsumerAPIWrap struct {
+	inner   ConsumerAPI
+	handler ConsumerAPIHandler
+}
+
+func (a *ConsumerAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers, innerHandlers []gin.HandlerFunc, f gin.HandlerFunc) {
+	var basePath string
+	if v, ok := router.(interface {
+		BasePath() string
+	}); ok {
+		basePath = v.BasePath()
+	}
+	handlers := make([]gin.HandlerFunc, 0, len(preHandlers)+len(innerHandlers)+1)
+	handlers = append(handlers, preHandlers...)
+	handlers = append(handlers, innerHandlers...)
+	handlers = append(handlers, f)
+	router.Handle(method, strings.TrimPrefix(path, basePath), handlers...)
+}
+
+// List
+// @Summary 获取所有消费者
+// @Tags Consumer
+// @Produce json
+// @Success 200 {object} []ConsumerResp
+// @Router /dbmq/api/v1/consumers [get]
+func (a *ConsumerAPIWrap) List(ctx *gin.Context) {
+	result, err := a.inner.List(ctx.Request.Context())
+	onGinResponse[[]ConsumerResp](ctx, result, err)
+}
+
+func (a *ConsumerAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "GET", "/dbmq/api/v1/consumers", preHandlers, handlers, a.List)
+}
+
+func (a *ConsumerAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	a.BindList(router, preHandlers...)
 }
 
 type ConsumerGroupAPIWrap struct {
@@ -747,6 +800,19 @@ func (a *TopicAPIWrap) GetMetrics(ctx *gin.Context) {
 	onGinResponse[TopicResp](ctx, result, err)
 }
 
+// ListConsumerGroups
+// @Summary 获取消费此 Topic 的消费组列表
+// @Tags Topic
+// @Produce json
+// @Param topicName path string true "topicName"
+// @Success 200 {object} []ConsumerGroupResp
+// @Router /dbmq/api/v1/topics/{topicName}/consumer-groups [get]
+func (a *TopicAPIWrap) ListConsumerGroups(ctx *gin.Context) {
+	topicName := ctx.Param("topicName")
+	result, err := a.inner.ListConsumerGroups(ctx.Request.Context(), topicName)
+	onGinResponse[[]ConsumerGroupResp](ctx, result, err)
+}
+
 func (a *TopicAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	var handlers []gin.HandlerFunc
 	if a.handler != nil {
@@ -787,12 +853,21 @@ func (a *TopicAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.Han
 	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/metrics", preHandlers, handlers, a.GetMetrics)
 }
 
+func (a *TopicAPIWrap) BindListConsumerGroups(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/consumer-groups", preHandlers, handlers, a.ListConsumerGroups)
+}
+
 func (a *TopicAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	a.BindList(router, preHandlers...)
 	a.BindGet(router, preHandlers...)
 	a.BindCreate(router, preHandlers...)
 	a.BindDelete(router, preHandlers...)
 	a.BindGetMetrics(router, preHandlers...)
+	a.BindListConsumerGroups(router, preHandlers...)
 }
 
 type TopicProxyAPIWrap struct {

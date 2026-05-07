@@ -24,12 +24,21 @@ type ClusterQuery interface {
 	GetClusterMetrics(ctx context.Context) (*ClusterMetrics, error)
 	// GetBrokerMetrics 获取 Broker 完整监控指标
 	GetBrokerMetrics(ctx context.Context, startTime func() int64) (*BrokerMetrics, error)
+	// GetTopicSummaryStats 获取 Topic 和分区汇总统计
+	GetTopicSummaryStats(ctx context.Context) (*TopicSummaryStats, error)
+	// GetConsumerGroupCount 获取消费组数量
+	GetConsumerGroupCount(ctx context.Context) (int, error)
+	// GetMessageTableStats 获取消息表元数据统计
+	GetMessageTableStats(ctx context.Context) (*TableStats, error)
 }
 
 // clusterQueryMySQL 集群查询 MySQL 实现
 type clusterQueryMySQL struct {
 	db interfaces.DB
 }
+
+const topicSummaryStatsSelectSQL = "COUNT(*) AS topic_count, COALESCE(SUM(partition_count), 0) AS partition_count"
+const consumerGroupCountTable = "mq_consumer_group_generations"
 
 // NewClusterQuery 创建集群查询实例
 func NewClusterQuery(db interfaces.DB) ClusterQuery {
@@ -50,6 +59,44 @@ func (q *clusterQueryMySQL) getBasicStats(ctx context.Context) (topicCount int, 
 
 	err = q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).Count(&messageCount).Error
 	return
+}
+
+func (q *clusterQueryMySQL) GetMessageTableStats(ctx context.Context) (*TableStats, error) {
+	var stats TableStats
+	err := q.db.WithContext(ctx).Raw(`
+		SELECT
+			COALESCE(TABLE_ROWS, 0) AS estimated_rows,
+			COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS total_bytes
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = DATABASE()
+			AND TABLE_NAME = ?
+	`, messagerepo.MessagePO{}.TableName()).Scan(&stats).Error
+	if err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
+
+func (q *clusterQueryMySQL) GetTopicSummaryStats(ctx context.Context) (*TopicSummaryStats, error) {
+	var stats TopicSummaryStats
+	err := q.db.WithContext(ctx).Model(&topicrepo.TopicPO{}).
+		Select(topicSummaryStatsSelectSQL).
+		Scan(&stats).Error
+	if err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
+
+func (q *clusterQueryMySQL) GetConsumerGroupCount(ctx context.Context) (int, error) {
+	var count int64
+	err := q.db.WithContext(ctx).
+		Table(consumerGroupCountTable).
+		Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
 }
 
 // GetClusterStats 获取集群统计信息

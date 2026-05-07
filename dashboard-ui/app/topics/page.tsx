@@ -36,10 +36,18 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function TopicDetailContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const topicName = searchParams.get('name') as string;
+  const topicName = safeDecodeURIComponent(searchParams.get('name') || '');
 
   const [topic, setTopic] = useState<TopicMetrics | null>(null);
   const [hasSubscribers, setHasSubscribers] = useState(false);
@@ -111,26 +119,14 @@ function TopicDetailContent() {
       setLoading(true);
       const topicData = await DBMQAPIClient.getTopic(topicName);
       setTopic(topicData);
-      const groups = await DBMQAPIClient.getConsumerGroups();
-      const topicGroups = groups.filter(group => (group.partitionLags || []).some(lag => lag.topic === topicName));
+      const topicGroups = await DBMQAPIClient.getTopicConsumerGroups(topicName);
       setHasSubscribers(topicGroups.length > 0);
-      const detailedGroups = await Promise.all(
-        topicGroups.map(async (group) => {
-          const groupId = group.groupId || group.name;
-          if (!groupId) return group;
-          try {
-            return await DBMQAPIClient.getConsumerGroup(groupId);
-          } catch (err) {
-            console.warn('Failed to load consumer group detail:', groupId, err);
-            return group;
-          }
-        })
-      );
-      setSubscribedGroups(detailedGroups);
+      setSubscribedGroups(topicGroups);
       setError(null);
 
-      // 加载分区统计信息
-      if (topicData.partitionCount) {
+      if (topicData.partitionStats && topicData.partitionStats.length > 0) {
+        setPartitionStats(topicData.partitionStats);
+      } else if (topicData.partitionCount) {
         const statsPromises: Promise<PartitionStats>[] = [];
         for (let i = 0; i < topicData.partitionCount; i++) {
           statsPromises.push(DBMQAPIClient.getPartitionStats(topicName, i));
@@ -465,7 +461,7 @@ function TopicDetailContent() {
               </Link>
               <div className="flex-1">
                 <h1 className="text-xl font-medium text-gray-900">Topic 详情</h1>
-                <p className="text-sm text-gray-600">{decodeURIComponent(topicName)}</p>
+                <p className="text-sm text-gray-600">{topicName}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -870,7 +866,7 @@ function TopicDetailContent() {
                       </div>
                     </div>
                 ) : (
-                    <Table>
+                    <Table className="table-fixed">
                       <TableHeader>
                         <TableRow>
                           <TableHead className="w-12">
@@ -930,8 +926,8 @@ function TopicDetailContent() {
                             {/* 展开行 */}
                             {expandedMessages.has(message.id) && (
                               <TableRow key={`${message.id}-expanded`}>
-                                <TableCell colSpan={7} className="bg-gray-50 p-0">
-                                  <div className="p-4 space-y-3">
+                                <TableCell colSpan={7} className="bg-gray-50 p-0 max-w-0">
+                                  <div className="min-w-0 max-w-full p-4 space-y-3">
                                     {/* 消息元数据 */}
                                     <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
                                       <span>Topic: <span className="font-mono text-gray-700">{message.topic}</span></span>
@@ -960,12 +956,13 @@ function TopicDetailContent() {
                                     )}
 
                                     {/* Value (消息体) */}
-                                    <div>
+                                    <div className="min-w-0 max-w-full">
                                       <div className="text-xs font-medium text-gray-600 mb-1">Value</div>
                                       <JsonViewer
                                         data={message.value}
                                         collapsed={false}
                                         theme="light"
+                                        className="max-w-full"
                                       />
                                     </div>
                                   </div>

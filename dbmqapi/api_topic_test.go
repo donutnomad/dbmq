@@ -41,3 +41,30 @@ func TestBuildTopicResponsesWithPartitionStatsDefaults(t *testing.T) {
 	require.Equal(t, int64(-1), results[0].PartitionStats[2].FirstMessageID)
 	require.Equal(t, int64(-1), results[0].PartitionStats[2].LastMessageID)
 }
+
+func TestListConsumerGroupsResponseIncludesMembers(t *testing.T) {
+	groups := []query.ConsumerGroupMetrics{
+		{
+			GroupID: "orders-group",
+			State:   "Active",
+			Lag:     12,
+			Members: []query.ConsumerMemberMetrics{
+				{
+					ConsumerID: "consumer-1",
+					ClientID:   "consumer-1",
+					Host:       "localhost",
+					Assignment: []query.PartitionInfo{
+						{Topic: "orders", Partition: 0},
+						{Topic: "orders", Partition: 1},
+					},
+				},
+			},
+		},
+	}
+
+	result := buildConsumerGroupResponses(groups, true)
+	require.Len(t, result, 1)
+	require.Len(t, result[0].Members, 1)
+	require.Equal(t, "consumer-1", result[0].Members[0].MemberID)
+	require.Equal(t, []int{0, 1}, result[0].Members[0].Assignment["orders"])
+}

@@ -93,11 +93,48 @@ func (q *topicQueryMySQL) GetTopicStats(ctx context.Context, topicName string, p
 	}
 
 	for i := range partitionCount {
-		partStats, err := q.GetPartitionStats(ctx, topicName, i)
-		if err != nil {
-			return nil, err
+		stats.Partitions[i] = PartitionStats{
+			Partition:      i,
+			FirstMessageID: -1,
+			LastMessageID:  -1,
 		}
-		stats.Partitions[i] = *partStats
+	}
+
+	type partitionStatRow struct {
+		Topic          string `gorm:"column:topic"`
+		Partition      uint   `gorm:"column:partition"`
+		FirstMessageID int64  `gorm:"column:first_message_id"`
+		LastMessageID  int64  `gorm:"column:last_message_id"`
+		MessageCount   int64  `gorm:"column:message_count"`
+		SizeBytes      int64  `gorm:"column:size_bytes"`
+		CreatedAt      string `gorm:"column:created_at"`
+		UpdatedAt      string `gorm:"column:updated_at"`
+	}
+
+	var rows []partitionStatRow
+	err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
+		Select(allTopicPartitionStatsSelectSQL).
+		Where("topic = ?", topicName).
+		Group("topic, `partition`").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get topic stats: %w", err)
+	}
+
+	for _, row := range rows {
+		if row.Partition >= partitionCount {
+			continue
+		}
+		partStats := PartitionStats{
+			Partition:      row.Partition,
+			FirstMessageID: row.FirstMessageID,
+			LastMessageID:  row.LastMessageID,
+			MessageCount:   row.MessageCount,
+			SizeBytes:      row.SizeBytes,
+			CreatedAt:      row.CreatedAt,
+			UpdatedAt:      row.UpdatedAt,
+		}
+		stats.Partitions[row.Partition] = partStats
 		stats.TotalMessages += partStats.MessageCount
 		stats.TotalSize += partStats.SizeBytes
 		if partStats.LastMessageID > stats.LatestOffset {
@@ -163,10 +200,11 @@ func (q *topicQueryMySQL) GetTopicMetrics(ctx context.Context, topicName string)
 	partitions := make([]PartitionMetricsDTO, len(topicStats.Partitions))
 	for i, p := range topicStats.Partitions {
 		partitions[i] = PartitionMetricsDTO{
-			Partition:    int(p.Partition),
-			LatestOffset: p.LastMessageID,
-			MessageCount: p.MessageCount,
-			SizeBytes:    p.SizeBytes,
+			Partition:      int(p.Partition),
+			FirstMessageID: p.FirstMessageID,
+			LatestOffset:   p.LastMessageID,
+			MessageCount:   p.MessageCount,
+			SizeBytes:      p.SizeBytes,
 		}
 	}
 
@@ -180,7 +218,6 @@ func (q *topicQueryMySQL) GetTopicMetrics(ctx context.Context, topicName string)
 
 // GetAllTopicsMetrics 获取所有 Topic 监控指标
 func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetrics, error) {
-	// 获取所有 Topic
 	var topics []topicrepo.TopicPO
 	if err := q.db.WithContext(ctx).Find(&topics).Error; err != nil {
 		return nil, fmt.Errorf("failed to get all topics: %w", err)
@@ -189,41 +226,6 @@ func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetri
 		return nil, nil
 	}
 
-	// 一次查询获取所有 topic+partition 的统计信息
-	type partitionStatRow struct {
-		Topic        string `gorm:"column:topic"`
-		Partition    uint   `gorm:"column:partition"`
-		MessageCount int64  `gorm:"column:message_count"`
-		SizeBytes    int64  `gorm:"column:size_bytes"`
-		LastMsgID    int64  `gorm:"column:last_msg_id"`
-	}
-	var rows []partitionStatRow
-	err := q.db.WithContext(ctx).Model(&messagerepo.MessagePO{}).
-		Select("topic, `partition`, COUNT(*) AS message_count, COALESCE(SUM(LENGTH(body)), 0) AS size_bytes, COALESCE(MAX(id), -1) AS last_msg_id").
-		Group("topic, `partition`").
-		Find(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get partition stats: %w", err)
-	}
-
-	// 按 topic 分组
-	type partStats struct {
-		Partition    uint
-		MessageCount int64
-		SizeBytes    int64
-		LastMsgID    int64
-	}
-	statsByTopic := make(map[string][]partStats)
-	for _, r := range rows {
-		statsByTopic[r.Topic] = append(statsByTopic[r.Topic], partStats{
-			Partition:    r.Partition,
-			MessageCount: r.MessageCount,
-			SizeBytes:    r.SizeBytes,
-			LastMsgID:    r.LastMsgID,
-		})
-	}
-
-	// 组装结果
 	metricsSlice := make([]TopicMetrics, 0, len(topics))
 	for _, t := range topics {
 		metrics := TopicMetrics{
@@ -243,25 +245,9 @@ func (q *topicQueryMySQL) GetAllTopicsMetrics(ctx context.Context) ([]TopicMetri
 			}
 		}
 
-		// 填充分区指标
 		partitions := make([]PartitionMetricsDTO, t.PartitionCount)
 		for i := range t.PartitionCount {
-			partitions[i] = PartitionMetricsDTO{Partition: int(i), LatestOffset: -1}
-		}
-		for _, ps := range statsByTopic[t.TopicName] {
-			if ps.Partition < t.PartitionCount {
-				partitions[ps.Partition] = PartitionMetricsDTO{
-					Partition:    int(ps.Partition),
-					LatestOffset: ps.LastMsgID,
-					MessageCount: ps.MessageCount,
-					SizeBytes:    ps.SizeBytes,
-				}
-			}
-			metrics.MessageCount += ps.MessageCount
-			metrics.SizeBytes += ps.SizeBytes
-			if ps.LastMsgID > metrics.LatestOffset {
-				metrics.LatestOffset = ps.LastMsgID
-			}
+			partitions[i] = PartitionMetricsDTO{Partition: int(i), FirstMessageID: -1, LatestOffset: -1}
 		}
 		metrics.Partitions = partitions
 		metricsSlice = append(metricsSlice, metrics)

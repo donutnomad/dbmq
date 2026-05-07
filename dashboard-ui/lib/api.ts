@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse } from './types';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, Consumer, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse } from './types';
 import { apiConfig } from '@/config/api.config';
 
 // 创建axios实例
@@ -92,6 +92,26 @@ export class DBMQAPIClient {
       return response.data.data;
     }
     throw new Error(response.data.error || 'Failed to fetch consumer groups');
+  }
+
+  // 获取所有消费者
+  static async getConsumers(): Promise<Consumer[]> {
+    const response = await apiClient.get<APIResponse<Consumer[]>>('/consumers');
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch consumers');
+  }
+
+  // 获取消费指定 Topic 的消费组
+  static async getTopicConsumerGroups(topicName: string): Promise<ConsumerGroupMetrics[]> {
+    const response = await apiClient.get<APIResponse<ConsumerGroupMetrics[]>>(
+      `/topics/${topicName}/consumer-groups`
+    );
+    if (response.data.success && response.data.data) {
+      return response.data.data;
+    }
+    throw new Error(response.data.error || 'Failed to fetch topic consumer groups');
   }
 
   // 获取单个消费组信息

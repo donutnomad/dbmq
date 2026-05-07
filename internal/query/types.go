@@ -23,6 +23,16 @@ type BrokerStats struct {
 	MessageCount   int64 // 消息总数
 }
 
+type TableStats struct {
+	EstimatedRows int64 // 估算行数
+	TotalBytes    int64 // 数据和索引总大小
+}
+
+type TopicSummaryStats struct {
+	TopicCount     int
+	PartitionCount int
+}
+
 // =============================================================================
 // Topic DTOs
 // =============================================================================
@@ -146,10 +156,11 @@ type TopicMetrics struct {
 
 // PartitionMetricsDTO 分区监控指标 DTO
 type PartitionMetricsDTO struct {
-	Partition    int   `json:"partition"`
-	LatestOffset int64 `json:"latestOffset"`
-	MessageCount int64 `json:"messageCount"`
-	SizeBytes    int64 `json:"sizeBytes"`
+	Partition      int   `json:"partition"`
+	FirstMessageID int64 `json:"firstMessageId"`
+	LatestOffset   int64 `json:"latestOffset"`
+	MessageCount   int64 `json:"messageCount"`
+	SizeBytes      int64 `json:"sizeBytes"`
 }
 
 // ConsumerGroupMetrics 消费组监控指标 DTO
@@ -172,6 +183,21 @@ type ConsumerMemberMetrics struct {
 	Host          string          `json:"host"`
 	LastHeartbeat time.Time       `json:"lastHeartbeat"`
 	Assignment    []PartitionInfo `json:"assignment"`
+}
+
+// ConsumerMetrics 所有消费者监控指标 DTO
+type ConsumerMetrics struct {
+	GroupID          string          `json:"groupId"`
+	ConsumerID       string          `json:"consumerId"`
+	ClientID         string          `json:"clientId"`
+	Host             string          `json:"host"`
+	GenerationID     int             `json:"generationId"`
+	Offline          bool            `json:"offline"`
+	Status           string          `json:"status"`
+	LastHeartbeat    time.Time       `json:"lastHeartbeat"`
+	OfflineAt        *time.Time      `json:"offlineAt,omitempty"`
+	SubscribedTopics []string        `json:"subscribedTopics"`
+	Assignment       []PartitionInfo `json:"assignment"`
 }
 
 // PartitionInfo 分区信息

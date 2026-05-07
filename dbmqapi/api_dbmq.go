@@ -42,35 +42,65 @@ func NewDBMQAPI(deps *Deps) DBMQAPI {
 	return &dbmqAPI{deps: deps}
 }
 
-func (a *dbmqAPI) GetStats(ctx context.Context) (DBMQStatsResp, error) {
-	clusterMetrics, err := a.deps.ClusterQuery.GetClusterMetrics(ctx)
-	if err != nil {
-		return DBMQStatsResp{}, err
+func buildStatsFromSummary(topicStats *query.TopicSummaryStats, consumerGroupCount int, messageTableStats *query.TableStats, uptime int64) DBMQStatsResp {
+	var topicCount int
+	var partitionCount int
+	if topicStats != nil {
+		topicCount = topicStats.TopicCount
+		partitionCount = topicStats.PartitionCount
 	}
 
-	brokerMetrics, err := a.deps.GetBrokerMetrics(ctx)
-	if err != nil {
-		return DBMQStatsResp{}, err
+	var totalMessages int64
+	var totalSizeBytes int64
+	if messageTableStats != nil {
+		totalMessages = messageTableStats.EstimatedRows
+		totalSizeBytes = messageTableStats.TotalBytes
 	}
 
 	return DBMQStatsResp{
 		Cluster: ClusterMetricsResp{
-			TopicCount:         clusterMetrics.TopicCount,
-			PartitionCount:     clusterMetrics.PartitionCount,
-			ConsumerGroupCount: clusterMetrics.ConsumerGroups,
-			TotalMessages:      clusterMetrics.MessageCount,
+			TopicCount:         topicCount,
+			PartitionCount:     partitionCount,
+			ConsumerGroupCount: consumerGroupCount,
+			TotalMessages:      totalMessages,
+			TotalSizeBytes:     totalSizeBytes,
 		},
 		Broker: BrokerResp{
-			BrokerID: brokerMetrics.BrokerID,
-			Host:     brokerMetrics.Host,
-			Port:     brokerMetrics.Port,
-			Version:  brokerMetrics.Version,
-			Uptime:   fmt.Sprintf("%ds", brokerMetrics.Uptime),
+			BrokerID: 0,
+			Host:     "localhost",
+			Port:     9092,
+			Version:  dbmq.Version(),
+			Uptime:   fmt.Sprintf("%ds", uptime),
 		},
 		System: SystemInfoResp{
-			Version: brokerMetrics.Version,
+			Uptime:  float64(uptime),
+			Version: dbmq.Version(),
 		},
-	}, nil
+	}
+}
+
+func (a *dbmqAPI) GetStats(ctx context.Context) (DBMQStatsResp, error) {
+	topicStats, err := a.deps.ClusterQuery.GetTopicSummaryStats(ctx)
+	if err != nil {
+		return DBMQStatsResp{}, err
+	}
+
+	consumerGroupCount, err := a.deps.ClusterQuery.GetConsumerGroupCount(ctx)
+	if err != nil {
+		return DBMQStatsResp{}, err
+	}
+
+	messageTableStats, err := a.deps.ClusterQuery.GetMessageTableStats(ctx)
+	if err != nil {
+		return DBMQStatsResp{}, err
+	}
+
+	var uptime int64
+	if a.deps.StartTime != nil {
+		uptime = time.Now().Unix() - a.deps.StartTime()
+	}
+
+	return buildStatsFromSummary(topicStats, consumerGroupCount, messageTableStats, uptime), nil
 }
 
 func (a *dbmqAPI) GetTopicMessages(ctx context.Context, topicName string, req GetTopicMessagesReq) (TopicMessagesResp, error) {

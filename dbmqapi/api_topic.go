@@ -28,6 +28,9 @@ type TopicAPI interface {
 	// GetMetrics 获取 Topic 指标
 	// @GET(/{topicName}/metrics)
 	GetMetrics(ctx context.Context, topicName string) (TopicResp, error)
+	// ListConsumerGroups 获取消费此 Topic 的消费组列表
+	// @GET(/{topicName}/consumer-groups)
+	ListConsumerGroups(ctx context.Context, topicName string) ([]ConsumerGroupResp, error)
 }
 
 func NewTopicAPI(deps *Deps) TopicAPI {
@@ -80,6 +83,24 @@ func buildTopicResponses(topics []query.TopicMetrics, statsByTopic map[string][]
 	return result
 }
 
+func buildPartitionStatsResponses(stats []query.PartitionMetricsDTO) []PartitionStats {
+	result := make([]PartitionStats, len(stats))
+	for i, stat := range stats {
+		result[i] = PartitionStats{
+			Partition:      uint(stat.Partition),
+			FirstMessageID: stat.FirstMessageID,
+			LastMessageID:  stat.LatestOffset,
+			MessageCount:   stat.MessageCount,
+			SizeBytes:      stat.SizeBytes,
+		}
+		if stat.LatestOffset < 0 {
+			result[i].FirstMessageID = -1
+			result[i].LastMessageID = -1
+		}
+	}
+	return result
+}
+
 func (a *topicAPI) List(ctx context.Context, req GetTopicsReq) ([]TopicResp, error) {
 	topics, err := a.deps.TopicQuery.GetAllTopicsMetrics(ctx)
 	if err != nil {
@@ -106,6 +127,7 @@ func (a *topicAPI) Get(ctx context.Context, topicName string) (TopicResp, error)
 	return TopicResp{
 		Name:           topic.TopicName,
 		PartitionCount: uint(topic.PartitionCount),
+		PartitionStats: buildPartitionStatsResponses(topic.Partitions),
 		MessageCount:   topic.MessageCount,
 		SizeBytes:      topic.SizeBytes,
 		CreatedAt:      topic.CreatedAt.Format(time.RFC3339),
@@ -161,4 +183,13 @@ func (a *topicAPI) Delete(ctx context.Context, topicName string) (MessageResp, e
 
 func (a *topicAPI) GetMetrics(ctx context.Context, topicName string) (TopicResp, error) {
 	return a.Get(ctx, topicName)
+}
+
+func (a *topicAPI) ListConsumerGroups(ctx context.Context, topicName string) ([]ConsumerGroupResp, error) {
+	groups, err := a.deps.ConsumerQuery.GetConsumerGroupsByTopic(ctx, topicName)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildConsumerGroupResponses(groups, true), nil
 }

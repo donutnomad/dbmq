@@ -86,6 +86,10 @@ func (m *mockHeartbeatRepo) FindAll(ctx context.Context, groupID string, timeout
 	return nil, nil
 }
 
+func (m *mockHeartbeatRepo) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockHeartbeatRepo) setHeartbeat(hb *heartbeat.Heartbeat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

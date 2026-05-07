@@ -17,6 +17,8 @@ type Repo interface {
 	Delete(ctx context.Context, groupID, consumerID string) error
 	// DeleteByGroup 删除消费组的所有消费者心跳记录
 	DeleteByGroup(ctx context.Context, groupID string) error
+	// DeleteExpired 删除 last_heartbeat 早于 before 的心跳记录,limit 限制单次最大删除数量,避免长时间锁表
+	DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error)
 	// FindActive 查找活跃消费者
 	FindActive(ctx context.Context, groupID string, timeout time.Duration) ([]*Heartbeat, error)
 	// FindAll 查找所有消费者（包括离线）

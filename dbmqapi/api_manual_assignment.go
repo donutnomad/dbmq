@@ -64,20 +64,7 @@ func (a *manualAssignmentAPI) List(ctx context.Context, req ListManualAssignment
 		return nil, err
 	}
 
-	result := make([]ManualAssignmentResp, len(assignments))
-	for i, assign := range assignments {
-		result[i] = ManualAssignmentResp{
-			ID:                assign.ID,
-			GroupID:           assign.GroupID,
-			ConsumerIDPattern: assign.ConsumerIDPattern,
-			Topic:             assign.Topic,
-			Partition:         assign.Partition,
-			CreatedAt:         assign.CreatedAt,
-			UpdatedAt:         assign.UpdatedAt,
-		}
-	}
-
-	return result, nil
+	return buildManualAssignmentResponses(assignments), nil
 }
 
 func (a *manualAssignmentAPI) Delete(ctx context.Context, id int64) (MessageResp, error) {

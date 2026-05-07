@@ -231,6 +231,12 @@ type ConsumerMemberDTO struct {
 	Status           string           `json:"status"` // online/offline/timeout
 }
 
+// ConsumerResp 消费者响应
+type ConsumerResp struct {
+	GroupID string `json:"groupId"`
+	ConsumerMemberDTO
+}
+
 // ConsumerGroupExtendedResp 消费组扩展响应
 type ConsumerGroupExtendedResp struct {
 	Members            []ConsumerMemberDTO `json:"members"`
@@ -292,10 +298,12 @@ type ListManualAssignmentsReq struct {
 
 // DashboardDataResp 仪表板数据响应
 type DashboardDataResp struct {
-	Topics         []TopicResp         `json:"topics"`
-	ConsumerGroups []ConsumerGroupResp `json:"consumerGroups"`
-	System         SystemInfoResp      `json:"system"`
-	Timestamp      string              `json:"timestamp"`
+	Topics            []TopicResp            `json:"topics"`
+	ConsumerGroups    []ConsumerGroupResp    `json:"consumerGroups"`
+	Stats             DBMQStatsResp          `json:"stats"`
+	ManualAssignments []ManualAssignmentResp `json:"manualAssignments"`
+	System            SystemInfoResp         `json:"system"`
+	Timestamp         string                 `json:"timestamp"`
 }
 
 // SystemInfoResp 系统信息响应

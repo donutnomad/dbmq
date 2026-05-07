@@ -48,9 +48,11 @@ function ConsumerGroupDetailContent() {
     topic: '',
     partition: 0,
   });
-  const [autoRefresh, setAutoRefresh] = useState(true); // 自动刷新开关
-  const [refreshInterval, setRefreshInterval] = useState(5000); // 刷新间隔（毫秒）
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(30000);
   const loadFunctionRef = useRef<(() => Promise<void>) | null>(null);
+  const loadingRef = useRef(false);
+  const silentLoadingRef = useRef(false);
 
   // 派生状态：计算总分区数
   const totalAssignedPartitions = group?.members?.reduce(
@@ -66,6 +68,8 @@ function ConsumerGroupDetailContent() {
 
   // 加载消费组详情（完整加载，显示 loading 状态）
   const loadConsumerGroupDetail = useCallback(async () => {
+    if (loadingRef.current || !groupId) return;
+    loadingRef.current = true;
     try {
       setLoading(true);
       const [groupData, assignmentData, topicData] = await Promise.all([
@@ -83,11 +87,14 @@ function ConsumerGroupDetailContent() {
       setError(err instanceof Error ? err.message : '加载消费组详情失败');
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, [groupId]);
 
   // 静默刷新数据（不显示 loading 状态，用于自动刷新）
   const refreshDataSilently = useCallback(async () => {
+    if (silentLoadingRef.current || loadingRef.current || !groupId) return;
+    silentLoadingRef.current = true;
     try {
       const [groupData, assignmentData] = await Promise.all([
         DBMQAPIClient.getConsumerGroup(groupId),
@@ -99,6 +106,8 @@ function ConsumerGroupDetailContent() {
       setError(null);
     } catch (err) {
       console.error('Failed to refresh consumer group data:', err);
+    } finally {
+      silentLoadingRef.current = false;
     }
   }, [groupId]);
 

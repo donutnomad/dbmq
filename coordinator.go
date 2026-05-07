@@ -31,6 +31,7 @@ type CoordinatorConfig struct {
 	RebalanceTimeout       time.Duration // 重新均衡操作的上下文超时时间
 	RetentionCheckInterval time.Duration // 消息保留清理检查间隔
 	DefaultRetentionAge    time.Duration // 没有特定保留策略的Topic的默认保留时间
+	HeartbeatRetentionAge  time.Duration // 消费者心跳记录保留时长,超过此时长的心跳记录会被清理
 }
 
 func (cfg *CoordinatorConfig) validate() {
@@ -48,6 +49,9 @@ func (cfg *CoordinatorConfig) validate() {
 	}
 	if cfg.RebalanceTimeout <= 0 {
 		cfg.RebalanceTimeout = 15 * time.Second
+	}
+	if cfg.HeartbeatRetentionAge == 0 { // 心跳记录保留: 默认7天
+		cfg.HeartbeatRetentionAge = 7 * 24 * time.Hour
 	}
 }
 

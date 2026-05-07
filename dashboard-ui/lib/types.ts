@@ -112,10 +112,26 @@ export interface GroupMember {
   generationId?: number;
 }
 
+export interface Consumer {
+  groupId: string;
+  memberId: string;
+  clientId?: string;
+  host?: string;
+  generationId?: number;
+  offline?: boolean;
+  lastHeartbeat?: string;
+  offlineAt?: string;
+  subscribedTopics?: string[];
+  assignment?: Record<string, number[]>;
+  status?: 'online' | 'offline' | 'timeout' | string;
+}
+
 // 仪表板数据类型
 export interface DashboardData {
   topics: TopicMetrics[];
   consumerGroups: ConsumerGroupMetrics[];
+  stats?: DBMQStats;
+  manualAssignments?: ManualAssignment[];
   system: {
     uptime: number;
     version: string;

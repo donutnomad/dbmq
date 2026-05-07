@@ -88,6 +88,41 @@ func (c *cleanerTask) clean(ctx context.Context) {
 	}
 
 	log.Debug(fmt.Sprintf("Finished message retention cleanup cycle in %v. Total messages deleted: %d", time.Since(startTime), totalDeletedCount))
+
+	c.cleanHeartbeats(ctx, log)
+}
+
+// cleanHeartbeats 分批清理 mq_consumer_heartbeats 中过期的心跳记录,使用 Limit 防止长时间锁表
+func (c *cleanerTask) cleanHeartbeats(ctx context.Context, log *slog.Logger) {
+	const cleanupBatchSize = 500
+
+	startTime := time.Now()
+	before := time.Now().Add(-c.cfg.HeartbeatRetentionAge)
+
+	var totalDeleted int64
+	for {
+		if ctx.Err() != nil {
+			log.Debug("Heartbeat cleanup cancelled during batch processing")
+			break
+		}
+
+		deletedCount, err := c.heartbeatRepo.DeleteExpired(ctx, before, cleanupBatchSize)
+		if err != nil {
+			log.Error("Failed to clean expired heartbeats", "error", err)
+			break
+		}
+		totalDeleted += deletedCount
+
+		if deletedCount < int64(cleanupBatchSize) {
+			break
+		}
+
+		gt.SleepCtx(ctx, 100*time.Millisecond)
+	}
+
+	if totalDeleted > 0 {
+		log.Debug(fmt.Sprintf("Finished heartbeat retention cleanup in %v. Total heartbeats deleted: %d", time.Since(startTime), totalDeleted))
+	}
 }
 
 func (c *cleanerTask) delete(ctx context.Context, watermarks map[types.PartitionInfo]int64, p types.PartitionInfo, retentionDate time.Time, cleanupBatchSize int, log *slog.Logger) int64 {
