@@ -41,9 +41,13 @@ func (r *mysqlRepo) GetGeneration(ctx context.Context, groupID string) (*consume
 }
 
 func (r *mysqlRepo) IncrementGenerationID(ctx context.Context, groupID string) (uint, error) {
+	return r.incrementGenerationID(ctx, r.db, groupID)
+}
+
+func (r *mysqlRepo) incrementGenerationID(ctx context.Context, db interfaces.DB, groupID string) (uint, error) {
 	var generationID uint
 
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		sql := `INSERT INTO mq_consumer_group_generations
 				(group_id, generation_id, protocol_type, updated_at)
 				VALUES (?, 1, 'consumer', ?)
@@ -74,7 +78,7 @@ func (r *mysqlRepo) IncrementAndUpdateAssignments(ctx context.Context, groupID s
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Step 1: 原子递增 generation_id 并读取新值
 		var err error
-		newGenerationID, err = r.IncrementGenerationID(ctx, groupID)
+		newGenerationID, err = r.incrementGenerationID(ctx, tx, groupID)
 		if err != nil {
 			return err
 		}
