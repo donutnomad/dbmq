@@ -1,12 +1,42 @@
 package dbmqapi
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
 	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/stretchr/testify/require"
 )
+
+// stubConsumerQueryForCleanup 仅实现 cleanup 测试需要的两个方法，其他方法 panic 防止误用。
+type stubConsumerQueryForCleanup struct {
+	query.ConsumerQuery
+	stale    []query.StaleProgressDTO
+	detached []query.DetachedProgressDTO
+	staleErr error
+	detErr   error
+}
+
+func (s *stubConsumerQueryForCleanup) GetStaleProgress(_ context.Context, _ uint) ([]query.StaleProgressDTO, error) {
+	return s.stale, s.staleErr
+}
+
+func (s *stubConsumerQueryForCleanup) GetDetachedProgress(_ context.Context) ([]query.DetachedProgressDTO, error) {
+	return s.detached, s.detErr
+}
+
+// stubProgressRepoForCleanup 记录 DeleteByGroupTopicPartition 是否被调用。
+type stubProgressRepoForCleanup struct {
+	consumerprogress.Repo
+	called bool
+}
+
+func (s *stubProgressRepoForCleanup) DeleteByGroupTopicPartition(_ context.Context, _ string, _ string, _ uint) error {
+	s.called = true
+	return nil
+}
 
 func TestBuildPartitionLagResponsesUsesQueryMetrics(t *testing.T) {
 	lags := []query.PartitionLagMetrics{
@@ -76,4 +106,66 @@ func TestBuildConsumerResponsesIncludesAssignmentsAndStatus(t *testing.T) {
 	require.Equal(t, []string{"orders", "payments"}, resp[0].SubscribedTopics)
 	require.NotNil(t, resp[1].OfflineAt)
 	require.Equal(t, "offline", resp[1].Status)
+}
+
+func TestDefaultStaleDaysMatchesDocumented(t *testing.T) {
+	// 计划文档约定：默认 stale 判定阈值为 10 天。
+	// 任何变更都应该在文档/前端 UI 同步更新。
+	require.Equal(t, uint(10), defaultStaleDays)
+}
+
+func TestDeleteStaleProgressRequiresMatch(t *testing.T) {
+	cq := &stubConsumerQueryForCleanup{stale: nil}
+	repo := &stubProgressRepoForCleanup{}
+	api := &consumerGroupAPI{deps: &Deps{ConsumerQuery: cq, ProgressRepo: repo}}
+
+	_, err := api.DeleteStaleProgress(context.Background(), "g1", DeleteStaleProgressReq{
+		Topic: "t1", Partition: 0, StaleDays: 10,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no longer stale")
+	require.False(t, repo.called, "repo Delete must not be called when match check fails")
+}
+
+func TestDeleteStaleProgressDeletesOnMatch(t *testing.T) {
+	cq := &stubConsumerQueryForCleanup{stale: []query.StaleProgressDTO{
+		{GroupID: "g1", Topic: "t1", Partition: 0},
+	}}
+	repo := &stubProgressRepoForCleanup{}
+	api := &consumerGroupAPI{deps: &Deps{ConsumerQuery: cq, ProgressRepo: repo}}
+
+	resp, err := api.DeleteStaleProgress(context.Background(), "g1", DeleteStaleProgressReq{
+		Topic: "t1", Partition: 0, StaleDays: 10,
+	})
+	require.NoError(t, err)
+	require.True(t, repo.called)
+	require.NotEmpty(t, resp.Message)
+}
+
+func TestDeleteDetachedProgressRequiresMatch(t *testing.T) {
+	cq := &stubConsumerQueryForCleanup{detached: nil}
+	repo := &stubProgressRepoForCleanup{}
+	api := &consumerGroupAPI{deps: &Deps{ConsumerQuery: cq, ProgressRepo: repo}}
+
+	_, err := api.DeleteDetachedProgress(context.Background(), "g1", DeleteDetachedProgressReq{
+		Topic: "t1", Partition: 0,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not detached")
+	require.False(t, repo.called, "repo Delete must not be called when match check fails")
+}
+
+func TestDeleteDetachedProgressDeletesOnMatch(t *testing.T) {
+	cq := &stubConsumerQueryForCleanup{detached: []query.DetachedProgressDTO{
+		{GroupID: "g1", Topic: "t1", Partition: 0},
+	}}
+	repo := &stubProgressRepoForCleanup{}
+	api := &consumerGroupAPI{deps: &Deps{ConsumerQuery: cq, ProgressRepo: repo}}
+
+	resp, err := api.DeleteDetachedProgress(context.Background(), "g1", DeleteDetachedProgressReq{
+		Topic: "t1", Partition: 0,
+	})
+	require.NoError(t, err)
+	require.True(t, repo.called)
+	require.NotEmpty(t, resp.Message)
 }

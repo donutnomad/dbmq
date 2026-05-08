@@ -267,6 +267,33 @@ func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 	onGinResponse[[]ConsumerGroupResp](ctx, result, err)
 }
 
+// ListStaleProgress
+// @Summary 获取消费严重滞后的进度列表
+// @Tags Consumer-Group
+// @Produce json
+// @Param req query ListStaleProgressReq true "req"
+// @Success 200 {object} []StaleProgressResp
+// @Router /dbmq/api/v1/consumer-groups/stale-progress [get]
+func (a *ConsumerGroupAPIWrap) ListStaleProgress(ctx *gin.Context) {
+	var req ListStaleProgressReq
+	if !onGinBind(ctx, &req, "QUERY") {
+		return
+	}
+	result, err := a.inner.ListStaleProgress(ctx.Request.Context(), req)
+	onGinResponse[[]StaleProgressResp](ctx, result, err)
+}
+
+// ListDetachedProgress
+// @Summary 获取孤立残留进度列表
+// @Tags Consumer-Group
+// @Produce json
+// @Success 200 {object} []DetachedProgressResp
+// @Router /dbmq/api/v1/consumer-groups/detached-progress [get]
+func (a *ConsumerGroupAPIWrap) ListDetachedProgress(ctx *gin.Context) {
+	result, err := a.inner.ListDetachedProgress(ctx.Request.Context())
+	onGinResponse[[]DetachedProgressResp](ctx, result, err)
+}
+
 // Get
 // @Summary 获取单个消费组
 // @Tags Consumer-Group
@@ -308,12 +335,66 @@ func (a *ConsumerGroupAPIWrap) Delete(ctx *gin.Context) {
 	onGinResponse[MessageResp](ctx, result, err)
 }
 
+// DeleteStaleProgress
+// @Summary 删除指定消费严重滞后进度
+// @Tags Consumer-Group
+// @Accept json
+// @Produce json
+// @Param groupId path string true "groupId"
+// @Param req body DeleteStaleProgressReq true "req"
+// @Success 200 {object} MessageResp
+// @Router /dbmq/api/v1/consumer-groups/{groupId}/stale-progress [delete]
+func (a *ConsumerGroupAPIWrap) DeleteStaleProgress(ctx *gin.Context) {
+	groupId := ctx.Param("groupId")
+	var req DeleteStaleProgressReq
+	if !onGinBind(ctx, &req, "JSON") {
+		return
+	}
+	result, err := a.inner.DeleteStaleProgress(ctx.Request.Context(), groupId, req)
+	onGinResponse[MessageResp](ctx, result, err)
+}
+
+// DeleteDetachedProgress
+// @Summary 删除指定孤立残留进度
+// @Tags Consumer-Group
+// @Accept json
+// @Produce json
+// @Param groupId path string true "groupId"
+// @Param req body DeleteDetachedProgressReq true "req"
+// @Success 200 {object} MessageResp
+// @Router /dbmq/api/v1/consumer-groups/{groupId}/detached-progress [delete]
+func (a *ConsumerGroupAPIWrap) DeleteDetachedProgress(ctx *gin.Context) {
+	groupId := ctx.Param("groupId")
+	var req DeleteDetachedProgressReq
+	if !onGinBind(ctx, &req, "JSON") {
+		return
+	}
+	result, err := a.inner.DeleteDetachedProgress(ctx.Request.Context(), groupId, req)
+	onGinResponse[MessageResp](ctx, result, err)
+}
+
 func (a *ConsumerGroupAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	var handlers []gin.HandlerFunc
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
 	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups", preHandlers, handlers, a.List)
+}
+
+func (a *ConsumerGroupAPIWrap) BindListStaleProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/stale-progress", preHandlers, handlers, a.ListStaleProgress)
+}
+
+func (a *ConsumerGroupAPIWrap) BindListDetachedProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/detached-progress", preHandlers, handlers, a.ListDetachedProgress)
 }
 
 func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -340,11 +421,31 @@ func (a *ConsumerGroupAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin
 	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Delete)
 }
 
+func (a *ConsumerGroupAPIWrap) BindDeleteStaleProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId/stale-progress", preHandlers, handlers, a.DeleteStaleProgress)
+}
+
+func (a *ConsumerGroupAPIWrap) BindDeleteDetachedProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
+	var handlers []gin.HandlerFunc
+	if a.handler != nil {
+		handlers = append(handlers, a.handler.PreHandlers()...)
+	}
+	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId/detached-progress", preHandlers, handlers, a.DeleteDetachedProgress)
+}
+
 func (a *ConsumerGroupAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
 	a.BindList(router, preHandlers...)
+	a.BindListStaleProgress(router, preHandlers...)
+	a.BindListDetachedProgress(router, preHandlers...)
 	a.BindGet(router, preHandlers...)
 	a.BindTriggerRebalance(router, preHandlers...)
 	a.BindDelete(router, preHandlers...)
+	a.BindDeleteStaleProgress(router, preHandlers...)
+	a.BindDeleteDetachedProgress(router, preHandlers...)
 }
 
 type DBMQAPIWrap struct {

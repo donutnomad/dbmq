@@ -106,6 +106,34 @@ type SubscribedProgress struct {
 	SubscriptionStartWatermark *int64    // 订阅时的水位线
 }
 
+// StaleProgressDTO 消费严重滞后的进度。
+// 判定：进度行已消费过消息（lcmid >= 0），且分区有更新的消息，
+// 已消费消息的 created_at 与分区最新消息 created_at 差 >= staleDays 天。
+type StaleProgressDTO struct {
+	GroupID               string    `json:"groupId"`
+	Topic                 string    `json:"topic"`
+	Partition             uint      `json:"partition"`
+	LastConsumedMessageID int64     `json:"lastConsumedMessageId"`
+	ConsumedMsgAt         time.Time `json:"consumedMsgAt"`
+	LatestMsgID           int64     `json:"latestMsgId"`
+	LatestMsgAt           time.Time `json:"latestMsgAt"`
+	StaleDays             int       `json:"staleDays"`
+	LagCount              int64     `json:"lagCount"`
+	ProgressUpdatedAt     time.Time `json:"progressUpdatedAt"`
+}
+
+// DetachedProgressDTO 孤立残留进度。
+// 判定：progress.group_id 在 mq_consumer_group_generations 中已不存在。
+type DetachedProgressDTO struct {
+	GroupID               string    `json:"groupId"`
+	Topic                 string    `json:"topic"`
+	Partition             uint      `json:"partition"`
+	LastConsumedMessageID int64     `json:"lastConsumedMessageId"`
+	ProgressGenerationID  uint      `json:"progressGenerationId"`
+	ProgressUpdatedAt     time.Time `json:"progressUpdatedAt"`
+	DetachedDays          int       `json:"detachedDays"`
+}
+
 // =============================================================================
 // Message DTOs
 // =============================================================================

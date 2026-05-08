@@ -37,6 +37,11 @@ type ConsumerQuery interface {
 	GetAllConsumerGroupsSummary(ctx context.Context) ([]ConsumerGroupMetrics, error)
 	// GetConsumerGroupsByTopic 获取消费指定 Topic 的消费组信息
 	GetConsumerGroupsByTopic(ctx context.Context, topic string) ([]ConsumerGroupMetrics, error)
+	// GetStaleProgress 列出消费严重滞后的进度。
+	// staleDays 表示进度上次消费的消息时间与该 partition 最新消息时间相差至少多少天才视为 stale。
+	GetStaleProgress(ctx context.Context, staleDays uint) ([]StaleProgressDTO, error)
+	// GetDetachedProgress 列出孤立残留进度（progress.group_id 在 mq_consumer_group_generations 中已不存在）。
+	GetDetachedProgress(ctx context.Context) ([]DetachedProgressDTO, error)
 	// GetAllConsumers 获取所有消费者信息
 	GetAllConsumers(ctx context.Context) ([]ConsumerMetrics, error)
 }
@@ -80,6 +85,52 @@ const totalLagByGroupsSQL = `
 		AND m.id > p.last_consumed_message_id
 	WHERE p.group_id IN ?
 	GROUP BY p.group_id
+`
+
+// staleProgressSQL 列出消费严重滞后的进度行。
+// 判定：progress.last_consumed_message_id >= 0 且 partition 最新消息时间与已消费消息时间差 >= staleDays 天。
+// consumed.created_at JOIN mq_messages 取 id = cgp.last_consumed_message_id 那一行的 created_at。
+// 若已消费消息已被 GC，JOIN miss → 不会返回（设计上正确：watermark 已前进 = progress 不再是瓶颈）。
+const staleProgressSQL = `
+SELECT
+  cgp.group_id,
+  cgp.topic,
+  cgp.` + "`partition`" + `,
+  cgp.last_consumed_message_id,
+  consumed.created_at AS consumed_msg_at,
+  latest.max_id        AS latest_msg_id,
+  latest.max_at        AS latest_msg_at,
+  TIMESTAMPDIFF(DAY, consumed.created_at, latest.max_at) AS stale_days,
+  (latest.max_id - cgp.last_consumed_message_id) AS lag_count,
+  cgp.updated_at AS progress_updated_at
+FROM mq_consumer_group_consumption_progress cgp
+JOIN mq_messages consumed
+  ON consumed.id = cgp.last_consumed_message_id
+JOIN (
+  SELECT topic, ` + "`partition`" + `, MAX(id) AS max_id, MAX(created_at) AS max_at
+  FROM mq_messages
+  GROUP BY topic, ` + "`partition`" + `
+) latest
+  ON latest.topic = cgp.topic AND latest.` + "`partition`" + ` = cgp.` + "`partition`" + `
+WHERE cgp.last_consumed_message_id >= 0
+  AND TIMESTAMPDIFF(DAY, consumed.created_at, latest.max_at) >= ?
+ORDER BY stale_days DESC, lag_count DESC
+`
+
+// detachedProgressSQL 列出孤立残留进度行（progress.group_id 在 mq_consumer_group_generations 中已不存在）。
+const detachedProgressSQL = `
+SELECT
+  cgp.group_id,
+  cgp.topic,
+  cgp.` + "`partition`" + `,
+  cgp.last_consumed_message_id,
+  cgp.generation_id AS progress_generation_id,
+  cgp.updated_at    AS progress_updated_at,
+  TIMESTAMPDIFF(DAY, cgp.updated_at, NOW()) AS detached_days
+FROM mq_consumer_group_consumption_progress cgp
+LEFT JOIN mq_consumer_group_generations g ON g.group_id = cgp.group_id
+WHERE g.group_id IS NULL
+ORDER BY detached_days DESC
 `
 
 const consumerHeartbeatTimeout = 30 * time.Second
@@ -928,5 +979,75 @@ func (q *consumerQueryMySQL) GetConsumerGroupsByTopic(ctx context.Context, topic
 		result = append(result, metrics)
 	}
 
+	return result, nil
+}
+
+// GetStaleProgress 列出消费严重滞后的进度行。
+func (q *consumerQueryMySQL) GetStaleProgress(ctx context.Context, staleDays uint) ([]StaleProgressDTO, error) {
+	type staleRow struct {
+		GroupID               string    `gorm:"column:group_id"`
+		Topic                 string    `gorm:"column:topic"`
+		Partition             uint      `gorm:"column:partition"`
+		LastConsumedMessageID int64     `gorm:"column:last_consumed_message_id"`
+		ConsumedMsgAt         time.Time `gorm:"column:consumed_msg_at"`
+		LatestMsgID           int64     `gorm:"column:latest_msg_id"`
+		LatestMsgAt           time.Time `gorm:"column:latest_msg_at"`
+		StaleDays             int       `gorm:"column:stale_days"`
+		LagCount              int64     `gorm:"column:lag_count"`
+		ProgressUpdatedAt     time.Time `gorm:"column:progress_updated_at"`
+	}
+
+	var rows []staleRow
+	if err := q.db.WithContext(ctx).Raw(staleProgressSQL, staleDays).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]StaleProgressDTO, len(rows))
+	for i, r := range rows {
+		result[i] = StaleProgressDTO{
+			GroupID:               r.GroupID,
+			Topic:                 r.Topic,
+			Partition:             r.Partition,
+			LastConsumedMessageID: r.LastConsumedMessageID,
+			ConsumedMsgAt:         r.ConsumedMsgAt,
+			LatestMsgID:           r.LatestMsgID,
+			LatestMsgAt:           r.LatestMsgAt,
+			StaleDays:             r.StaleDays,
+			LagCount:              r.LagCount,
+			ProgressUpdatedAt:     r.ProgressUpdatedAt,
+		}
+	}
+	return result, nil
+}
+
+// GetDetachedProgress 列出孤立残留进度行。
+func (q *consumerQueryMySQL) GetDetachedProgress(ctx context.Context) ([]DetachedProgressDTO, error) {
+	type detachedRow struct {
+		GroupID               string    `gorm:"column:group_id"`
+		Topic                 string    `gorm:"column:topic"`
+		Partition             uint      `gorm:"column:partition"`
+		LastConsumedMessageID int64     `gorm:"column:last_consumed_message_id"`
+		ProgressGenerationID  uint      `gorm:"column:progress_generation_id"`
+		ProgressUpdatedAt     time.Time `gorm:"column:progress_updated_at"`
+		DetachedDays          int       `gorm:"column:detached_days"`
+	}
+
+	var rows []detachedRow
+	if err := q.db.WithContext(ctx).Raw(detachedProgressSQL).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]DetachedProgressDTO, len(rows))
+	for i, r := range rows {
+		result[i] = DetachedProgressDTO{
+			GroupID:               r.GroupID,
+			Topic:                 r.Topic,
+			Partition:             r.Partition,
+			LastConsumedMessageID: r.LastConsumedMessageID,
+			ProgressGenerationID:  r.ProgressGenerationID,
+			ProgressUpdatedAt:     r.ProgressUpdatedAt,
+			DetachedDays:          r.DetachedDays,
+		}
+	}
 	return result, nil
 }

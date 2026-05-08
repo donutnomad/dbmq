@@ -268,6 +268,51 @@ type PartitionLagExt struct {
 	InitialTopicWatermark *int64  `json:"initialTopicWatermark,omitempty"`
 }
 
+// ==================== Progress Cleanup API Types ====================
+
+// ListStaleProgressReq 查询消费严重滞后进度请求
+type ListStaleProgressReq struct {
+	StaleDays uint `form:"staleDays"` // 已消费消息时间与最新消息时间相差至少多少天才视为 stale，0 表示使用默认值
+}
+
+// StaleProgressResp 消费严重滞后进度响应
+type StaleProgressResp struct {
+	GroupID               string `json:"groupId"`
+	Topic                 string `json:"topic"`
+	Partition             uint   `json:"partition"`
+	LastConsumedMessageID int64  `json:"lastConsumedMessageId"`
+	ConsumedMsgAt         string `json:"consumedMsgAt"`
+	LatestMsgID           int64  `json:"latestMsgId"`
+	LatestMsgAt           string `json:"latestMsgAt"`
+	StaleDays             int    `json:"staleDays"`
+	LagCount              int64  `json:"lagCount"`
+	ProgressUpdatedAt     string `json:"progressUpdatedAt"`
+}
+
+// DetachedProgressResp 孤立残留进度响应
+type DetachedProgressResp struct {
+	GroupID               string `json:"groupId"`
+	Topic                 string `json:"topic"`
+	Partition             uint   `json:"partition"`
+	LastConsumedMessageID int64  `json:"lastConsumedMessageId"`
+	ProgressGenerationID  uint   `json:"progressGenerationId"`
+	ProgressUpdatedAt     string `json:"progressUpdatedAt"`
+	DetachedDays          int    `json:"detachedDays"`
+}
+
+// DeleteStaleProgressReq 删除消费严重滞后进度请求
+type DeleteStaleProgressReq struct {
+	Topic     string `json:"topic" binding:"required"` // Topic 名称
+	Partition uint   `json:"partition"`                // 分区号
+	StaleDays uint   `json:"staleDays"`                // 至少落后多少天才允许删除，0 表示使用默认值
+}
+
+// DeleteDetachedProgressReq 删除孤立残留进度请求
+type DeleteDetachedProgressReq struct {
+	Topic     string `json:"topic" binding:"required"` // Topic 名称
+	Partition uint   `json:"partition"`                // 分区号
+}
+
 // ==================== Manual Assignment API Types ====================
 
 // CreateManualAssignmentReq 创建手动分区分配请求

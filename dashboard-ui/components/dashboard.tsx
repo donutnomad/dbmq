@@ -19,6 +19,7 @@ import {
   LogOut,
   SlidersHorizontal,
   UserSquare2,
+  Trash2,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -119,6 +120,12 @@ export function Dashboard() {
                 <Button size="sm" variant="outline" className="text-indigo-600 hover:text-indigo-800">
                   <UserSquare2 className="h-4 w-4 mr-1" />
                   消费者
+                </Button>
+              </Link>
+              <Link href="/progress-cleanup">
+                <Button size="sm" variant="outline" className="text-orange-600 hover:text-orange-800">
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  进度清理
                 </Button>
               </Link>
               <div className="flex items-center">

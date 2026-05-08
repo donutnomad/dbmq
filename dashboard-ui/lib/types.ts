@@ -234,6 +234,31 @@ export interface CreateManualAssignmentRequest {
   partition: number;
 }
 
+// 消费严重滞后的进度
+export interface StaleProgress {
+  groupId: string;
+  topic: string;
+  partition: number;
+  lastConsumedMessageId: number;
+  consumedMsgAt: string;
+  latestMsgId: number;
+  latestMsgAt: string;
+  staleDays: number;
+  lagCount: number;
+  progressUpdatedAt: string;
+}
+
+// 孤立残留进度（group 已被废弃，但 progress 残留）
+export interface DetachedProgress {
+  groupId: string;
+  topic: string;
+  partition: number;
+  lastConsumedMessageId: number;
+  progressGenerationId: number;
+  progressUpdatedAt: string;
+  detachedDays: number;
+}
+
 // 重发消息相关类型
 export interface ResendMessageItem {
   topic: string;

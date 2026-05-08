@@ -5,3 +5,8 @@ main
 docs/plans
 .claude/settings.local.json
 .backup
+examples/integration_demo
+examples/rmq_demo
+examples/lock_holder
+examples/rest_api_demo
+docs/superpowers

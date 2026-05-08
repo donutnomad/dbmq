@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, Consumer, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse } from './types';
+import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, Consumer, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse, StaleProgress, DetachedProgress } from './types';
 import { apiConfig } from '@/config/api.config';
 
 // 创建axios实例
@@ -310,6 +310,47 @@ export class DBMQAPIClient {
       return response.data.data;
     }
     throw new Error(response.data.error || 'Failed to fetch topic metrics');
+  }
+
+  // 获取消费严重滞后的进度列表
+  static async getStaleProgress(staleDays?: number): Promise<StaleProgress[]> {
+    const params = staleDays && staleDays > 0 ? `?staleDays=${staleDays}` : '';
+    const response = await apiClient.get<APIResponse<StaleProgress[]>>(`/consumer-groups/stale-progress${params}`);
+    if (response.data.success) {
+      return response.data.data ?? [];
+    }
+    throw new Error(response.data.error || 'Failed to fetch stale progress');
+  }
+
+  // 获取孤立残留进度列表
+  static async getDetachedProgress(): Promise<DetachedProgress[]> {
+    const response = await apiClient.get<APIResponse<DetachedProgress[]>>(`/consumer-groups/detached-progress`);
+    if (response.data.success) {
+      return response.data.data ?? [];
+    }
+    throw new Error(response.data.error || 'Failed to fetch detached progress');
+  }
+
+  // 删除消费严重滞后进度
+  static async deleteStaleProgress(groupId: string, topic: string, partition: number, staleDays?: number): Promise<void> {
+    const response = await apiClient.delete<APIResponse>(
+      `/consumer-groups/${encodeURIComponent(groupId)}/stale-progress`,
+      { data: { topic, partition, staleDays: staleDays ?? 0 } }
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete stale progress');
+    }
+  }
+
+  // 删除孤立残留进度
+  static async deleteDetachedProgress(groupId: string, topic: string, partition: number): Promise<void> {
+    const response = await apiClient.delete<APIResponse>(
+      `/consumer-groups/${encodeURIComponent(groupId)}/detached-progress`,
+      { data: { topic, partition } }
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete detached progress');
+    }
   }
 
   // 重发消息

@@ -12,6 +12,7 @@ import (
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
+	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
 	"github.com/donutnomad/dbmq/internal/repo/manualassignmentrepo"
 
@@ -52,6 +53,7 @@ func newDeps(db interfaces.DB) *Deps {
 		ManualAssignmentRepo: manualassignmentrepo.New(db),
 		ConsumerGroupRepo:    consumergrouprepo.New(db),
 		HeartbeatRepo:        heartbeatrepo.New(db),
+		ProgressRepo:         consumerprogressrepo.New(db),
 		StartTime:            func() int64 { return now.Unix() },
 	}
 }

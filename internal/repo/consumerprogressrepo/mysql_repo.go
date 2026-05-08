@@ -143,5 +143,11 @@ func (r *mysqlRepo) DeleteByGroup(ctx context.Context, groupID string) error {
 		Delete(&ProgressPO{}).Error
 }
 
+func (r *mysqlRepo) DeleteByGroupTopicPartition(ctx context.Context, groupID string, topic string, partition uint) error {
+	return r.db.WithContext(ctx).
+		Where("`group_id` = ? AND `topic` = ? AND `partition` = ?", groupID, topic, partition).
+		Delete(&ProgressPO{}).Error
+}
+
 // 编译时接口实现检查
 var _ consumerprogress.Repo = (*mysqlRepo)(nil)

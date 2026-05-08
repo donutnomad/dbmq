@@ -22,4 +22,6 @@ type Repo interface {
 	GetLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error)
 	// DeleteByGroup 删除消费组的消费进度
 	DeleteByGroup(ctx context.Context, groupID string) error
+	// DeleteByGroupTopicPartition 删除消费组在指定 (topic, partition) 上的进度
+	DeleteByGroupTopicPartition(ctx context.Context, groupID string, topic string, partition uint) error
 }

@@ -58,3 +58,23 @@ func TestBuildPartitionLagMetricsWithoutProgress(t *testing.T) {
 	require.Equal(t, float64(0), metrics.ConsumedPercentage)
 	require.Equal(t, int64(0), metrics.UpdatedAt)
 }
+
+func TestStaleProgressSQLContainsCoreClauses(t *testing.T) {
+	// 必须 JOIN mq_messages 取已消费消息时间
+	require.Contains(t, staleProgressSQL, "JOIN mq_messages consumed")
+	require.Contains(t, staleProgressSQL, "consumed.id = cgp.last_consumed_message_id")
+	// 必须按天计算落后时间
+	require.Contains(t, staleProgressSQL, "TIMESTAMPDIFF(DAY")
+	require.Contains(t, staleProgressSQL, ">= ?")
+	// 必须排除哨兵值 -1
+	require.Contains(t, staleProgressSQL, "cgp.last_consumed_message_id >= 0")
+	// 排序保证最严重的在前
+	require.Contains(t, staleProgressSQL, "ORDER BY stale_days DESC, lag_count DESC")
+}
+
+func TestDetachedProgressSQLContainsCoreClauses(t *testing.T) {
+	// 必须 LEFT JOIN generations 表
+	require.Contains(t, detachedProgressSQL, "LEFT JOIN mq_consumer_group_generations")
+	// 通过 group_id IS NULL 识别 detached
+	require.Contains(t, detachedProgressSQL, "g.group_id IS NULL")
+}

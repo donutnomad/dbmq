@@ -43,18 +43,6 @@ type ConsumerGroupAPI interface {
     List(ctx context.Context) ([]ConsumerGroupResp, error)
 }
 ```
-
-**错误示例**：
-
-```go
-// ❌ 不要这样写
-// @PREFIX(/api/v1/consumer-groups)
-type ConsumerGroupAPI interface {
-    // @GET(/)  ← 会生成 /api/v1/consumer-groups/ (多了斜杠!)
-    List(ctx context.Context) ([]ConsumerGroupResp, error)
-}
-```
-
 ### 测试脚本
 
 ```bash
