@@ -29,7 +29,7 @@ func (c *cleanerTask) logger() *slog.Logger {
 func (c *cleanerTask) Name() string { return "coordinator cleaner" }
 
 func (c *cleanerTask) Start(ctx context.Context) error {
-	return gt.TickRun(ctx, gt.CRON, c.cfg.RetentionCheckInterval, 0, 0, func(ctx context.Context) *gt.TickOptions {
+	return gt.TickRun(ctx, gt.CRON_NOW, c.cfg.RetentionCheckInterval, 0, 0, func(ctx context.Context) *gt.TickOptions {
 		c.logger().Debug("[LEADER] Starting message cleanup...")
 		c.clean(ctx)
 		return nil
