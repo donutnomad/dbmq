@@ -27,11 +27,17 @@ func (m *mockManualAssignmentRepo) Create(_ context.Context, _ *manualassignment
 func (m *mockManualAssignmentRepo) GetByGroup(_ context.Context, _ string) ([]*manualassignment.Assignment, error) {
 	return nil, nil
 }
+func (m *mockManualAssignmentRepo) GetAll(_ context.Context) ([]*manualassignment.Assignment, error) {
+	return nil, nil
+}
 func (m *mockManualAssignmentRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
 func (m *mockManualAssignmentRepo) GetMatching(_ context.Context, _ string, _ []string) (map[string][]types.PartitionInfo, error) {
 	return m.matchResult, nil
+}
+func (m *mockManualAssignmentRepo) DeleteByGroup(_ context.Context, _ string) error {
+	return nil
 }
 
 // makeTestConsumersWithTopics 创建带有订阅 Topic 的消费者列表
@@ -44,6 +50,14 @@ func makeTestConsumersWithTopics(topics []string, ids ...string) []*heartbeat.He
 		}
 	}
 	return consumers
+}
+
+// setConsumerGeneration 将消费者心跳行的 generation 设为指定值
+// （模拟真实 IncrementAndUpdateAssignments 在 rebalance 后写库的结果）
+func setConsumerGeneration(consumers []*heartbeat.Heartbeat, gen uint) {
+	for _, c := range consumers {
+		c.GenerationID = gen
+	}
 }
 
 // newTestSnapshotInfo 创建带 mock repo 的测试快照状态
@@ -88,6 +102,14 @@ func (m *rebalanceHeartbeatRepo) FindAll(_ context.Context, _ string, _ time.Dur
 	return m.active, nil
 }
 
+func (m *rebalanceHeartbeatRepo) DeleteByGroup(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *rebalanceHeartbeatRepo) DeleteExpired(_ context.Context, _ time.Time, _ int) (int64, error) {
+	return 0, nil
+}
+
 type rebalanceTopicRepo struct {
 	topics []*topic.Topic
 }
@@ -122,6 +144,8 @@ func (m *rebalanceTopicRepo) FindByNames(_ context.Context, topicNames []string)
 type rebalanceGroupRepo struct {
 	generation uint
 	increments int
+	// heartbeats 可选：模拟真实 IncrementAndUpdateAssignments 会把所有心跳行写到新 generation
+	heartbeats []*heartbeat.Heartbeat
 }
 
 func (m *rebalanceGroupRepo) GetGeneration(_ context.Context, groupID string) (*consumergroup.Generation, error) {
@@ -137,6 +161,9 @@ func (m *rebalanceGroupRepo) IncrementGenerationID(_ context.Context, _ string) 
 func (m *rebalanceGroupRepo) IncrementAndUpdateAssignments(_ context.Context, _ string, _ map[string][]types.PartitionInfo) (uint, error) {
 	m.generation++
 	m.increments++
+	for _, hb := range m.heartbeats {
+		hb.GenerationID = m.generation
+	}
 	return m.generation, nil
 }
 
@@ -146,6 +173,10 @@ func (m *rebalanceGroupRepo) FindAllActiveGroups(_ context.Context, _ time.Durat
 
 func (m *rebalanceGroupRepo) FindAllGroups(_ context.Context) ([]string, error) {
 	return []string{"test-group"}, nil
+}
+
+func (m *rebalanceGroupRepo) Delete(_ context.Context, _ string) error {
+	return nil
 }
 
 type rebalanceProgressRepo struct{}
@@ -167,6 +198,12 @@ func (rebalanceProgressRepo) CommitWithSubscriptionRegistration(context.Context,
 }
 func (rebalanceProgressRepo) GetLowWatermarks(context.Context) (map[types.PartitionInfo]int64, error) {
 	return nil, nil
+}
+func (rebalanceProgressRepo) DeleteByGroup(context.Context, string) error {
+	return nil
+}
+func (rebalanceProgressRepo) DeleteByGroupTopicPartition(context.Context, string, string, uint) error {
+	return nil
 }
 
 type rebalanceMessageRepo struct{}
@@ -319,6 +356,7 @@ func TestIsRebalanceNeeded_NoChange_ReturnsFalse(t *testing.T) {
 	}
 
 	consumers := makeTestConsumersWithTopics(topics, consumerA, consumerB)
+	setConsumerGeneration(consumers, gen)
 
 	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, "test-topic:1", gen) {
 		t.Fatal("没有任何变化时 isRebalanceNeeded 应该返回 false")
@@ -329,7 +367,7 @@ func TestCoordinatorTask_TryRebalance_StableSnapshotSkipsGenerationIncrement(t *
 	groupID := "test-group"
 	topicName := "test-topic"
 	consumers := makeTestConsumersWithTopics([]string{topicName}, "consumer-a")
-	groupRepo := &rebalanceGroupRepo{}
+	groupRepo := &rebalanceGroupRepo{heartbeats: consumers}
 
 	task := &coordinatorTask{
 		cfg: &CoordinatorConfig{
@@ -496,7 +534,8 @@ func TestSnapshotTransition_FullRebalanceCycle(t *testing.T) {
 	}
 	t.Logf("轮次3: A'=%v, B=%v", assign3[consumerAPrime], assign3[consumerB])
 
-	// ===== 轮次 4: 稳定状态 =====
+	// ===== 轮次 4: 稳定状态（rebalance 后心跳行已被写到当前 generation） =====
+	setConsumerGeneration(consumersRound3, gen)
 	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumersRound3, partitionHash, gen) {
 		t.Fatal("轮次4: 稳定状态不应该需要 rebalance")
 	}
@@ -595,6 +634,7 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 
 	calculateAssignments(consumers, partitions, manual)
 	snapshots.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
+	setConsumerGeneration(consumers, gen)
 
 	// 稳定状态：snapshot.generationID == 5，传入 currentGenerationID == 5
 	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, gen) {
@@ -614,6 +654,7 @@ func TestBug_TriggerRebalanceAPI_GenerationMismatch(t *testing.T) {
 
 	// === 阶段 3: 协调器执行 rebalance 后恢复稳定 ===
 	snapshots.updateGroupSnapshot(groupID, apiIncrementedGen, consumers, partitionHash, manual)
+	setConsumerGeneration(consumers, apiIncrementedGen)
 
 	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, partitionHash, apiIncrementedGen) {
 		t.Fatal("rebalance 完成后应该恢复稳定状态")
@@ -647,6 +688,7 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 
 	assign := calculateAssignments(consumers, partitions, manual)
 	snapshots.updateGroupSnapshot(groupID, gen, consumers, partitionHash, manual)
+	setConsumerGeneration(consumers, gen)
 
 	if !reflect.DeepEqual(assign[consumerAPrime], []types.PartitionInfo{p(topic, 0)}) {
 		t.Fatalf("A' 应该得到 p0，实际: %v", assign[consumerAPrime])
@@ -659,4 +701,90 @@ func TestScenario_CoordinatorRestart_SnapshotLost(t *testing.T) {
 		t.Fatal("rebalance 后稳定状态不应该再需要 rebalance")
 	}
 	t.Logf("协调器重启场景通过: A'=%v, B=%v", assign[consumerAPrime], assign[consumerB])
+}
+
+// TestCanRebalance_ConsumerGenerationLag_Triggers 死锁场景回归：
+// 心跳行被删除后由消费者 Upsert 以 generation_id=0 重建，此时成员集合、订阅、
+// 分区 hash、组 generation 全部"看似无变化"，若不检测行 generation 落后，
+// 协调器与消费者会互相认为"无变化"而永久死锁（消费者空 assignment，需重启才恢复）
+func TestCanRebalance_ConsumerGenerationLag_Triggers(t *testing.T) {
+	snapshots, repo := newTestSnapshotInfo(nil)
+	groupID := "lag-group"
+	topics := []string{"test-topic"}
+	var gen uint = 10
+
+	consumers := makeTestConsumersWithTopics(topics, "consumer-a", "consumer-b")
+	setConsumerGeneration(consumers, gen)
+	snapshots.updateGroupSnapshot(groupID, gen, consumers, "test-topic:1", nil)
+
+	// consumer-b 的心跳行被重建为 generation_id=0
+	consumers[1].GenerationID = 0
+
+	if !testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, "test-topic:1", gen) {
+		t.Fatal("消费者心跳行 generation 落后于组 generation 时必须触发 rebalance")
+	}
+}
+
+// TestCanRebalance_ConsumerGenerationMatch_NoTrigger 防过度触发：
+// 全部行 generation 与组 generation 一致的稳定态不应触发 rebalance
+func TestCanRebalance_ConsumerGenerationMatch_NoTrigger(t *testing.T) {
+	snapshots, repo := newTestSnapshotInfo(nil)
+	groupID := "match-group"
+	topics := []string{"test-topic"}
+	var gen uint = 10
+
+	consumers := makeTestConsumersWithTopics(topics, "consumer-a", "consumer-b")
+	setConsumerGeneration(consumers, gen)
+	snapshots.updateGroupSnapshot(groupID, gen, consumers, "test-topic:1", nil)
+
+	if testCanRebalance(context.Background(), snapshots, repo, groupID, consumers, "test-topic:1", gen) {
+		t.Fatal("全部 generation 匹配的稳定态不应触发 rebalance")
+	}
+}
+
+// TestCoordinatorTask_TryRebalance_HeartbeatRowRecreated_ForcesRebalance 端到端回归：
+// 第一次 rebalance 后某消费者心跳行被重建为 generation_id=0（行删除后 Upsert 重建），
+// 第二次扫描必须强制再次 rebalance 修复该行
+func TestCoordinatorTask_TryRebalance_HeartbeatRowRecreated_ForcesRebalance(t *testing.T) {
+	groupID := "test-group"
+	topicName := "test-topic"
+	consumers := makeTestConsumersWithTopics([]string{topicName}, "consumer-a")
+	groupRepo := &rebalanceGroupRepo{heartbeats: consumers}
+
+	task := &coordinatorTask{
+		cfg: &CoordinatorConfig{
+			HeartbeatTimeout: 30 * time.Second,
+			RebalanceTimeout: time.Second,
+		},
+		rebalancingLocks: newGroupLocks(),
+		snapshotInfo:     newSnapshotInfo(),
+		repos: repos{
+			topicRepo:            &rebalanceTopicRepo{topics: []*topic.Topic{{Name: topicName, PartitionCount: 1}}},
+			messageRepo:          rebalanceMessageRepo{},
+			heartbeatRepo:        &rebalanceHeartbeatRepo{active: consumers},
+			groupRepo:            groupRepo,
+			progressRepo:         rebalanceProgressRepo{},
+			manualAssignmentRepo: &mockManualAssignmentRepo{},
+		},
+	}
+
+	if err := task.tryRebalance(context.Background(), groupID); err != nil {
+		t.Fatalf("第一次 rebalance 失败: %v", err)
+	}
+	if groupRepo.increments != 1 {
+		t.Fatalf("第一次 rebalance 应该递增一次 generation，实际: %d", groupRepo.increments)
+	}
+
+	// 模拟心跳行被删除后由消费者 Upsert 以 generation_id=0 重建
+	consumers[0].GenerationID = 0
+
+	if err := task.tryRebalance(context.Background(), groupID); err != nil {
+		t.Fatalf("第二次 rebalance 检查失败: %v", err)
+	}
+	if groupRepo.increments != 2 {
+		t.Fatalf("心跳行 generation 落后时应该强制再次 rebalance，increments 实际: %d", groupRepo.increments)
+	}
+	if consumers[0].GenerationID != groupRepo.generation {
+		t.Fatalf("rebalance 后心跳行 generation 应被修复为 %d，实际: %d", groupRepo.generation, consumers[0].GenerationID)
+	}
 }

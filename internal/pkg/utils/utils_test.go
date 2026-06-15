@@ -126,3 +126,29 @@ func TestFindRevokedPartitions(t *testing.T) {
 		})
 	}
 }
+
+func TestSameElements(t *testing.T) {
+	p := func(topic string, partition uint) types.PartitionInfo {
+		return types.PartitionInfo{Topic: topic, Partition: partition}
+	}
+	tests := []struct {
+		name string
+		a, b []types.PartitionInfo
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"nil vs empty", nil, []types.PartitionInfo{}, true},
+		{"same order", []types.PartitionInfo{p("t", 0)}, []types.PartitionInfo{p("t", 0)}, true},
+		{"different order", []types.PartitionInfo{p("t", 0), p("t", 1)}, []types.PartitionInfo{p("t", 1), p("t", 0)}, true},
+		{"different length", []types.PartitionInfo{p("t", 0)}, nil, false},
+		{"different element", []types.PartitionInfo{p("t", 0)}, []types.PartitionInfo{p("t", 1)}, false},
+		{"duplicate counts differ", []types.PartitionInfo{p("t", 0), p("t", 0)}, []types.PartitionInfo{p("t", 0), p("t", 1)}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SameElements(tt.a, tt.b); got != tt.want {
+				t.Errorf("SameElements(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}

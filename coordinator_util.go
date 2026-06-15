@@ -71,6 +71,19 @@ func canRebalance(ctx context.Context, snapshot *groupSnapshot, manualAssignment
 		return true
 	}
 
+	// 检测活跃消费者心跳行 generation 与组 generation 不一致。
+	// 心跳行被删除后会被消费者 Upsert 以 generation_id=0 重建，此时成员集合
+	// 和组 generation 均无变化，若不检查此项，协调器与消费者会互相认为
+	// "无变化"而永久死锁（消费者空 assignment，需重启才恢复）。
+	for _, consumer := range consumers {
+		if consumer.GenerationID != currentGenerationID {
+			log.Warn("[LEADER] 消费者心跳行 generation 与组 generation 不一致，强制触发 rebalance",
+				"group_id", groupID, "consumer_id", consumer.ConsumerID,
+				"consumer_generation", consumer.GenerationID, "current_generation", currentGenerationID)
+			return true
+		}
+	}
+
 	if !hasSameMemberTopics(snapshot.memberTopics, consumers) {
 		return true
 	}

@@ -42,6 +42,24 @@ func SortPartitionsByTopicAndPartition(partitions []types.PartitionInfo) {
 	})
 }
 
+// SameElements 判断两个切片是否包含相同的元素集合（顺序无关，重复元素按计数比较）
+func SameElements[T comparable](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[T]int, len(a))
+	for _, v := range a {
+		counts[v]++
+	}
+	for _, v := range b {
+		counts[v]--
+		if counts[v] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // Subtract 计算集合差集 A - B（返回在 a 中但不在 b 中的元素）
 func Subtract[T comparable](a, b []T) []T {
 	aMap := make(map[T]struct{}, len(a))

@@ -2,7 +2,6 @@ package dbmq
 
 import (
 	"context"
-	"time"
 
 	"github.com/donutnomad/dbmq/internal/types"
 )
@@ -36,17 +35,18 @@ func NewHeartbeatCmd(ctx context.Context) HeartbeatCmd {
 	return HeartbeatCmd{BaseCmd: NewBaseCmd[error](ctx)}
 }
 
-type PollResult struct {
-	Messages []ConsumerMessage
-	Err      error
+// PollSnapshotResult Poll 流程所需的 actor 状态快照
+// Assignment 与 Offsets 在同一条命令内克隆，保证两者一致
+type PollSnapshotResult struct {
+	State        ConsumerState
+	GenerationID uint
+	Assignment   []types.PartitionInfo
+	Offsets      map[types.PartitionInfo]int64
 }
-type PollCmd struct {
-	BaseCmd[PollResult]
-	Timeout time.Duration
-}
+type PollSnapshotCmd struct{ BaseCmd[PollSnapshotResult] }
 
-func NewPollCmd(ctx context.Context, timeout time.Duration) PollCmd {
-	return PollCmd{BaseCmd: NewBaseCmd[PollResult](ctx), Timeout: timeout}
+func NewPollSnapshotCmd(ctx context.Context) PollSnapshotCmd {
+	return PollSnapshotCmd{BaseCmd: NewBaseCmd[PollSnapshotResult](ctx)}
 }
 
 type RebalanceCmd struct {

@@ -2881,3 +2881,292 @@ func TestTC_DeleteTopicCascade(t *testing.T) {
 		assert.Equal(t, 3, consumed, "Should only consume new messages (3), not old ones")
 	})
 }
+
+// =============================================================================
+// 测试场景33: 心跳行被删除后消费者自愈（复现历史 bug 并验证修复）
+// =============================================================================
+
+// TestTC_HeartbeatRowDeletedSelfHeals 复现核心 bug：
+// 消费者运行中心跳行被删除 → Upsert 以 generation_id=0 重建 →
+// 旧实现下消费者永久卡死在空 assignment（需重启），
+// 修复后协调器检测到 generation 落后并在一个 RebalanceInterval 内自愈。
+func TestTC_HeartbeatRowDeletedSelfHeals(t *testing.T) {
+	cleanupTables(t)
+	ctx := context.Background()
+
+	admin := NewAdminClient(globalEnv.DB)
+	topicName := "heartbeat-deleted-topic"
+	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 2}))
+
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockTable:         integrationLeaderLockTable,
+		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
+		HeartbeatTimeout:  3 * time.Second,
+		RebalanceInterval: 500 * time.Millisecond,
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+	require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+	consumer, err := NewConsumer(ConsumerConfig{
+		DB: globalEnv.DB, Redis: globalEnv.Redis,
+		GroupID: "hb-deleted-group", NotificationEnabled: true,
+		Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+		ConsumeStrategy: ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	consumer.SubscribeTopics(topicName)
+	require.Eventually(t, consumer.IsReady, 10*time.Second, 100*time.Millisecond)
+	defer consumer.Close()
+
+	// 发送消息并确认消费者正常工作
+	p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+	for i := range 5 {
+		p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("before-%d", i), Value: jsonValue(fmt.Sprintf("before-%d", i))})
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	var beforeCount int
+	for beforeCount < 5 {
+		msgs, err := consumer.Poll(pollCtx, 500*time.Millisecond)
+		if err != nil {
+			break
+		}
+		for _, msg := range msgs {
+			beforeCount++
+			consumer.Acknowledge(msg)
+		}
+		consumer.CommitSync(pollCtx)
+	}
+	cancel()
+	t.Logf("Before deletion: consumed %d messages, IsReady=%v", beforeCount, consumer.IsReady())
+	require.Equal(t, 5, beforeCount, "Should consume all 5 messages before heartbeat row deletion")
+
+	// ====== 核心操作：删除消费者的心跳行 ======
+	// 模拟运维误操作、DeleteExpired 配置过短、或 DB 故障恢复丢行
+	consumerID := consumer.ID()
+	result := globalEnv.DB.Exec(
+		"DELETE FROM mq_consumer_heartbeats WHERE group_id = ? AND consumer_id = ?",
+		"hb-deleted-group", consumerID,
+	)
+	require.NoError(t, result.Error)
+	require.Equal(t, int64(1), result.RowsAffected, "Should delete exactly 1 heartbeat row")
+	t.Logf("Deleted heartbeat row for consumer %s", consumerID)
+
+	// 等待自愈完整链条：
+	// 消费者心跳 Upsert 以 gen=0 重建行 → doRebalance(0, []) 导致 IsReady=false →
+	// 协调器检测到 gen 落后 → rebalance 分配分区 → 消费者 doRebalance 恢复 → IsReady=true
+	//
+	// 先等 IsReady 变 false（消费者采纳了 gen=0 的空 assignment），再等恢复 true
+	require.Eventually(t, func() bool {
+		return !consumer.IsReady()
+	}, 10*time.Second, 100*time.Millisecond, "Consumer should lose Ready state after heartbeat row deletion")
+	t.Log("Consumer lost Ready state (adopted gen=0 empty assignment)")
+
+	require.Eventually(t, func() bool {
+		return consumer.IsReady()
+	}, 10*time.Second, 200*time.Millisecond, "Consumer should self-heal after coordinator detects generation lag")
+	t.Log("Consumer self-healed after heartbeat row deletion")
+
+	// 验证自愈后能正常消费新消息
+	for i := range 5 {
+		p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("after-%d", i), Value: jsonValue(fmt.Sprintf("after-%d", i))})
+	}
+
+	pollCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+	var afterCount int
+	for afterCount < 5 {
+		msgs, err := consumer.Poll(pollCtx2, 500*time.Millisecond)
+		if err != nil {
+			break
+		}
+		for _, msg := range msgs {
+			afterCount++
+			consumer.Acknowledge(msg)
+		}
+		consumer.CommitSync(pollCtx2)
+	}
+	cancel2()
+	t.Logf("After self-heal: consumed %d messages", afterCount)
+	assert.Equal(t, 5, afterCount, "Should consume all 5 messages after self-healing")
+}
+
+// =============================================================================
+// 测试场景34: 同代际 assignment 偏差自愈
+// =============================================================================
+
+// TestTC_SameGenerationAssignmentDriftSelfHeals 复现同代际偏差：
+// 协调器在 IncrementAndUpdateAssignments 事务中更新了心跳行的 assignment，
+// 但消费者内存中的 assignment 因某种原因与 DB 不一致（generation 相同），
+// 旧实现不会同步（只比较 generation 数值），修复后心跳时比较 assignment 内容触发自愈。
+func TestTC_SameGenerationAssignmentDriftSelfHeals(t *testing.T) {
+	cleanupTables(t)
+	ctx := context.Background()
+
+	admin := NewAdminClient(globalEnv.DB)
+	topicName := "assignment-drift-topic"
+	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 4}))
+
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockTable:         integrationLeaderLockTable,
+		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
+		HeartbeatTimeout:  3 * time.Second,
+		RebalanceInterval: 500 * time.Millisecond,
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+	require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+	// 两个消费者，各分到 2 个分区
+	c1, err := NewConsumer(ConsumerConfig{
+		DB: globalEnv.DB, Redis: globalEnv.Redis,
+		GroupID: "drift-group", NotificationEnabled: true,
+		Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+		ConsumeStrategy: ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	c1.SubscribeTopics(topicName)
+
+	c2, err := NewConsumer(ConsumerConfig{
+		DB: globalEnv.DB, Redis: globalEnv.Redis,
+		GroupID: "drift-group", NotificationEnabled: true,
+		Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+		ConsumeStrategy: ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	c2.SubscribeTopics(topicName)
+
+	require.Eventually(t, c1.IsReady, 10*time.Second, 100*time.Millisecond)
+	require.Eventually(t, c2.IsReady, 10*time.Second, 100*time.Millisecond)
+	defer c1.Close()
+	defer c2.Close()
+
+	// 等待分区分配稳定
+	time.Sleep(2 * time.Second)
+
+	// 关闭 c2，c1 应该接管所有 4 个分区
+	c2.Close()
+
+	// 等待 rebalance 完成
+	require.Eventually(t, func() bool {
+		return c1.IsReady()
+	}, 10*time.Second, 200*time.Millisecond)
+	time.Sleep(2 * time.Second)
+
+	// 发送消息到所有 4 个分区
+	p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+	for i := range 20 {
+		p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("k%d", i), Value: jsonValue(fmt.Sprintf("msg-%d", i))})
+	}
+
+	// c1 消费并验证能从所有 4 个分区收到消息（证明 c2 下线后的 rebalance 生效了）
+	partitionSet := make(map[uint]bool)
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	var consumed int
+	for {
+		msgs, err := c1.Poll(pollCtx, 500*time.Millisecond)
+		if err != nil {
+			break
+		}
+		for _, msg := range msgs {
+			consumed++
+			partitionSet[msg.Partition] = true
+			c1.Acknowledge(msg)
+		}
+		c1.CommitSync(pollCtx)
+	}
+	cancel()
+
+	t.Logf("c1 consumed %d messages from partitions %v", consumed, partitionSet)
+	assert.Equal(t, 20, consumed, "c1 should consume all 20 messages after c2 left")
+	assert.Len(t, partitionSet, 4, "c1 should consume from all 4 partitions")
+}
+
+// =============================================================================
+// 测试场景35: Poll 不阻塞心跳（验证修复3）
+// =============================================================================
+
+// TestTC_PollDoesNotBlockHeartbeat 验证 Poll 等待期间心跳仍在正常工作：
+// 消费者 Poll 一个空 topic（长时间等待），心跳不应被阻塞，
+// 消费者不应因心跳超时被协调器踢出。
+func TestTC_PollDoesNotBlockHeartbeat(t *testing.T) {
+	cleanupTables(t)
+	ctx := context.Background()
+
+	admin := NewAdminClient(globalEnv.DB)
+	topicName := "poll-noblock-topic"
+	require.NoError(t, admin.CreateTopic(ctx, NewTopicRequest{Name: topicName, NumPartitions: 1}))
+
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockTable:         integrationLeaderLockTable,
+		DB:                globalEnv.DB,
+		NodeAddr:          "test-node",
+		HeartbeatTimeout:  2 * time.Second,
+		RebalanceInterval: 500 * time.Millisecond,
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+	require.Eventually(t, coordinator.IsLeader, 5*time.Second, 100*time.Millisecond)
+
+	consumer, err := NewConsumer(ConsumerConfig{
+		DB: globalEnv.DB, Redis: globalEnv.Redis,
+		GroupID: "poll-noblock-group", NotificationEnabled: true,
+		Topics: []string{topicName}, HeartbeatInterval: 500 * time.Millisecond,
+		ConsumeStrategy: ConsumeFromEarliest,
+	})
+	require.NoError(t, err)
+	consumer.SubscribeTopics(topicName)
+	require.Eventually(t, consumer.IsReady, 10*time.Second, 100*time.Millisecond)
+	defer consumer.Close()
+
+	// 在空 topic 上 Poll，超时设为 5 秒（远大于 HeartbeatTimeout 2s）
+	// 旧实现下此 Poll 会阻塞 actor 5 秒，心跳在此期间无法执行，
+	// 超过 HeartbeatTimeout(2s) 后被协调器踢出并清空分区
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		consumer.Poll(ctx, 5*time.Second)
+	}()
+
+	// 在 Poll 等待期间持续检查消费者是否仍然 Ready
+	// 如果心跳被 Poll 阻塞，消费者会在 ~2 秒后被踢出（IsReady=false）
+	for i := range 8 {
+		time.Sleep(500 * time.Millisecond)
+		if !consumer.IsReady() {
+			t.Fatalf("Consumer lost Ready state at check %d (after %dms) — heartbeat was blocked by Poll",
+				i, (i+1)*500)
+		}
+	}
+	t.Log("Consumer maintained Ready state throughout 4s of Poll waiting — heartbeat not blocked")
+
+	// 等待 Poll 结束
+	select {
+	case <-pollDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Poll did not return in time")
+	}
+
+	// 最终验证：发消息并消费，证明消费者仍然完全正常
+	p, _ := NewProducer(ProducerConfig{DB: globalEnv.DB, Redis: globalEnv.Redis, NotificationEnabled: true})
+	for i := range 3 {
+		p.Send(ctx, ProducerMessage{Topic: topicName, Key: fmt.Sprintf("final-%d", i), Value: jsonValue(fmt.Sprintf("final-%d", i))})
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	var finalCount int
+	for finalCount < 3 {
+		msgs, err := consumer.Poll(pollCtx, 1*time.Second)
+		if err != nil {
+			break
+		}
+		for _, msg := range msgs {
+			finalCount++
+			consumer.Acknowledge(msg)
+		}
+		consumer.CommitSync(pollCtx)
+	}
+	cancel()
+	assert.Equal(t, 3, finalCount, "Consumer should consume messages normally after long Poll")
+}

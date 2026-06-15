@@ -90,6 +90,10 @@ func (m *mockHeartbeatRepo) DeleteExpired(ctx context.Context, before time.Time,
 	return 0, nil
 }
 
+func (m *mockHeartbeatRepo) DeleteByGroup(ctx context.Context, groupID string) error {
+	return nil
+}
+
 func (m *mockHeartbeatRepo) setHeartbeat(hb *heartbeat.Heartbeat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,6 +104,12 @@ func (m *mockHeartbeatRepo) getMarkOfflineCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.markOfflineCalls)
+}
+
+func (m *mockHeartbeatRepo) getUpsertCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.upsertCalls)
 }
 
 // ========== Mock Progress Repo Implementation ==========
@@ -166,6 +176,20 @@ func (m *mockProgressRepo) GetLowWatermarks(ctx context.Context) (map[types.Part
 	return nil, nil
 }
 
+func (m *mockProgressRepo) DeleteByGroup(ctx context.Context, groupID string) error {
+	return nil
+}
+
+func (m *mockProgressRepo) setCommittedOffsets(offsets []*consumerprogress.Progress) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.committedOffsets = offsets
+}
+
+func (m *mockProgressRepo) DeleteByGroupTopicPartition(ctx context.Context, groupID string, topic string, partition uint) error {
+	return nil
+}
+
 // ========== Mock Message Repo Implementation ==========
 
 // mockMessageRepo implements message.Repo for testing
@@ -209,6 +233,12 @@ func (m *mockMessageRepo) FetchBatch(ctx context.Context, requests []message.Fet
 
 func (m *mockMessageRepo) GetLatestID(ctx context.Context, topic string, partition uint) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockMessageRepo) getFetchBatchCalls() []fetchBatchCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]fetchBatchCall(nil), m.fetchBatchCalls...)
 }
 
 func (m *mockMessageRepo) GetLatestIDs(ctx context.Context, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
@@ -947,10 +977,10 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 				{Topic: "test-topic", Partition: 1},
 			},
 		})
-		mocks.progress.committedOffsets = []*consumerprogress.Progress{
+		mocks.progress.setCommittedOffsets([]*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 100},
 			{Topic: "test-topic", Partition: 1, LastConsumedMessageID: 200},
-		}
+		})
 
 		// Trigger another heartbeat to detect generation change
 		fakeClock.Advance(2 * time.Second)
@@ -1052,7 +1082,7 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 //   - 此后每次心跳: dbGen(509) == currentGen(509) → 直接 return，永远不再触发 rebalance
 //   - IsReady() 永远返回 false（state=Ready 但 assignment 为空）
 func TestBug_CoordinatorRaceWindow(t *testing.T) {
-	t.Run("heartbeat with empty partitions during coordinator two-phase commit causes permanent stuck", func(t *testing.T) {
+	t.Run("heartbeat with empty partitions during coordinator two-phase commit self-heals", func(t *testing.T) {
 		mocks := newMockConsumerRepos()
 		fakeClock := NewFakeClock(time.Now())
 
@@ -1075,7 +1105,7 @@ func TestBug_CoordinatorRaceWindow(t *testing.T) {
 		// 首次心跳：dbGen=0 == currentGen=0，不触发 rebalance，消费者保持 Joining
 		fakeClock.Advance(2 * time.Second)
 		time.Sleep(100 * time.Millisecond)
-		require.Equal(t, StateJoining, actor.stateMachine.Get(), "首次心跳后应仍在 Joining 状态")
+		require.Equal(t, StateJoining, getActorState(t, actor).State, "首次心跳后应仍在 Joining 状态")
 
 		// ====== 模拟 coordinator 竞态窗口 ======
 		// 事务1完成：IncrementGenerationID，generation 0→509
@@ -1091,9 +1121,10 @@ func TestBug_CoordinatorRaceWindow(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// doRebalance 使用空分区成功完成：state=Ready，但 assignment=[]
-		require.Equal(t, StateReady, actor.stateMachine.Get(), "doRebalance(509,[]) 后状态变为 Ready")
-		require.Equal(t, uint(509), actor.generationID, "generationID 已更新为 509")
-		require.Empty(t, actor.assignment, "分区为空（竞态窗口中拿到的是空分区）")
+		midState := getActorState(t, actor)
+		require.Equal(t, StateReady, midState.State, "doRebalance(509,[]) 后状态变为 Ready")
+		require.Equal(t, uint(509), midState.GenerationID, "generationID 已更新为 509")
+		require.Empty(t, midState.Assignment, "分区为空（竞态窗口中拿到的是空分区）")
 
 		// ====== 事务2完成：coordinator 写入了实际的分区分配 ======
 		// 数据库：generation_id=509, assigned_partitions=[p0]
@@ -1104,16 +1135,14 @@ func TestBug_CoordinatorRaceWindow(t *testing.T) {
 			},
 		})
 
-		// 再触发几次心跳，验证消费者是否能自动恢复
-		for i := 0; i < 3; i++ {
+		// ====== 验证自愈：generation 未变但 assignment 与数据库不一致时，心跳触发自愈同步 ======
+		// （历史 bug：旧实现只比较 generation，此场景会永久卡死在空 assignment，需重启恢复）
+		require.Eventually(t, func() bool {
 			fakeClock.Advance(2 * time.Second)
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// ====== 验证 bug：消费者当前因竞态窗口卡在 Ready 但分区为空 ======
-		// （此时协调器端的修复尚未生效，这是验证竞态窗口确实曾经存在）
-		assert.Empty(t, actor.assignment, "竞态窗口后分区为空")
-		assert.False(t, actor.IsReady(), "竞态窗口后 IsReady() 返回 false")
+			state := getActorState(t, actor)
+			return state.State == StateReady && state.GenerationID == 509 && len(state.Assignment) == 1
+		}, 3*time.Second, 50*time.Millisecond, "同代际 assignment 偏差应通过心跳自愈，恢复 [p0]")
+		assert.True(t, actor.IsReady(), "自愈后 IsReady() 应返回 true")
 
 		// ====== 验证修复：当 coordinator 再次触发 rebalance（gen 变化），消费者能正常恢复 ======
 		// 修复后，coordinator 端合并了两个事务，不再出现 gen 增加但 partition 未更新的中间态。
@@ -1124,20 +1153,400 @@ func TestBug_CoordinatorRaceWindow(t *testing.T) {
 				{Topic: "test-topic", Partition: 0},
 			},
 		})
-		mocks.progress.committedOffsets = []*consumerprogress.Progress{
+		mocks.progress.setCommittedOffsets([]*consumerprogress.Progress{
 			{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 0},
-		}
+		})
 
 		// 触发心跳：gen=510 != currentGen=509，触发 doRebalance(510, [p0])
 		fakeClock.Advance(2 * time.Second)
 		time.Sleep(100 * time.Millisecond)
 
 		// 修复后验证：消费者能通过下一次 rebalance 自愈
-		assert.Equal(t, StateReady, actor.stateMachine.Get(), "下一次 rebalance 后应恢复 Ready")
-		assert.Equal(t, uint(510), actor.generationID, "generation 更新为 510")
-		assert.Len(t, actor.assignment, 1, "分区分配已恢复")
+		finalState := getActorState(t, actor)
+		assert.Equal(t, StateReady, finalState.State, "下一次 rebalance 后应恢复 Ready")
+		assert.Equal(t, uint(510), finalState.GenerationID, "generation 更新为 510")
+		assert.Len(t, finalState.Assignment, 1, "分区分配已恢复")
 		assert.True(t, actor.IsReady(), "IsReady() 应返回 true")
 	})
+}
+
+// blockingWaiter 测试用 Waiter：Wait() 被调用时向 waitCalled 发信号（用于确认
+// Poll 已进入等待，消除 sleep 竞态），返回的 channel 由测试通过 release 控制
+type blockingWaiter struct {
+	waitCalled chan struct{}
+	release    chan struct{}
+}
+
+func newBlockingWaiter() *blockingWaiter {
+	return &blockingWaiter{
+		waitCalled: make(chan struct{}, 10),
+		release:    make(chan struct{}),
+	}
+}
+
+func (w *blockingWaiter) Wait(ctx context.Context, timeout time.Duration) <-chan struct{} {
+	select {
+	case w.waitCalled <- struct{}{}:
+	default:
+	}
+	ch := make(chan struct{})
+	go func() {
+		select {
+		case <-w.release:
+		case <-ctx.Done():
+		}
+		close(ch)
+	}()
+	return ch
+}
+
+// startReadyActorWithWaiter 创建并驱动一个消费者到 Ready(gen=1, [test-topic:0]) 状态
+func startReadyActorWithWaiter(t *testing.T, mocks *mockConsumerRepos, fakeClock *FakeClock, waiter Waiter) *ConsumerActor {
+	t.Helper()
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID: 1,
+		AssignedPartitions: []types.PartitionInfo{
+			{Topic: "test-topic", Partition: 0},
+		},
+	})
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: 1 * time.Second,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithWaiter(waiter))
+
+	actor.Start()
+	actor.SubscribeTopics("test-topic")
+
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.State == StateReady && len(state.Assignment) == 1
+	}, 3*time.Second, 50*time.Millisecond, "消费者应进入 Ready 且持有分区")
+
+	return actor
+}
+
+// TestConsumerActor_HeartbeatNotBlockedByPoll Poll 等待期间心跳必须照常执行。
+// 历史 bug：handlePoll 在 actor 单线程内阻塞等待长达整个 Poll timeout，
+// 心跳命令排队等待，实际心跳间隔 = HeartbeatInterval + 阻塞时间，
+// 超过 HeartbeatTimeout 后消费者被协调器误判死亡并清空分区。
+func TestConsumerActor_HeartbeatNotBlockedByPoll(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+
+	// 启动一个长时间等待的 Poll
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		_, _ = actor.Poll(context.Background(), 1*time.Hour)
+	}()
+
+	// 等待 Poll 进入等待状态
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未进入等待状态")
+	}
+
+	baseline := mocks.heartbeat.getUpsertCallCount()
+
+	// Poll 等待期间推进时钟触发心跳，Upsert 必须照常发生
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		return mocks.heartbeat.getUpsertCallCount() > baseline
+	}, 3*time.Second, 50*time.Millisecond, "Poll 等待期间心跳 Upsert 应照常执行")
+
+	// 清理：释放 waiter 让 Poll 结束
+	close(waiter.release)
+	select {
+	case <-pollDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("释放 waiter 后 Poll 未返回")
+	}
+}
+
+// TestConsumerActor_Close_NotBlockedByPoll Poll 等待期间 Close 必须能及时完成。
+// 历史 bug：CloseCmd 排在阻塞的 PollCmd 之后，若 waiter 长时间不触发，
+// Close 会阻塞整个 Poll timeout（waiter 永不触发时死锁）。
+func TestConsumerActor_Close_NotBlockedByPoll(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+
+	pollResult := make(chan error, 1)
+	go func() {
+		_, err := actor.Poll(context.Background(), 1*time.Hour)
+		pollResult <- err
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未进入等待状态")
+	}
+
+	// waiter 永不释放，Close 必须仍能在限定时间内完成
+	closeDone := make(chan struct{})
+	go func() {
+		actor.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 等待期间 Close 超时（被阻塞的 Poll 卡住）")
+	}
+
+	select {
+	case err := <-pollResult:
+		assert.ErrorIs(t, err, context.Canceled, "Close 后等待中的 Poll 应返回 context.Canceled")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close 后 Poll 未返回")
+	}
+}
+
+// TestConsumerActor_Poll_RebalanceDuringWait 等待期间 generation 变化应返回 ErrRebalanceInProgress
+func TestConsumerActor_Poll_RebalanceDuringWait(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+
+	pollResult := make(chan error, 1)
+	go func() {
+		_, err := actor.Poll(context.Background(), 1*time.Hour)
+		pollResult <- err
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未进入等待状态")
+	}
+
+	// 等待期间发生 generation 变化的重平衡
+	cmd := NewRebalanceCmd(context.Background(), 2, []types.PartitionInfo{{Topic: "test-topic", Partition: 0}})
+	_, err := sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+
+	close(waiter.release)
+
+	select {
+	case err := <-pollResult:
+		var rebalanceErr *ErrRebalanceInProgress
+		assert.True(t, errors.As(err, &rebalanceErr), "等待期间 generation 变化应返回 ErrRebalanceInProgress，实际: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未返回")
+	}
+}
+
+// TestConsumerActor_Poll_SameGenAssignmentChange_UsesNewAssignment 等待期间发生
+// 同代际 assignment 自愈（见 handleHeartbeat 的漂移自愈路径）时，
+// fetch 必须使用等待后的新 assignment，不能使用等待前的快照
+func TestConsumerActor_Poll_SameGenAssignmentChange_UsesNewAssignment(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+
+	p1 := types.PartitionInfo{Topic: "test-topic", Partition: 1}
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter) // Ready: gen=1, [p0]
+	defer actor.Stop()
+
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		_, _ = actor.Poll(context.Background(), 1*time.Hour)
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未进入等待状态")
+	}
+
+	// 等待期间发生同代际 assignment 变化（generation 仍为 1，分区 p0 → p1）
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       1,
+		AssignedPartitions: []types.PartitionInfo{p1},
+	})
+	cmd := NewRebalanceCmd(context.Background(), 1, []types.PartitionInfo{p1})
+	_, err := sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+
+	close(waiter.release)
+
+	select {
+	case <-pollDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未返回")
+	}
+
+	calls := mocks.message.getFetchBatchCalls()
+	require.NotEmpty(t, calls, "Poll 应执行了 FetchBatch")
+	lastCall := calls[len(calls)-1]
+	require.Len(t, lastCall.requests, 1)
+	assert.Equal(t, "test-topic", lastCall.requests[0].Topic)
+	assert.Equal(t, uint(1), lastCall.requests[0].Partition, "fetch 应使用等待后的新分区 p1")
+}
+
+// TestConsumerActor_Poll_OffsetsTakenAfterWait offsets 必须在等待之后取：
+// 等待期间 commit 会推进消费位置，使用等待前的快照会重复拉取已确认的消息
+func TestConsumerActor_Poll_OffsetsTakenAfterWait(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+
+	// 初始已提交位置为 10
+	mocks.progress.committedOffsets = []*consumerprogress.Progress{
+		{Topic: "test-topic", Partition: 0, LastConsumedMessageID: 10},
+	}
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		_, _ = actor.Poll(context.Background(), 1*time.Hour)
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未进入等待状态")
+	}
+
+	// 等待期间确认并提交到 42
+	actor.Acknowledge(ConsumerMessage{Topic: "test-topic", Partition: 0, ID: 42})
+	require.NoError(t, actor.CommitSync(context.Background()))
+
+	close(waiter.release)
+
+	select {
+	case <-pollDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll 未返回")
+	}
+
+	calls := mocks.message.getFetchBatchCalls()
+	require.NotEmpty(t, calls, "Poll 应执行了 FetchBatch")
+	lastCall := calls[len(calls)-1]
+	require.Len(t, lastCall.requests, 1)
+	assert.Equal(t, int64(42), lastCall.requests[0].AfterID, "fetch 应使用等待后（commit 推进过）的 offset")
+}
+
+// getActorState 通过命令通道线程安全地读取 actor 状态
+func getActorState(t *testing.T, actor *ConsumerActor) GetStateResult {
+	t.Helper()
+	cmd := NewGetStateCmd()
+	result, err := sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+	return result
+}
+
+// TestConsumerActor_Heartbeat_SameGenAssignmentDrift_SelfHeals 同 generation 但
+// 数据库 assignment 与内存不一致时（手动修数据或未知异常导致的等代际偏差），
+// 心跳必须触发自愈同步，而不是因 generation 相等而跳过
+func TestConsumerActor_Heartbeat_SameGenAssignmentDrift_SelfHeals(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+
+	p0 := types.PartitionInfo{Topic: "test-topic", Partition: 0}
+	p1 := types.PartitionInfo{Topic: "test-topic", Partition: 1}
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       1,
+		AssignedPartitions: []types.PartitionInfo{p0},
+	})
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: 1 * time.Second,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+
+	actor.Start()
+	defer actor.Stop()
+	actor.SubscribeTopics("test-topic")
+
+	// 驱动到 Ready: gen=1, assignment=[p0]
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.State == StateReady && len(state.Assignment) == 1
+	}, 3*time.Second, 50*time.Millisecond, "消费者应进入 Ready 且持有 [p0]")
+
+	// 数据库 assignment 变为 [p0, p1]，generation 保持 1 不变
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       1,
+		AssignedPartitions: []types.PartitionInfo{p0, p1},
+	})
+
+	// 心跳后必须自愈：assignment 同步为 2 个分区，generation 仍为 1
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.State == StateReady && state.GenerationID == 1 && len(state.Assignment) == 2
+	}, 3*time.Second, 50*time.Millisecond, "同代际 assignment 偏差应通过心跳自愈")
+}
+
+// TestConsumerActor_Heartbeat_GenerationRegression_Adopts generation 回退必须采纳数据库状态
+// （组删除重建后 generation 从低值重新开始是合法回退；协调器的 generation 落后检测
+// 会很快推进行 generation）。固化该语义，防止未来改成拒绝回退导致永久卡死。
+func TestConsumerActor_Heartbeat_GenerationRegression_Adopts(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+
+	p0 := types.PartitionInfo{Topic: "test-topic", Partition: 0}
+	p1 := types.PartitionInfo{Topic: "test-topic", Partition: 1}
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       5,
+		AssignedPartitions: []types.PartitionInfo{p0},
+	})
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: 1 * time.Second,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+
+	actor.Start()
+	defer actor.Stop()
+	actor.SubscribeTopics("test-topic")
+
+	// 驱动到 Ready: gen=5, assignment=[p0]
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.State == StateReady && state.GenerationID == 5
+	}, 3*time.Second, 50*time.Millisecond, "消费者应进入 Ready 且 gen=5")
+
+	// 数据库 generation 回退到 2（如组删除重建）
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       2,
+		AssignedPartitions: []types.PartitionInfo{p1},
+	})
+
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.GenerationID == 2 && len(state.Assignment) == 1 &&
+			state.Assignment[0] == p1
+	}, 3*time.Second, 50*time.Millisecond, "generation 回退时应采纳数据库状态")
 }
 
 func TestConsumerActor_ConcurrentAccess(t *testing.T) {

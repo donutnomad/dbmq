@@ -225,8 +225,8 @@ func (a *ConsumerActor) handleCommand(cmd Command) {
 	switch c := cmd.(type) {
 	case HeartbeatCmd:
 		sendResult(c.Result(), a.handleHeartbeat(c.context()))
-	case PollCmd:
-		sendResult(c.Result(), a.handlePoll(c.context(), c.Timeout))
+	case PollSnapshotCmd:
+		sendResult(c.Result(), a.handlePollSnapshot())
 	case RebalanceCmd:
 		sendResult(c.Result(), a.handleRebalance(c.context(), c.NewGeneration, c.NewPartitions))
 	case CloseCmd:
@@ -339,7 +339,20 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 	dbGen := hb.GenerationID
 
 	if dbGen == currentGen {
-		return nil
+		if utils.SameElements(hb.AssignedPartitions, a.assignment) {
+			return nil
+		}
+		// 同代际但 assignment 与数据库不一致（手动修数据或未知异常），触发自愈
+		a.logger().Warn("generation 相同但 assignment 与数据库不一致，触发自愈重平衡",
+			"consumer-id", a.id, "generation", dbGen,
+			"db-partitions", len(hb.AssignedPartitions), "local-partitions", len(a.assignment))
+		return a.doRebalance(ctx, dbGen, hb.AssignedPartitions)
+	}
+	if dbGen < currentGen {
+		// 心跳行可能被删除后以 gen=0 重建，或组被删除重建。仍采纳数据库状态
+		// （安全：宁可暂停消费），协调器的 generation 落后检测会很快推进行 generation
+		a.logger().Warn("检测到 generation 回退，采纳数据库状态",
+			"consumer-id", a.id, "current-generation", currentGen, "db-generation", dbGen)
 	}
 
 	// Debug 日志
@@ -354,50 +367,46 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 	return a.doRebalance(ctx, hb.GenerationID, hb.AssignedPartitions)
 }
 
-// handlePoll 处理 Poll 命令
-// 从分配的分区中拉取消息
-func (a *ConsumerActor) handlePoll(ctx context.Context, timeout time.Duration) PollResult {
-	// 检查状态
-	currentState := a.stateMachine.Get()
-	switch currentState {
+// handlePollSnapshot 返回 Poll 流程所需的状态快照（纯读，快速返回）
+// Assignment 与 Offsets 在同一条命令内克隆，保证两者一致
+func (a *ConsumerActor) handlePollSnapshot() PollSnapshotResult {
+	return PollSnapshotResult{
+		State:        a.stateMachine.Get(),
+		GenerationID: a.generationID,
+		Assignment:   slices.Clone(a.assignment),
+		Offsets:      maps.Clone(a.alreadyConsumeMessageIDs),
+	}
+}
+
+// checkPollable 校验快照状态是否允许 Poll
+func checkPollable(state ConsumerState, groupID string) error {
+	switch state {
 	case StateReady:
-		// 正常情况，继续执行
-	case StateRebalancing, StateJoining:
-		return PollResult{Err: &ErrRebalanceInProgress{GroupID: a.config.GroupID}}
+		return nil
 	case StateStopping, StateStopped:
-		return PollResult{Err: context.Canceled}
-	default:
-		return PollResult{Err: &ErrRebalanceInProgress{GroupID: a.config.GroupID}}
+		return context.Canceled
+	default: // Uninitialized/Joining/Rebalancing
+		return &ErrRebalanceInProgress{GroupID: groupID}
 	}
+}
 
-	// 获取当前分配的分区
-	assignedPartitions := a.assignment
-	if len(assignedPartitions) == 0 {
-		return PollResult{}
-	}
+// pollSnapshot 获取 actor 状态快照
+func (a *ConsumerActor) pollSnapshot(ctx context.Context) (PollSnapshotResult, error) {
+	cmd := NewPollSnapshotCmd(ctx)
+	return sendCmd(a, cmd, cmd.ResultChan())
+}
 
-	snapshotGeneration := a.generationID
-
-	// 等待通知或超时
-	if err := a.waitForNotification(ctx, timeout, assignedPartitions); err != nil {
-		return PollResult{Err: err}
-	}
-
-	// 检查状态和 generation 是否变化
-	if !a.stateMachine.IsReady() || a.generationID != snapshotGeneration {
-		return PollResult{Err: &ErrRebalanceInProgress{GroupID: a.config.GroupID}}
-	}
-
-	// 批量获取消息
+// fetchMessages 在调用者 goroutine 中按快照批量拉取消息
+func (a *ConsumerActor) fetchMessages(ctx context.Context, snap PollSnapshotResult) ([]ConsumerMessage, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, a.config.GetPollFetchTimeout())
 	defer cancel()
 
-	requests := make([]message.FetchRequest, len(assignedPartitions))
-	for i, p := range assignedPartitions {
+	requests := make([]message.FetchRequest, len(snap.Assignment))
+	for i, p := range snap.Assignment {
 		requests[i] = message.FetchRequest{
 			Topic:     p.Topic,
 			Partition: p.Partition,
-			AfterID:   a.alreadyConsumeMessageIDs[p],
+			AfterID:   snap.Offsets[p],
 			Limit:     a.config.GetPollFetchLimit(),
 		}
 	}
@@ -405,18 +414,17 @@ func (a *ConsumerActor) handlePoll(ctx context.Context, timeout time.Duration) P
 	allMessages, err := a.messageRepo.FetchBatch(fetchCtx, requests)
 	if err != nil {
 		if stderrors.Is(err, context.DeadlineExceeded) || stderrors.Is(err, context.Canceled) {
-			slog.WarnContext(ctx, "[dbmq] fetch message timeout", "id", a.ID(), "topics", a.topics)
-			return PollResult{Err: err}
+			slog.WarnContext(ctx, "[dbmq] fetch message timeout", "id", a.ID(), "partitions", snap.Assignment)
+			return nil, err
 		}
-		return PollResult{Err: &ErrFailedFetchMessage{err}}
+		return nil, &ErrFailedFetchMessage{err}
 	}
 
-	messages := new(ConsumerMessages).FromDomainMessages(allMessages)
-	return PollResult{Messages: messages}
+	return new(ConsumerMessages).FromDomainMessages(allMessages), nil
 }
 
 // waitForNotification 等待通知或超时
-func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration, _ []types.PartitionInfo) error {
+func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration) error {
 	select {
 	case <-a.waiter.Wait(ctx, timeout):
 		if ctx.Err() != nil {
@@ -438,8 +446,16 @@ func (a *ConsumerActor) handleRebalance(ctx context.Context, newGeneration uint,
 	return a.doRebalance(ctx, newGeneration, newPartitions)
 }
 
+// rebalanceTimeout 重平衡的 DB 操作超时上限。
+// 防止 context.Background() 路径（心跳循环触发）在 DB 无响应时无限阻塞 actor，
+// 导致心跳饿死。失败后状态回退，下次心跳会重试。
+const rebalanceTimeout = 15 * time.Second
+
 // doRebalance 执行重平衡逻辑
 func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, newPartitions []types.PartitionInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, rebalanceTimeout)
+	defer cancel()
+
 	prevState := a.stateMachine.Get()
 	isInitialJoin := prevState == StateJoining
 
@@ -676,18 +692,58 @@ func (a *ConsumerActor) handleUpdateOffsets(offsets map[types.PartitionInfo]int6
 // ========== 公开 API 方法 ==========
 
 // Poll 从订阅的 Topic 和分区中拉取消息
+// 等待与拉取在调用者 goroutine 中执行，不会阻塞 actor 主循环——
+// 否则心跳命令会排队等待长达整个 Poll timeout，导致消费者被协调器误判死亡。
 // 会返回的错误:
 // - ErrFailedFetchMessage
 // - ErrRebalanceInProgress
 // - context.DeadlineExceeded
 // - context.Canceled
 func (a *ConsumerActor) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
-	cmd := NewPollCmd(ctx, timeout)
-	result, err := sendCmd(a, cmd, cmd.ResultChan())
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	// 阶段1：快照校验状态，空分区立即返回
+	snap1, err := a.pollSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return result.Messages, result.Err
+	if err := checkPollable(snap1.State, a.config.GroupID); err != nil {
+		return nil, err
+	}
+	if len(snap1.Assignment) == 0 {
+		return nil, nil
+	}
+
+	// 阶段2：在调用者 goroutine 中等待通知或超时
+	// （a.waiter 构造后不可变、a.stopCh 仅 close，线程安全）
+	if err := a.waitForNotification(ctx, timeout); err != nil {
+		return nil, err
+	}
+
+	// 阶段3：重新快照。fetch 必须使用 snap2 的 Assignment+Offsets：
+	// - 等待期间可能发生同代际 assignment 自愈（见 handleHeartbeat），仅比较 generation 查不出
+	// - 等待期间 commit 会推进 offsets，使用 snap1 的会重复拉取
+	snap2, err := a.pollSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPollable(snap2.State, a.config.GroupID); err != nil {
+		return nil, err
+	}
+	if snap2.GenerationID != snap1.GenerationID {
+		return nil, &ErrRebalanceInProgress{GroupID: a.config.GroupID}
+	}
+	if len(snap2.Assignment) == 0 {
+		return nil, nil
+	}
+
+	// 阶段4：在调用者 goroutine 中拉取消息。
+	// 快照通过后到 FetchBatch 之间存在极小窗口可能拉到刚被撤销分区的消息，
+	// 与旧实现（fetch 后排队的 rebalance 同样在应用处理消息前执行）暴露等价，
+	// at-least-once 语义下可接受
+	return a.fetchMessages(ctx, snap2)
 }
 
 // SubscribeTopics 注册消费者要监听的 Topic 列表
