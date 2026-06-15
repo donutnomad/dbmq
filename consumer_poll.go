@@ -45,6 +45,8 @@ func (c *Consumer) PollLoopTimeout(ctx context.Context, fn func(c *Consumer, las
 			var fetchErr *ErrFailedFetchMessage
 			if errors.As(err, &fetchErr) {
 				c.logger().Error(fmt.Sprintf("ERROR: failed to batch fetch messages for consumer %s: %v", c.ID(), err))
+				timeA.Reset(1 * time.Second)
+				continue
 			}
 		} else {
 			lastMessageCount = int64(len(messages))

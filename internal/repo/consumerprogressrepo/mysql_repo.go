@@ -120,10 +120,13 @@ type lowWatermark struct {
 
 func (r *mysqlRepo) GetLowWatermarks(ctx context.Context) (map[types.PartitionInfo]int64, error) {
 	var results []lowWatermark
-	err := r.db.WithContext(ctx).Model(&ProgressPO{}).
-		Select("topic, `partition`, MIN(last_consumed_message_id) as low_watermark").
-		Group("topic, `partition`").
-		Scan(&results).Error
+	sql := `SELECT p.topic, p.` + "`partition`" + `, MIN(p.last_consumed_message_id) as low_watermark
+		FROM mq_consumer_group_consumption_progress p
+		INNER JOIN (
+			SELECT DISTINCT group_id FROM mq_consumer_heartbeats WHERE offline = FALSE
+		) h ON p.group_id = h.group_id
+		GROUP BY p.topic, p.` + "`partition`"
+	err := r.db.WithContext(ctx).Raw(sql).Scan(&results).Error
 	if err != nil {
 		return nil, err
 	}

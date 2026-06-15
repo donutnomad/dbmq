@@ -126,23 +126,6 @@ func (c *Consumer) State() ConsumerState {
 	return c.actor.State()
 }
 
-// GetGenerationID 返回当前代际ID
-func (c *Consumer) GetGenerationID() uint {
-	cmd := NewGetStateCmd()
-	select {
-	case c.actor.cmdCh <- cmd:
-	default:
-		return 0
-	}
-
-	select {
-	case result := <-cmd.ResultChan():
-		return result.GenerationID
-	default:
-		return 0
-	}
-}
-
 // IsAutoCommitEnabled 返回是否启用了自动提交
 func (c *Consumer) IsAutoCommitEnabled() bool {
 	return c.config.EnableAutoCommit

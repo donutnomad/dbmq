@@ -1858,12 +1858,6 @@ func TestTC_ConsumerMetadataMethods(t *testing.T) {
 	assert.Equal(t, StateReady, state, "State should be Ready after subscription")
 	t.Logf("State after ready: %s", state)
 
-	// 测试 GetGenerationID
-	// 注意: GetGenerationID 使用非阻塞 select，可能返回 0
-	// 这里只记录值，不做断言
-	genID := consumer.GetGenerationID()
-	t.Logf("Generation ID: %d (may be 0 due to non-blocking implementation)", genID)
-
 	// 测试 IsAutoCommitEnabled
 	isAutoCommit := consumer.IsAutoCommitEnabled()
 	assert.False(t, isAutoCommit, "Auto commit should be disabled by default")
