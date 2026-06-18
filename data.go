@@ -183,10 +183,15 @@ func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName s
 	tracer := otel.Tracer("dbmq.consumer")
 	propagator := propagation.TraceContext{}
 
-	// 从消息头提取父级 span context
-	carrierCtx := propagator.Extract(context.Background(), propagation.MapCarrier(c.Headers))
+	// 从消息头提取生产者的 span context，作为 consumer span 的父级。
+	// 以 parentCtx 为基底进行 Extract：若消息携带有效 traceparent，则 carrierCtx
+	// 会带上生产者的 SpanContext，从而让 consumer span 与 producer span 处于同一条
+	// trace（SigNoz 等 UI 默认按 trace-id 聚合展示父子树，这样才能看到串联）。
+	carrierCtx := propagator.Extract(parentCtx, propagation.MapCarrier(c.Headers))
 	parentSpanContext := trace.SpanContextFromContext(carrierCtx)
 
+	// 同时保留一条 Span Link 指向生产者，符合 OpenTelemetry 消息消费语义约定，
+	// 也便于多消费组 / 重复消费场景下追溯到同一条原始消息。
 	var links []trace.Link
 	if parentSpanContext.IsValid() {
 		links = append(links, trace.Link{
@@ -202,7 +207,9 @@ func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName s
 		attribute.Int("messaging.destination.partition.id", int(c.Partition)),
 	)
 
-	ctx, span := tracer.Start(parentCtx, spanName,
+	// 以 carrierCtx 作为父级：consumer span 继承 producer 的 trace-id，
+	// 在 SigNoz 中表现为 producer→consumer 的父子串联。
+	ctx, span := tracer.Start(carrierCtx, spanName,
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithLinks(links...),
 		trace.WithAttributes(attributes...),
@@ -217,9 +224,17 @@ func (c ConsumerMessage) StartConsumerSpan(parentCtx context.Context, spanName s
 
 type ConsumerMessages []ConsumerMessage
 
-// StartBatchConsumerSpan 为批量消息创建一个消费者 span，使用 Span Links 链接所有消息的追踪上下文
-// 这是处理批量消息时推荐的方式，符合 OpenTelemetry 消息消费的语义约定
-// parentCtx: 父级 context
+// StartBatchConsumerSpan 为批量消息创建一个消费者 span，使用 Span Links 链接所有消息的追踪上下文。
+//
+// 与单条消息的 StartConsumerSpan 不同，批量 span 刻意使用 Span Link 而非父子关系：
+// 一个批次可能聚合来自多个生产者 / 多条不同 trace 的消息，无法同时成为多个 producer 的子 span。
+// 因此这里 span 挂在调用方的 parentCtx 上（消费者自己的 trace），并对批内每条消息各建一条
+// Link 指回其原始 producer span。这符合 OpenTelemetry 对批量消费的语义约定。
+//
+// 注意：SigNoz 等 UI 默认按 trace-id 展示父子树，批量 span 与各 producer 的关联通过 Link 体现，
+// 需在支持 Span Link 的视图中查看。若需要严格的父子串联，请改用单条消息的 StartConsumerSpan。
+//
+// parentCtx: 父级 context（消费者侧）
 // spanName: span 名称，如果为空则使用 "process_batch"
 // 返回: 新的 context 和 span（调用者负责调用 span.End()）
 func (messages ConsumerMessages) StartBatchConsumerSpan(parentCtx context.Context, spanName string) (context.Context, trace.Span) {
