@@ -312,28 +312,14 @@ func (a *dbmqAPI) ResendMessages(ctx context.Context, req ResendMessagesReq) (Re
 			Success:           false,
 		}
 
-		// 通过查询层查找消息
-		searchResult, err := a.deps.MessageQuery.Search(ctx, query.MessageSearchRequest{
-			Topic:  msgItem.Topic,
-			Offset: msgItem.MessageID,
-			Limit:  100, // 获取一批消息以找到匹配的 ID
-		})
-
+		// 通过查询层按消息 ID 查找单条消息
+		originalMsg, err := a.deps.MessageQuery.GetByID(ctx, msgItem.MessageID)
 		if err != nil {
 			errMsg := fmt.Sprintf("failed to query message: %v", err)
 			result.Error = &errMsg
 			results = append(results, result)
 			failedCount++
 			continue
-		}
-
-		// 找到 ID 匹配的消息
-		var originalMsg *query.MessageRecord
-		for i := range searchResult.Messages {
-			if searchResult.Messages[i].ID == msgItem.MessageID {
-				originalMsg = &searchResult.Messages[i]
-				break
-			}
 		}
 
 		if originalMsg == nil {

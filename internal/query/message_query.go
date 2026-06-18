@@ -2,7 +2,10 @@ package query
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/donutnomad/dbmq/internal/interfaces"
 	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
@@ -12,6 +15,8 @@ import (
 type MessageQuery interface {
 	// Search 搜索消息
 	Search(ctx context.Context, req MessageSearchRequest) (*MessageSearchResult, error)
+	// GetByID 按消息主键 ID 查询单条消息，未找到返回 (nil, nil)
+	GetByID(ctx context.Context, id int64) (*MessageRecord, error)
 }
 
 // messageQueryMySQL 消息查询 MySQL 实现
@@ -77,6 +82,28 @@ func (q *messageQueryMySQL) Search(ctx context.Context, req MessageSearchRequest
 	return &MessageSearchResult{
 		Messages: records,
 		Total:    total,
+	}, nil
+}
+
+// GetByID 按消息主键 ID 查询单条消息，未找到返回 (nil, nil)
+func (q *messageQueryMySQL) GetByID(ctx context.Context, id int64) (*MessageRecord, error) {
+	var msg messagerepo.MessagePO
+	err := q.db.WithContext(ctx).Where("id = ?", id).First(&msg).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &MessageRecord{
+		ID:         msg.ID,
+		Topic:      msg.Topic,
+		Partition:  msg.Partition,
+		MessageKey: msg.MessageKey,
+		Body:       msg.Body,
+		Headers:    msg.Headers.Data(),
+		CreatedAt:  msg.CreatedAt,
 	}, nil
 }
 
