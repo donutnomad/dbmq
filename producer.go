@@ -32,17 +32,19 @@ const (
 	contextKeyLogEnabled contextKey = "dbmq.log_enabled"
 
 	// producerNotifyScript 实现"智能通知合并"逻辑的Lua脚本
-	// 只有当分区的通知状态键不存在时才发送通知，避免惊群效应
+	// 只有当分区的通知状态键不存在时才返回需要发送通知，避免惊群效应
 	//
-	// KEYS[1]: 状态键 (例如: "mq_notify_state:{topic}:{partition}")
-	// KEYS[2]: 通知频道 (例如: "mq_notify:{topic}:{partition}")
-	// ARGV[1]: 通知消息内容 (例如: "new_message")
-	// ARGV[2]: 状态键的过期时间（秒）
+	// 注意: 为兼容 Redis Cluster, 脚本内不再执行 PUBLISH（脚本内 PUBLISH 只会在
+	// 脚本所在节点广播，集群下订阅端可能连在其他节点而收不到通知）。脚本只负责
+	// 原子的"去重"判断，PUBLISH 由 Go 侧在脚本返回 1 后调用，交由客户端正确路由。
+	// 同时脚本只访问单个 key（KEYS[1]），彻底规避 CROSSSLOT 限制。
 	//
-	// 返回值: 1表示发送了通知，0表示通知被合并（即已有其他通知在处理中）
+	// KEYS[1]: 状态键 (例如: "mq_notify_state:{topic:partition}")
+	// ARGV[1]: 状态键的过期时间（秒）
+	//
+	// 返回值: 1表示获得通知权（需要 PUBLISH），0表示通知被合并（已有其他通知在处理中）
 	producerNotifyScript = `
-if redis.call("SET", KEYS[1], "notified", "NX", "EX", ARGV[2]) then
-  redis.call("PUBLISH", KEYS[2], ARGV[1])
+if redis.call("SET", KEYS[1], "notified", "NX", "EX", ARGV[1]) then
   return 1
 else
   return 0
@@ -88,6 +90,8 @@ type cachedTopicMetadata struct {
 }
 
 func NewProducer(config ProducerConfig) (*Producer, error) {
+	// 自动包装 Redis 客户端, 支持 Redis 7.0+ 集群下的 sharded pub/sub (对调用方透明)
+	config.Redis = wrapSharded(config.Redis)
 	return &Producer{
 		config:             config,
 		redis:              config.Redis,
@@ -99,6 +103,8 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 }
 
 func MustNewProducer(config ProducerConfig) *Producer {
+	// 自动包装 Redis 客户端, 支持 Redis 7.0+ 集群下的 sharded pub/sub (对调用方透明)
+	config.Redis = wrapSharded(config.Redis)
 	return &Producer{
 		config:             config,
 		redis:              config.Redis,
@@ -247,14 +253,13 @@ func (p *Producer) sendBatchNotifications(ctx context.Context, partitions []type
 // sendNotification 发送智能通知到Redis
 // 使用Lua脚本确保原子性，实现"智能通知合并"逻辑
 func (p *Producer) sendNotification(ctx context.Context, topic string, partition uint) {
-	// 构造Redis键名
-	stateKey := fmt.Sprintf("mq_notify_state:%s:%d", topic, partition) // 状态键，用于防止重复通知
-	channelKey := fmt.Sprintf("mq_notify:%s:%d", topic, partition)     // 通知频道
-	keys := []string{stateKey, channelKey}
-	args := []any{"new_message", p.config.GetNotificationStateTTL().Seconds()}
+	// 构造Redis键名。状态键使用 hash tag {topic:partition}，
+	// 与通知频道 hash 到同一 slot，保证 Redis Cluster 下行为可控。
+	stateKey := notifyStateKey(topic, partition)  // 状态键，用于防止重复通知
+	channelKey := notifyChannel(topic, partition) // 通知频道
 
-	// 执行Lua脚本
-	res, err := notifyScript.Run(ctx, p.redis, keys, args...).Result()
+	// 执行Lua脚本：仅做原子去重判断，只访问单个 key，规避 CROSSSLOT 限制
+	res, err := notifyScript.Run(ctx, p.redis, []string{stateKey}, p.config.GetNotificationStateTTL().Seconds()).Result()
 	if err != nil {
 		// 记录错误但不影响消息发送操作
 		// 通知失败不应该影响消息的可靠性
@@ -262,8 +267,17 @@ func (p *Producer) sendNotification(ctx context.Context, topic string, partition
 		return
 	}
 
-	// 调试信息：记录通知是否被发送或合并
+	// 脚本返回 1 表示获得通知权，由客户端正确路由 PUBLISH（集群下也能广播到订阅节点）
 	if val, ok := res.(int64); ok && val == 1 {
+		if err := p.redis.Publish(ctx, channelKey, "new_message").Err(); err != nil {
+			// PUBLISH 失败时主动删除状态键，避免 TTL 内后续生产者被"合并"掉，
+			// 导致该分区实时通知在 TTL 窗口内静默丢失（正确性仍由 MySQL 轮询兜底）。
+			if delErr := p.redis.Del(ctx, stateKey).Err(); delErr != nil {
+				p.logger().Error("❌ [生产者通知] 回滚通知状态键失败", "stateKey", stateKey, "error", delErr)
+			}
+			p.logger().Error("❌ [生产者通知] Redis发布通知失败", "channel", channelKey, "error", err)
+			return
+		}
 		p.logger().Debug("📢 [生产者通知] 成功发送通知到", "channel", channelKey)
 	} else {
 		p.logger().Debug("🔄 [生产者通知] 通知被合并（已有通知在处理中）", "channel", channelKey)

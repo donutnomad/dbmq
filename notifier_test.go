@@ -237,6 +237,50 @@ func TestNotifier_ChannelConversion(t *testing.T) {
 	}
 }
 
+// TestChannelToPartition_Invalid 验证畸形频道名返回 error 而非静默接受。
+func TestChannelToPartition_Invalid(t *testing.T) {
+	invalid := []string{
+		"mq_notify:topic:0",   // 旧格式（无 hash tag），升级后应拒绝
+		"mq_notify:{topic:0",  // 缺少结尾 }
+		"mq_notify:{topic-0}", // 缺少冒号分隔
+		"mq_notify:{topic:x}", // partition 非数字
+		"mq_notify:{:0}",      // topic 为空
+		"other:{topic:0}",     // 前缀不匹配
+	}
+	for _, ch := range invalid {
+		_, err := channelToPartition(ch)
+		assert.Error(t, err, "应拒绝畸形频道: %s", ch)
+	}
+}
+
+// TestNotify_ClusterHashTagConsistency 验证状态键与通知频道使用相同的 hash tag，
+// 从而在 Redis Cluster 下 hash 到同一 slot（修复 CROSSSLOT 的关键不变量）。
+func TestNotify_ClusterHashTagConsistency(t *testing.T) {
+	cases := []struct {
+		topic     string
+		partition uint
+		wantTag   string
+	}{
+		{"orders", 0, "{orders:0}"},
+		{"events", 7, "{events:7}"},
+		{"a:b:c", 3, "{a:b:c:3}"}, // topic 含冒号
+	}
+	for _, c := range cases {
+		stateKey := notifyStateKey(c.topic, c.partition)
+		channel := notifyChannel(c.topic, c.partition)
+
+		// 两个 key 必须包含完全相同的 hash tag
+		assert.Contains(t, stateKey, c.wantTag, "stateKey 缺少正确的 hash tag")
+		assert.Contains(t, channel, c.wantTag, "channel 缺少正确的 hash tag")
+
+		// 频道能正确往返解析（topic 含冒号也不丢失）
+		parsed, err := channelToPartition(channel)
+		require.NoError(t, err)
+		assert.Equal(t, c.topic, parsed.Topic)
+		assert.Equal(t, c.partition, parsed.Partition)
+	}
+}
+
 func TestNotifier_Interface(t *testing.T) {
 	// 确保 FakeNotifier 实现了 Notifier 接口
 	var _ Notifier = (*FakeNotifier)(nil)

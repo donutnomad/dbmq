@@ -61,6 +61,9 @@ func WithConsumerNotifier(notifier Notifier) ConsumerOption {
 // NewConsumer 创建一个新的消费者实例
 // 可选参数 opts 用于自定义配置，如注入自定义的 Repo 实现
 func NewConsumer(config ConsumerConfig, opts ...ConsumerOption) (*Consumer, error) {
+	// 自动包装 Redis 客户端, 支持 Redis 7.0+ 集群下的 sharded pub/sub (对调用方透明)
+	config.Redis = wrapSharded(config.Redis)
+
 	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
 	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
 		config.AutoCommitInterval = 5 * time.Second

@@ -3,6 +3,8 @@ package dbmq
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +43,7 @@ func (NoopWaiter) Wait(ctx context.Context, timeout time.Duration) <-chan struct
 // RedisNotifier 基于 Redis PubSub 的 Notifier 实现
 type RedisNotifier struct {
 	redis   redis.UniversalClient
-	pubsub  *redis.PubSub
+	pubsub  PubSubHandle
 	healthy atomic.Bool
 
 	mu       sync.Mutex
@@ -82,7 +84,7 @@ func (n *RedisNotifier) Subscribe(partitions []types.PartitionInfo) error {
 
 	// 如果 pubsub 未初始化，先初始化
 	if n.pubsub == nil {
-		n.pubsub = n.redis.Subscribe(context.Background())
+		n.pubsub = subscribeHandle(context.Background(), n.redis)
 		n.healthy.Store(true)
 		n.lastActivity.Store(time.Now().Unix())
 
@@ -235,37 +237,50 @@ func (n *RedisNotifier) forwardMessages() {
 	}
 }
 
+// notifyKeySlot 构造用于 Redis Cluster hash tag 的内容，使同一 topic/partition
+// 的状态键与通知频道 hash 到同一个 slot。go-redis 仅取 {} 内的内容计算 slot。
+func notifyKeySlot(topic string, partition uint) string {
+	return fmt.Sprintf("{%s:%d}", topic, partition)
+}
+
+// notifyStateKey 构造通知去重状态键（生产者侧 Lua 脚本使用）
+func notifyStateKey(topic string, partition uint) string {
+	return "mq_notify_state:" + notifyKeySlot(topic, partition)
+}
+
+// notifyChannel 构造 Pub/Sub 通知频道名（生产者发布与消费者订阅共用，保证两端一致）
+func notifyChannel(topic string, partition uint) string {
+	return "mq_notify:" + notifyKeySlot(topic, partition)
+}
+
 // partitionToChannels 将分区列表转换为 Redis channel 名称列表
 func partitionToChannels(partitions []types.PartitionInfo) []string {
 	return lo.Map(partitions, func(p types.PartitionInfo, _ int) string {
-		return fmt.Sprintf("mq_notify:%s:%d", p.Topic, p.Partition)
+		return notifyChannel(p.Topic, p.Partition)
 	})
 }
 
 // channelToPartition 将 Redis channel 名称解析为分区信息
+// 频道格式为 "mq_notify:{topic:partition}"，从 hash tag {} 内提取 topic 与 partition，
+// 以最后一个冒号分隔（topic 自身可能包含冒号）。
 func channelToPartition(channel string) (types.PartitionInfo, error) {
-	var topic string
-	var partition uint
-	_, err := fmt.Sscanf(channel, "mq_notify:%s:%d", &topic, &partition)
-	if err != nil {
-		// 尝试更宽松的解析方式
-		n, err := fmt.Sscanf(channel, "mq_notify:%255s", &topic)
-		if err != nil || n == 0 {
-			return types.PartitionInfo{}, fmt.Errorf("invalid channel format: %s", channel)
-		}
-		// 查找最后一个冒号来分离 topic 和 partition
-		for i := len(channel) - 1; i >= 0; i-- {
-			if channel[i] == ':' {
-				topic = channel[len("mq_notify:"):i]
-				_, err = fmt.Sscanf(channel[i+1:], "%d", &partition)
-				if err != nil {
-					return types.PartitionInfo{}, fmt.Errorf("invalid partition in channel: %s", channel)
-				}
-				break
-			}
-		}
+	const prefix = "mq_notify:{"
+	if !strings.HasPrefix(channel, prefix) || !strings.HasSuffix(channel, "}") {
+		return types.PartitionInfo{}, fmt.Errorf("invalid channel format: %s", channel)
 	}
-	return types.PartitionInfo{Topic: topic, Partition: partition}, nil
+	inner := channel[len(prefix) : len(channel)-1] // topic:partition
+
+	idx := strings.LastIndex(inner, ":")
+	if idx <= 0 {
+		// idx < 0: 缺少冒号分隔；idx == 0: topic 为空，均视为非法频道
+		return types.PartitionInfo{}, fmt.Errorf("invalid channel format: %s", channel)
+	}
+	topic := inner[:idx]
+	partition, err := strconv.ParseUint(inner[idx+1:], 10, 64)
+	if err != nil {
+		return types.PartitionInfo{}, fmt.Errorf("invalid partition in channel %s: %w", channel, err)
+	}
+	return types.PartitionInfo{Topic: topic, Partition: uint(partition)}, nil
 }
 
 // FakeNotifier 用于测试的 Notifier 实现
