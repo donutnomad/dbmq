@@ -9,7 +9,7 @@ import (
 
 // ConsumerAPI 消费者 API
 // @TAG(Consumer)
-// @PREFIX(/dbmq/api/v1/consumers)
+// @PREFIX(/consumers)
 type ConsumerAPI interface {
 	// List 获取所有消费者
 	// @GET(/)

@@ -133,7 +133,7 @@ func (a *ClusterAPIWrap) bind(router gin.IRoutes, method, path string, preHandle
 // @Tags Cluster
 // @Produce json
 // @Success 200 {object} []ClusterResp
-// @Router /dbmq/api/v1/clusters [get]
+// @Router /clusters [get]
 func (a *ClusterAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ClusterResp](ctx, result, err)
@@ -145,7 +145,7 @@ func (a *ClusterAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param clusterId path string true "clusterId"
 // @Success 200 {object} ClusterMetricsResp
-// @Router /dbmq/api/v1/clusters/{clusterId}/metrics [get]
+// @Router /clusters/{clusterId}/metrics [get]
 func (a *ClusterAPIWrap) GetMetrics(ctx *gin.Context) {
 	clusterId := ctx.Param("clusterId")
 	result, err := a.inner.GetMetrics(ctx.Request.Context(), clusterId)
@@ -158,7 +158,7 @@ func (a *ClusterAPIWrap) GetMetrics(ctx *gin.Context) {
 // @Produce json
 // @Param clusterId path string true "clusterId"
 // @Success 200 {object} []BrokerResp
-// @Router /dbmq/api/v1/clusters/{clusterId}/brokers [get]
+// @Router /clusters/{clusterId}/brokers [get]
 func (a *ClusterAPIWrap) GetBrokers(ctx *gin.Context) {
 	clusterId := ctx.Param("clusterId")
 	result, err := a.inner.GetBrokers(ctx.Request.Context(), clusterId)
@@ -166,27 +166,42 @@ func (a *ClusterAPIWrap) GetBrokers(ctx *gin.Context) {
 }
 
 func (a *ClusterAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// List 获取集群列表\n// @GET(/)")
+			c.Set("gormgen:interfacecomment", "// ClusterAPI 集群管理 API\n// @TAG(Cluster)\n// @PREFIX(/clusters)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/clusters", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/clusters", preHandlers, handlers, a.List)
 }
 
 func (a *ClusterAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetMetrics 获取集群指标\n// @GET(/{clusterId}/metrics)")
+			c.Set("gormgen:interfacecomment", "// ClusterAPI 集群管理 API\n// @TAG(Cluster)\n// @PREFIX(/clusters)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/clusters/:clusterId/metrics", preHandlers, handlers, a.GetMetrics)
+	a.bind(router, "GET", "/clusters/:clusterId/metrics", preHandlers, handlers, a.GetMetrics)
 }
 
 func (a *ClusterAPIWrap) BindGetBrokers(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetBrokers 获取 Broker 列表\n// @GET(/{clusterId}/brokers)")
+			c.Set("gormgen:interfacecomment", "// ClusterAPI 集群管理 API\n// @TAG(Cluster)\n// @PREFIX(/clusters)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/clusters/:clusterId/brokers", preHandlers, handlers, a.GetBrokers)
+	a.bind(router, "GET", "/clusters/:clusterId/brokers", preHandlers, handlers, a.GetBrokers)
 }
 
 func (a *ClusterAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -219,18 +234,23 @@ func (a *ConsumerAPIWrap) bind(router gin.IRoutes, method, path string, preHandl
 // @Tags Consumer
 // @Produce json
 // @Success 200 {object} []ConsumerResp
-// @Router /dbmq/api/v1/consumers [get]
+// @Router /consumers [get]
 func (a *ConsumerAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ConsumerResp](ctx, result, err)
 }
 
 func (a *ConsumerAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// List 获取所有消费者\n// @GET(/)")
+			c.Set("gormgen:interfacecomment", "// ConsumerAPI 消费者 API\n// @TAG(Consumer)\n// @PREFIX(/consumers)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumers", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/consumers", preHandlers, handlers, a.List)
 }
 
 func (a *ConsumerAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -261,7 +281,7 @@ func (a *ConsumerGroupAPIWrap) bind(router gin.IRoutes, method, path string, pre
 // @Tags Consumer-Group
 // @Produce json
 // @Success 200 {object} []ConsumerGroupResp
-// @Router /dbmq/api/v1/consumer-groups [get]
+// @Router /consumer-groups [get]
 func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 	result, err := a.inner.List(ctx.Request.Context())
 	onGinResponse[[]ConsumerGroupResp](ctx, result, err)
@@ -273,7 +293,7 @@ func (a *ConsumerGroupAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param req query ListStaleProgressReq true "req"
 // @Success 200 {object} []StaleProgressResp
-// @Router /dbmq/api/v1/consumer-groups/stale-progress [get]
+// @Router /consumer-groups/stale-progress [get]
 func (a *ConsumerGroupAPIWrap) ListStaleProgress(ctx *gin.Context) {
 	var req ListStaleProgressReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -288,7 +308,7 @@ func (a *ConsumerGroupAPIWrap) ListStaleProgress(ctx *gin.Context) {
 // @Tags Consumer-Group
 // @Produce json
 // @Success 200 {object} []DetachedProgressResp
-// @Router /dbmq/api/v1/consumer-groups/detached-progress [get]
+// @Router /consumer-groups/detached-progress [get]
 func (a *ConsumerGroupAPIWrap) ListDetachedProgress(ctx *gin.Context) {
 	result, err := a.inner.ListDetachedProgress(ctx.Request.Context())
 	onGinResponse[[]DetachedProgressResp](ctx, result, err)
@@ -300,7 +320,7 @@ func (a *ConsumerGroupAPIWrap) ListDetachedProgress(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} ConsumerGroupResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId} [get]
+// @Router /consumer-groups/{groupId} [get]
 func (a *ConsumerGroupAPIWrap) Get(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.Get(ctx.Request.Context(), groupId)
@@ -314,7 +334,7 @@ func (a *ConsumerGroupAPIWrap) Get(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId}/rebalance [post]
+// @Router /consumer-groups/{groupId}/rebalance [post]
 func (a *ConsumerGroupAPIWrap) TriggerRebalance(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.TriggerRebalance(ctx.Request.Context(), groupId)
@@ -328,7 +348,7 @@ func (a *ConsumerGroupAPIWrap) TriggerRebalance(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId} [delete]
+// @Router /consumer-groups/{groupId} [delete]
 func (a *ConsumerGroupAPIWrap) Delete(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.Delete(ctx.Request.Context(), groupId)
@@ -343,7 +363,7 @@ func (a *ConsumerGroupAPIWrap) Delete(ctx *gin.Context) {
 // @Param groupId path string true "groupId"
 // @Param req body DeleteStaleProgressReq true "req"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId}/stale-progress [delete]
+// @Router /consumer-groups/{groupId}/stale-progress [delete]
 func (a *ConsumerGroupAPIWrap) DeleteStaleProgress(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	var req DeleteStaleProgressReq
@@ -362,7 +382,7 @@ func (a *ConsumerGroupAPIWrap) DeleteStaleProgress(ctx *gin.Context) {
 // @Param groupId path string true "groupId"
 // @Param req body DeleteDetachedProgressReq true "req"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId}/detached-progress [delete]
+// @Router /consumer-groups/{groupId}/detached-progress [delete]
 func (a *ConsumerGroupAPIWrap) DeleteDetachedProgress(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	var req DeleteDetachedProgressReq
@@ -374,67 +394,107 @@ func (a *ConsumerGroupAPIWrap) DeleteDetachedProgress(ctx *gin.Context) {
 }
 
 func (a *ConsumerGroupAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// List 获取消费组列表\n// @GET(/)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/consumer-groups", preHandlers, handlers, a.List)
 }
 
 func (a *ConsumerGroupAPIWrap) BindListStaleProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ListStaleProgress 获取消费严重滞后的进度列表\n// @GET(/stale-progress)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/stale-progress", preHandlers, handlers, a.ListStaleProgress)
+	a.bind(router, "GET", "/consumer-groups/stale-progress", preHandlers, handlers, a.ListStaleProgress)
 }
 
 func (a *ConsumerGroupAPIWrap) BindListDetachedProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ListDetachedProgress 获取孤立残留进度列表\n// @GET(/detached-progress)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/detached-progress", preHandlers, handlers, a.ListDetachedProgress)
+	a.bind(router, "GET", "/consumer-groups/detached-progress", preHandlers, handlers, a.ListDetachedProgress)
 }
 
 func (a *ConsumerGroupAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Get 获取单个消费组\n// @GET(/{groupId})")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Get)
+	a.bind(router, "GET", "/consumer-groups/:groupId", preHandlers, handlers, a.Get)
 }
 
 func (a *ConsumerGroupAPIWrap) BindTriggerRebalance(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// TriggerRebalance 强制触发消费组重新均衡\n// @POST(/{groupId}/rebalance)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/dbmq/api/v1/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
+	a.bind(router, "POST", "/consumer-groups/:groupId/rebalance", preHandlers, handlers, a.TriggerRebalance)
 }
 
 func (a *ConsumerGroupAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Delete 删除消费组\n// @DELETE(/{groupId})")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId", preHandlers, handlers, a.Delete)
+	a.bind(router, "DELETE", "/consumer-groups/:groupId", preHandlers, handlers, a.Delete)
 }
 
 func (a *ConsumerGroupAPIWrap) BindDeleteStaleProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// DeleteStaleProgress 删除指定消费严重滞后进度\n// @DELETE(/{groupId}/stale-progress)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId/stale-progress", preHandlers, handlers, a.DeleteStaleProgress)
+	a.bind(router, "DELETE", "/consumer-groups/:groupId/stale-progress", preHandlers, handlers, a.DeleteStaleProgress)
 }
 
 func (a *ConsumerGroupAPIWrap) BindDeleteDetachedProgress(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// DeleteDetachedProgress 删除指定孤立残留进度\n// @DELETE(/{groupId}/detached-progress)")
+			c.Set("gormgen:interfacecomment", "// ConsumerGroupAPI 消费组管理 API\n// @TAG(Consumer-Group)\n// @PREFIX(/consumer-groups)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/dbmq/api/v1/consumer-groups/:groupId/detached-progress", preHandlers, handlers, a.DeleteDetachedProgress)
+	a.bind(router, "DELETE", "/consumer-groups/:groupId/detached-progress", preHandlers, handlers, a.DeleteDetachedProgress)
 }
 
 func (a *ConsumerGroupAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -472,7 +532,7 @@ func (a *DBMQAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers,
 // @Tags DBMQ
 // @Produce json
 // @Success 200 {object} DBMQStatsResp
-// @Router /dbmq/api/v1/stats [get]
+// @Router /stats [get]
 func (a *DBMQAPIWrap) GetStats(ctx *gin.Context) {
 	result, err := a.inner.GetStats(ctx.Request.Context())
 	onGinResponse[DBMQStatsResp](ctx, result, err)
@@ -485,7 +545,7 @@ func (a *DBMQAPIWrap) GetStats(ctx *gin.Context) {
 // @Param topicName path string true "topicName"
 // @Param req query GetTopicMessagesReq true "req"
 // @Success 200 {object} TopicMessagesResp
-// @Router /dbmq/api/v1/topics/{topicName}/messages [get]
+// @Router /topics/{topicName}/messages [get]
 func (a *DBMQAPIWrap) GetTopicMessages(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	var req GetTopicMessagesReq
@@ -503,7 +563,7 @@ func (a *DBMQAPIWrap) GetTopicMessages(ctx *gin.Context) {
 // @Param topicName path string true "topicName"
 // @Param partitionId path integer true "partitionId"
 // @Success 200 {object} PartitionStats
-// @Router /dbmq/api/v1/topics/{topicName}/partitions/{partitionId}/stats [get]
+// @Router /topics/{topicName}/partitions/{partitionId}/stats [get]
 func (a *DBMQAPIWrap) GetPartitionStats(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	partitionId := cast.ToUint(ctx.Param("partitionId"))
@@ -517,7 +577,7 @@ func (a *DBMQAPIWrap) GetPartitionStats(ctx *gin.Context) {
 // @Produce json
 // @Param groupId path string true "groupId"
 // @Success 200 {object} ConsumerGroupExtendedResp
-// @Router /dbmq/api/v1/consumer-groups/{groupId}/extended [get]
+// @Router /consumer-groups/{groupId}/extended [get]
 func (a *DBMQAPIWrap) GetConsumerGroupExtended(ctx *gin.Context) {
 	groupId := ctx.Param("groupId")
 	result, err := a.inner.GetConsumerGroupExtended(ctx.Request.Context(), groupId)
@@ -531,7 +591,7 @@ func (a *DBMQAPIWrap) GetConsumerGroupExtended(ctx *gin.Context) {
 // @Produce json
 // @Param req body ResendMessagesReq true "req"
 // @Success 200 {object} ResendMessagesResp
-// @Router /dbmq/api/v1/messages/resend [post]
+// @Router /messages/resend [post]
 func (a *DBMQAPIWrap) ResendMessages(ctx *gin.Context) {
 	var req ResendMessagesReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -542,43 +602,68 @@ func (a *DBMQAPIWrap) ResendMessages(ctx *gin.Context) {
 }
 
 func (a *DBMQAPIWrap) BindGetStats(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetStats 获取统计信息\n// @GET(/stats)")
+			c.Set("gormgen:interfacecomment", "// DBMQAPI DBMQ 专用 API\n// @TAG(DBMQ)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/stats", preHandlers, handlers, a.GetStats)
+	a.bind(router, "GET", "/stats", preHandlers, handlers, a.GetStats)
 }
 
 func (a *DBMQAPIWrap) BindGetTopicMessages(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetTopicMessages 获取 Topic 消息列表\n// @GET(/topics/{topicName}/messages)")
+			c.Set("gormgen:interfacecomment", "// DBMQAPI DBMQ 专用 API\n// @TAG(DBMQ)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/messages", preHandlers, handlers, a.GetTopicMessages)
+	a.bind(router, "GET", "/topics/:topicName/messages", preHandlers, handlers, a.GetTopicMessages)
 }
 
 func (a *DBMQAPIWrap) BindGetPartitionStats(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetPartitionStats 获取分区统计信息\n// @GET(/topics/{topicName}/partitions/{partitionId}/stats)")
+			c.Set("gormgen:interfacecomment", "// DBMQAPI DBMQ 专用 API\n// @TAG(DBMQ)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/partitions/:partitionId/stats", preHandlers, handlers, a.GetPartitionStats)
+	a.bind(router, "GET", "/topics/:topicName/partitions/:partitionId/stats", preHandlers, handlers, a.GetPartitionStats)
 }
 
 func (a *DBMQAPIWrap) BindGetConsumerGroupExtended(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetConsumerGroupExtended 获取消费组扩展信息\n// @GET(/consumer-groups/{groupId}/extended)")
+			c.Set("gormgen:interfacecomment", "// DBMQAPI DBMQ 专用 API\n// @TAG(DBMQ)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/consumer-groups/:groupId/extended", preHandlers, handlers, a.GetConsumerGroupExtended)
+	a.bind(router, "GET", "/consumer-groups/:groupId/extended", preHandlers, handlers, a.GetConsumerGroupExtended)
 }
 
 func (a *DBMQAPIWrap) BindResendMessages(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ResendMessages 重发消息\n// @POST(/messages/resend)")
+			c.Set("gormgen:interfacecomment", "// DBMQAPI DBMQ 专用 API\n// @TAG(DBMQ)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/dbmq/api/v1/messages/resend", preHandlers, handlers, a.ResendMessages)
+	a.bind(router, "POST", "/messages/resend", preHandlers, handlers, a.ResendMessages)
 }
 
 func (a *DBMQAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -613,18 +698,23 @@ func (a *DashboardAPIWrap) bind(router gin.IRoutes, method, path string, preHand
 // @Tags Dashboard
 // @Produce json
 // @Success 200 {object} DashboardDataResp
-// @Router /dbmq/api/v1/dashboard/data [get]
+// @Router /dashboard/data [get]
 func (a *DashboardAPIWrap) GetDashboardData(ctx *gin.Context) {
 	result, err := a.inner.GetDashboardData(ctx.Request.Context())
 	onGinResponse[DashboardDataResp](ctx, result, err)
 }
 
 func (a *DashboardAPIWrap) BindGetDashboardData(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetDashboardData 获取仪表板数据\n// @GET(/dashboard/data)")
+			c.Set("gormgen:interfacecomment", "// DashboardAPI 仪表板 API\n// @TAG(Dashboard)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/dashboard/data", preHandlers, handlers, a.GetDashboardData)
+	a.bind(router, "GET", "/dashboard/data", preHandlers, handlers, a.GetDashboardData)
 }
 
 func (a *DashboardAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -655,7 +745,7 @@ func (a *HealthAPIWrap) bind(router gin.IRoutes, method, path string, preHandler
 // @Tags Health
 // @Produce json
 // @Success 200 {object} HealthResp
-// @Router /dbmq/api/v1/health [get]
+// @Router /health [get]
 func (a *HealthAPIWrap) Health(ctx *gin.Context) {
 	result, err := a.inner.Health(ctx.Request.Context())
 	onGinResponse[HealthResp](ctx, result, err)
@@ -666,7 +756,7 @@ func (a *HealthAPIWrap) Health(ctx *gin.Context) {
 // @Tags Health
 // @Produce json
 // @Success 200 {object} HealthResp
-// @Router /dbmq/api/v1/actuator/health [get]
+// @Router /actuator/health [get]
 func (a *HealthAPIWrap) ActuatorHealth(ctx *gin.Context) {
 	result, err := a.inner.ActuatorHealth(ctx.Request.Context())
 	onGinResponse[HealthResp](ctx, result, err)
@@ -677,34 +767,49 @@ func (a *HealthAPIWrap) ActuatorHealth(ctx *gin.Context) {
 // @Tags Health
 // @Produce json
 // @Success 200 {object} InfoResp
-// @Router /dbmq/api/v1/actuator/info [get]
+// @Router /actuator/info [get]
 func (a *HealthAPIWrap) ActuatorInfo(ctx *gin.Context) {
 	result, err := a.inner.ActuatorInfo(ctx.Request.Context())
 	onGinResponse[InfoResp](ctx, result, err)
 }
 
 func (a *HealthAPIWrap) BindHealth(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Health 健康检查\n// @GET(/health)")
+			c.Set("gormgen:interfacecomment", "// HealthAPI 健康检查 API\n// @TAG(Health)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/health", preHandlers, handlers, a.Health)
+	a.bind(router, "GET", "/health", preHandlers, handlers, a.Health)
 }
 
 func (a *HealthAPIWrap) BindActuatorHealth(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ActuatorHealth Spring Boot 兼容健康检查\n// @GET(/actuator/health)")
+			c.Set("gormgen:interfacecomment", "// HealthAPI 健康检查 API\n// @TAG(Health)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/actuator/health", preHandlers, handlers, a.ActuatorHealth)
+	a.bind(router, "GET", "/actuator/health", preHandlers, handlers, a.ActuatorHealth)
 }
 
 func (a *HealthAPIWrap) BindActuatorInfo(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ActuatorInfo Spring Boot 兼容信息接口\n// @GET(/actuator/info)")
+			c.Set("gormgen:interfacecomment", "// HealthAPI 健康检查 API\n// @TAG(Health)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/actuator/info", preHandlers, handlers, a.ActuatorInfo)
+	a.bind(router, "GET", "/actuator/info", preHandlers, handlers, a.ActuatorInfo)
 }
 
 func (a *HealthAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -739,7 +844,7 @@ func (a *ManualAssignmentAPIWrap) bind(router gin.IRoutes, method, path string, 
 // @Produce json
 // @Param req body CreateManualAssignmentReq true "req"
 // @Success 200 {object} ManualAssignmentResp
-// @Router /dbmq/api/v1/manual-assignments [post]
+// @Router /manual-assignments [post]
 func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 	var req CreateManualAssignmentReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -755,7 +860,7 @@ func (a *ManualAssignmentAPIWrap) Create(ctx *gin.Context) {
 // @Produce json
 // @Param req query ListManualAssignmentsReq true "req"
 // @Success 200 {object} []ManualAssignmentResp
-// @Router /dbmq/api/v1/manual-assignments [get]
+// @Router /manual-assignments [get]
 func (a *ManualAssignmentAPIWrap) List(ctx *gin.Context) {
 	var req ListManualAssignmentsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -772,7 +877,7 @@ func (a *ManualAssignmentAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param id path integer true "id"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/manual-assignments/{id} [delete]
+// @Router /manual-assignments/{id} [delete]
 func (a *ManualAssignmentAPIWrap) Delete(ctx *gin.Context) {
 	id := cast.ToInt64(ctx.Param("id"))
 	result, err := a.inner.Delete(ctx.Request.Context(), id)
@@ -780,27 +885,42 @@ func (a *ManualAssignmentAPIWrap) Delete(ctx *gin.Context) {
 }
 
 func (a *ManualAssignmentAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Create 创建手动分区分配\n// @POST(/)")
+			c.Set("gormgen:interfacecomment", "// ManualAssignmentAPI 手动分区分配 API\n// @TAG(Manual-Assignment)\n// @PREFIX(/manual-assignments)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/dbmq/api/v1/manual-assignments", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/manual-assignments", preHandlers, handlers, a.Create)
 }
 
 func (a *ManualAssignmentAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// List 查询手动分区分配列表\n// @GET(/)")
+			c.Set("gormgen:interfacecomment", "// ManualAssignmentAPI 手动分区分配 API\n// @TAG(Manual-Assignment)\n// @PREFIX(/manual-assignments)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/manual-assignments", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/manual-assignments", preHandlers, handlers, a.List)
 }
 
 func (a *ManualAssignmentAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Delete 删除手动分区分配\n// @DELETE(/{id})")
+			c.Set("gormgen:interfacecomment", "// ManualAssignmentAPI 手动分区分配 API\n// @TAG(Manual-Assignment)\n// @PREFIX(/manual-assignments)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/dbmq/api/v1/manual-assignments/:id", preHandlers, handlers, a.Delete)
+	a.bind(router, "DELETE", "/manual-assignments/:id", preHandlers, handlers, a.Delete)
 }
 
 func (a *ManualAssignmentAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -834,7 +954,7 @@ func (a *TopicAPIWrap) bind(router gin.IRoutes, method, path string, preHandlers
 // @Produce json
 // @Param req query GetTopicsReq true "req"
 // @Success 200 {object} []TopicResp
-// @Router /dbmq/api/v1/topics [get]
+// @Router /topics [get]
 func (a *TopicAPIWrap) List(ctx *gin.Context) {
 	var req GetTopicsReq
 	if !onGinBind(ctx, &req, "QUERY") {
@@ -850,7 +970,7 @@ func (a *TopicAPIWrap) List(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /dbmq/api/v1/topics/{topicName} [get]
+// @Router /topics/{topicName} [get]
 func (a *TopicAPIWrap) Get(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.Get(ctx.Request.Context(), topicName)
@@ -864,7 +984,7 @@ func (a *TopicAPIWrap) Get(ctx *gin.Context) {
 // @Produce json
 // @Param req body CreateTopicReq true "req"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/topics [post]
+// @Router /topics [post]
 func (a *TopicAPIWrap) Create(ctx *gin.Context) {
 	var req CreateTopicReq
 	if !onGinBind(ctx, &req, "JSON") {
@@ -881,7 +1001,7 @@ func (a *TopicAPIWrap) Create(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} MessageResp
-// @Router /dbmq/api/v1/topics/{topicName} [delete]
+// @Router /topics/{topicName} [delete]
 func (a *TopicAPIWrap) Delete(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.Delete(ctx.Request.Context(), topicName)
@@ -894,7 +1014,7 @@ func (a *TopicAPIWrap) Delete(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /dbmq/api/v1/topics/{topicName}/metrics [get]
+// @Router /topics/{topicName}/metrics [get]
 func (a *TopicAPIWrap) GetMetrics(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetMetrics(ctx.Request.Context(), topicName)
@@ -907,7 +1027,7 @@ func (a *TopicAPIWrap) GetMetrics(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} []ConsumerGroupResp
-// @Router /dbmq/api/v1/topics/{topicName}/consumer-groups [get]
+// @Router /topics/{topicName}/consumer-groups [get]
 func (a *TopicAPIWrap) ListConsumerGroups(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.ListConsumerGroups(ctx.Request.Context(), topicName)
@@ -915,51 +1035,81 @@ func (a *TopicAPIWrap) ListConsumerGroups(ctx *gin.Context) {
 }
 
 func (a *TopicAPIWrap) BindList(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// List 获取 Topic 列表\n// @GET(/)")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics", preHandlers, handlers, a.List)
+	a.bind(router, "GET", "/topics", preHandlers, handlers, a.List)
 }
 
 func (a *TopicAPIWrap) BindGet(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Get 获取单个 Topic\n// @GET(/{topicName})")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.Get)
+	a.bind(router, "GET", "/topics/:topicName", preHandlers, handlers, a.Get)
 }
 
 func (a *TopicAPIWrap) BindCreate(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Create 创建 Topic\n// @POST(/)")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "POST", "/dbmq/api/v1/topics", preHandlers, handlers, a.Create)
+	a.bind(router, "POST", "/topics", preHandlers, handlers, a.Create)
 }
 
 func (a *TopicAPIWrap) BindDelete(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// Delete 删除 Topic\n// @DELETE(/{topicName})")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "DELETE", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.Delete)
+	a.bind(router, "DELETE", "/topics/:topicName", preHandlers, handlers, a.Delete)
 }
 
 func (a *TopicAPIWrap) BindGetMetrics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetMetrics 获取 Topic 指标\n// @GET(/{topicName}/metrics)")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/metrics", preHandlers, handlers, a.GetMetrics)
+	a.bind(router, "GET", "/topics/:topicName/metrics", preHandlers, handlers, a.GetMetrics)
 }
 
 func (a *TopicAPIWrap) BindListConsumerGroups(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ListConsumerGroups 获取消费此 Topic 的消费组列表\n// @GET(/{topicName}/consumer-groups)")
+			c.Set("gormgen:interfacecomment", "// TopicAPI Topic 管理 API\n// @TAG(Topic)\n// @PREFIX(/topics)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/consumer-groups", preHandlers, handlers, a.ListConsumerGroups)
+	a.bind(router, "GET", "/topics/:topicName/consumer-groups", preHandlers, handlers, a.ListConsumerGroups)
 }
 
 func (a *TopicAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
@@ -995,7 +1145,7 @@ func (a *TopicProxyAPIWrap) bind(router gin.IRoutes, method, path string, preHan
 // @Tags Topic-Proxy
 // @Produce json
 // @Success 200 {object} []string
-// @Router /dbmq/api/v1/topics [get]
+// @Router /1/topics [get]
 func (a *TopicProxyAPIWrap) ListTopics(ctx *gin.Context) {
 	result, err := a.inner.ListTopics(ctx.Request.Context())
 	onGinResponse[[]string](ctx, result, err)
@@ -1007,7 +1157,7 @@ func (a *TopicProxyAPIWrap) ListTopics(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} TopicResp
-// @Router /dbmq/api/v1/topics/{topicName} [get]
+// @Router /1/topics/{topicName} [get]
 func (a *TopicProxyAPIWrap) GetTopicInfo(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetTopicInfo(ctx.Request.Context(), topicName)
@@ -1020,7 +1170,7 @@ func (a *TopicProxyAPIWrap) GetTopicInfo(ctx *gin.Context) {
 // @Produce json
 // @Param topicName path string true "topicName"
 // @Success 200 {object} []PartitionStats
-// @Router /dbmq/api/v1/topics/{topicName}/partitions [get]
+// @Router /1/topics/{topicName}/partitions [get]
 func (a *TopicProxyAPIWrap) GetPartitions(ctx *gin.Context) {
 	topicName := ctx.Param("topicName")
 	result, err := a.inner.GetPartitions(ctx.Request.Context(), topicName)
@@ -1032,42 +1182,62 @@ func (a *TopicProxyAPIWrap) GetPartitions(ctx *gin.Context) {
 // @Tags Topic-Proxy
 // @Produce json
 // @Success 200 {object} []BrokerResp
-// @Router /dbmq/api/v1/brokers [get]
+// @Router /1/brokers [get]
 func (a *TopicProxyAPIWrap) ListBrokers(ctx *gin.Context) {
 	result, err := a.inner.ListBrokers(ctx.Request.Context())
 	onGinResponse[[]BrokerResp](ctx, result, err)
 }
 
 func (a *TopicProxyAPIWrap) BindListTopics(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ListTopics 获取 Topic 列表\n// @GET(/topics)")
+			c.Set("gormgen:interfacecomment", "// TopicProxyAPI Topic 代理 API（提供简化的 Topic 和 Broker 接口）\n// @TAG(Topic-Proxy)\n// @PREFIX(/1)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics", preHandlers, handlers, a.ListTopics)
+	a.bind(router, "GET", "/1/topics", preHandlers, handlers, a.ListTopics)
 }
 
 func (a *TopicProxyAPIWrap) BindGetTopicInfo(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetTopicInfo 获取 Topic 信息\n// @GET(/topics/{topicName})")
+			c.Set("gormgen:interfacecomment", "// TopicProxyAPI Topic 代理 API（提供简化的 Topic 和 Broker 接口）\n// @TAG(Topic-Proxy)\n// @PREFIX(/1)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName", preHandlers, handlers, a.GetTopicInfo)
+	a.bind(router, "GET", "/1/topics/:topicName", preHandlers, handlers, a.GetTopicInfo)
 }
 
 func (a *TopicProxyAPIWrap) BindGetPartitions(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// GetPartitions 获取分区信息\n// @GET(/topics/{topicName}/partitions)")
+			c.Set("gormgen:interfacecomment", "// TopicProxyAPI Topic 代理 API（提供简化的 Topic 和 Broker 接口）\n// @TAG(Topic-Proxy)\n// @PREFIX(/1)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/topics/:topicName/partitions", preHandlers, handlers, a.GetPartitions)
+	a.bind(router, "GET", "/1/topics/:topicName/partitions", preHandlers, handlers, a.GetPartitions)
 }
 
 func (a *TopicProxyAPIWrap) BindListBrokers(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {
-	var handlers []gin.HandlerFunc
+	var handlers = []gin.HandlerFunc{
+		func(c *gin.Context) {
+			c.Set("gormgen:methodcomment", "// ListBrokers 获取 Broker 列表\n// @GET(/brokers)")
+			c.Set("gormgen:interfacecomment", "// TopicProxyAPI Topic 代理 API（提供简化的 Topic 和 Broker 接口）\n// @TAG(Topic-Proxy)\n// @PREFIX(/1)")
+		},
+	}
 	if a.handler != nil {
 		handlers = append(handlers, a.handler.PreHandlers()...)
 	}
-	a.bind(router, "GET", "/dbmq/api/v1/brokers", preHandlers, handlers, a.ListBrokers)
+	a.bind(router, "GET", "/1/brokers", preHandlers, handlers, a.ListBrokers)
 }
 
 func (a *TopicProxyAPIWrap) BindAll(router gin.IRoutes, preHandlers ...gin.HandlerFunc) {

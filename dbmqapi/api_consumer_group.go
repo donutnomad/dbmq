@@ -13,7 +13,7 @@ const defaultStaleDays uint = 10
 
 // ConsumerGroupAPI 消费组管理 API
 // @TAG(Consumer-Group)
-// @PREFIX(/dbmq/api/v1/consumer-groups)
+// @PREFIX(/consumer-groups)
 type ConsumerGroupAPI interface {
 	// List 获取消费组列表
 	// @GET(/)

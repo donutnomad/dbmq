@@ -9,11 +9,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterAPIs(routes gin.IRoutes, dashboardPath, accessToken string, db interfaces.DB, preHandlers ...gin.HandlerFunc) {
-	registerAPIs(routes, dashboardPath, accessToken, newDeps(db), preHandlers...)
+func RegisterAPIs(routes gin.IRouter, dashboardPath, apiPath, accessToken string, db interfaces.DB, preHandlers ...gin.HandlerFunc) {
+	registerAPIs(routes, dashboardPath, apiPath, accessToken, newDeps(db), preHandlers...)
 }
 
-func registerAPIs(routes gin.IRoutes, dashboardPath, accessToken string, deps *Deps, preHandlers ...gin.HandlerFunc) {
+type name interface {
+	BasePath() string
+}
+
+type wrapperBasePath struct {
+	basePath string
+	gin.IRouter
+}
+
+func (w *wrapperBasePath) BasePath() string {
+	return w.basePath
+}
+
+func registerAPIs(routes gin.IRouter, dashboardPath, apiPath, accessToken string, deps *Deps, preHandlers ...gin.HandlerFunc) {
 	if accessToken != "" {
 		preHandlers = append(preHandlers, accessTokenMiddleware(accessToken))
 	}
@@ -21,19 +34,22 @@ func registerAPIs(routes gin.IRoutes, dashboardPath, accessToken string, deps *D
 	// Dashboard UI（不需要 token，认证由前端 AuthGuard 通过 API 请求判断）
 	dashPath := dashboardPath
 	if dashPath == "" {
-		dashPath = "/dbmq/api/v1/ui"
+		panic("dashPath is empty")
 	}
 	routes.GET(dashPath+"/*filepath", dashboardHandler(dashPath))
 
+	// 替换掉默认前缀: "/dbmq/api/v1/"
+	group := &wrapperBasePath{"/dbmq/api/v1/", routes.Group(apiPath)}
+
 	h := &implHandlers{preHandlers}
-	NewHealthAPIWrap(NewHealthAPI(deps), h).BindAll(routes)
-	NewDashboardAPIWrap(NewDashboardAPI(deps), h).BindAll(routes)
-	NewTopicAPIWrap(NewTopicAPI(deps), h).BindAll(routes)
-	NewConsumerAPIWrap(NewConsumerAPI(deps), h).BindAll(routes)
-	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(deps), h).BindAll(routes)
-	NewDBMQAPIWrap(NewDBMQAPI(deps), h).BindAll(routes)
-	NewClusterAPIWrap(NewClusterAPI(deps), h).BindAll(routes)
-	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(deps), h).BindAll(routes)
+	NewHealthAPIWrap(NewHealthAPI(deps), h).BindAll(group)
+	NewDashboardAPIWrap(NewDashboardAPI(deps), h).BindAll(group)
+	NewTopicAPIWrap(NewTopicAPI(deps), h).BindAll(group)
+	NewConsumerAPIWrap(NewConsumerAPI(deps), h).BindAll(group)
+	NewConsumerGroupAPIWrap(NewConsumerGroupAPI(deps), h).BindAll(group)
+	NewDBMQAPIWrap(NewDBMQAPI(deps), h).BindAll(group)
+	NewClusterAPIWrap(NewClusterAPI(deps), h).BindAll(group)
+	NewManualAssignmentAPIWrap(NewManualAssignmentAPI(deps), h).BindAll(group)
 }
 
 // dashboardHandler 返回一个 gin.HandlerFunc，用于服务嵌入的 Dashboard 静态文件。

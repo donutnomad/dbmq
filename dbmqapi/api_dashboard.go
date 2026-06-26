@@ -13,7 +13,6 @@ import (
 
 // DashboardAPI 仪表板 API
 // @TAG(Dashboard)
-// @PREFIX(/dbmq/api/v1)
 type DashboardAPI interface {
 	// GetDashboardData 获取仪表板数据
 	// @GET(/dashboard/data)

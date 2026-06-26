@@ -11,7 +11,7 @@ import (
 
 // TopicAPI Topic 管理 API
 // @TAG(Topic)
-// @PREFIX(/dbmq/api/v1/topics)
+// @PREFIX(/topics)
 type TopicAPI interface {
 	// List 获取 Topic 列表
 	// @GET(/)

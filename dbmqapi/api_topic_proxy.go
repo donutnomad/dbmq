@@ -7,7 +7,7 @@ import (
 
 // TopicProxyAPI Topic 代理 API（提供简化的 Topic 和 Broker 接口）
 // @TAG(Topic-Proxy)
-// @PREFIX(/dbmq/api/v1)
+// @PREFIX(/1)
 type TopicProxyAPI interface {
 	// ListTopics 获取 Topic 列表
 	// @GET(/topics)

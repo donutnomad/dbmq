@@ -1,10 +1,11 @@
 import axios from 'axios';
 import { APIResponse, DashboardData, TopicMetrics, ConsumerGroupMetrics, Consumer, NewTopicRequest, Message, PartitionStats, ManualAssignment, CreateManualAssignmentRequest, ClusterInfo, ClusterMetricsDetail, BrokerInfo, DBMQStats, ResendMessagesRequest, ResendMessagesResponse, StaleProgress, DetachedProgress } from './types';
-import { apiConfig } from '@/config/api.config';
+import { apiConfig, getFullAPIURL } from '@/config/api.config';
 
 // 创建axios实例
+// 注意：不在此处固化 baseURL，因为模块加载可能早于 window 就绪；
+// 改由请求拦截器在每次请求时通过 getFullAPIURL() 运行时推导（跟随浏览器当前路径）。
 const apiClient = axios.create({
-  baseURL: apiConfig.fullURL,
   timeout: apiConfig.timeout,
   headers: {
     'Content-Type': 'application/json',
@@ -28,8 +29,9 @@ export function clearAccessToken() {
   document.cookie = 'access_token=;path=/;max-age=0';
 }
 
-// 请求拦截器：自动附加 token
+// 请求拦截器：运行时推导 baseURL（跟随浏览器路径）并自动附加 token
 apiClient.interceptors.request.use((config) => {
+  config.baseURL = getFullAPIURL();
   const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

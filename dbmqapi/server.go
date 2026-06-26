@@ -35,7 +35,7 @@ type ServerConfig struct {
 type Server struct {
 	config    ServerConfig
 	deps      *Deps
-	engine    gin.IRoutes
+	engine    gin.IRouter
 	server    *http.Server
 	startTime time.Time
 }
@@ -83,7 +83,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 }
 
 func (s *Server) RegisterAPIs() {
-	registerAPIs(s.engine, s.config.DashboardPath, s.config.AccessToken, s.deps, s.config.APIHandler...)
+	registerAPIs(s.engine, s.config.DashboardPath, "/dbmq/api/v1/", s.config.AccessToken, s.deps, s.config.APIHandler...)
 }
 
 func (s *Server) Start() error {

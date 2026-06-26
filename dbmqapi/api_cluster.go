@@ -7,7 +7,7 @@ import (
 
 // ClusterAPI 集群管理 API
 // @TAG(Cluster)
-// @PREFIX(/dbmq/api/v1/clusters)
+// @PREFIX(/clusters)
 type ClusterAPI interface {
 	// List 获取集群列表
 	// @GET(/)

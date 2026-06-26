@@ -15,7 +15,6 @@ const defaultHeartbeatTimeout = 30 * time.Second
 
 // DBMQAPI DBMQ 专用 API
 // @TAG(DBMQ)
-// @PREFIX(/dbmq/api/v1)
 type DBMQAPI interface {
 	// GetStats 获取统计信息
 	// @GET(/stats)

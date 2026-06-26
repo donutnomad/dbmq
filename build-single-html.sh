@@ -10,7 +10,7 @@ STATIC_DIR="$SCRIPT_DIR/dbmqapi/static/dashboard"
 # 1. 构建静态文件
 echo "==> 构建 Next.js 静态导出..."
 cd "$UI_DIR"
-DASHBOARD_BASE_PATH=/dbmq/api/v1/ui npm run build
+DASHBOARD_BASE_PATH=/console/dbmq/ui npm run build
 
 if [ ! -d "$OUT_DIR" ]; then
     echo "错误: 构建失败，out 目录不存在"
