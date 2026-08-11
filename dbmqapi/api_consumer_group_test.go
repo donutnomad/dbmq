@@ -5,10 +5,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/donutnomad/dbmq/internal/domain/consumergroup"
 	"github.com/donutnomad/dbmq/internal/domain/consumerprogress"
 	"github.com/donutnomad/dbmq/internal/query"
 	"github.com/stretchr/testify/require"
 )
+
+type stubConsumerGroupRepoForRebalance struct {
+	consumergroup.Repo
+	generation    uint
+	calledGroupID string
+}
+
+func (s *stubConsumerGroupRepoForRebalance) IncrementGenerationID(_ context.Context, groupID string) (uint, error) {
+	s.calledGroupID = groupID
+	return s.generation, nil
+}
+
+func TestTriggerRebalanceIncrementsGeneration(t *testing.T) {
+	repo := &stubConsumerGroupRepoForRebalance{generation: 8}
+	api := NewConsumerGroupAPI(&Deps{ConsumerGroupRepo: repo})
+
+	resp, err := api.TriggerRebalance(context.Background(), "orders-group")
+	require.NoError(t, err)
+	require.Equal(t, "orders-group", repo.calledGroupID)
+	require.Contains(t, resp.Message, "重新均衡已触发")
+}
 
 // stubConsumerQueryForCleanup 仅实现 cleanup 测试需要的两个方法，其他方法 panic 防止误用。
 type stubConsumerQueryForCleanup struct {

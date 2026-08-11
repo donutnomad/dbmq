@@ -22,8 +22,9 @@ import (
 //
 // 内部实现基于 Actor 模型，所有状态修改都在单一 goroutine 中执行
 type Consumer struct {
-	config ConsumerConfig        // 消费者配置
-	redis  redis.UniversalClient // Redis连接（可选）
+	config          ConsumerConfig        // 消费者配置
+	redis           redis.UniversalClient // Redis连接（可选）
+	fetchRetryDelay func(attempt int) time.Duration
 
 	// Actor 实现
 	actor *ConsumerActor
@@ -109,7 +110,9 @@ func (c *Consumer) SubscribeTopics(topics ...string) {
 	c.actor.SubscribeTopics(topics...)
 }
 
-// Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
+// Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量。
+// Close 会等待已开始的 PollLoop onMessage 回调完成。
+// onMessage 应取消 PollLoop context，由调用 PollLoop 的外层 goroutine 执行 Close。
 func (c *Consumer) Close() {
 	c.actor.Close()
 }

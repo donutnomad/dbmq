@@ -31,6 +31,8 @@ type mockHeartbeatRepo struct {
 	heartbeat      *heartbeat.Heartbeat
 	getErr         error
 	markOfflineErr error
+	upsertFn       func(context.Context, string, string, []string) error
+	getFn          func(context.Context, string, string) (*heartbeat.Heartbeat, error)
 }
 
 type heartbeatUpsertCall struct {
@@ -55,16 +57,27 @@ func newMockHeartbeatRepo() *mockHeartbeatRepo {
 
 func (m *mockHeartbeatRepo) Get(ctx context.Context, groupID, consumerID string) (*heartbeat.Heartbeat, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.getCalls = append(m.getCalls, heartbeatGetCall{groupID: groupID, consumerID: consumerID})
-	return m.heartbeat, m.getErr
+	fn := m.getFn
+	hb := m.heartbeat
+	err := m.getErr
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, groupID, consumerID)
+	}
+	return hb, err
 }
 
 func (m *mockHeartbeatRepo) Upsert(ctx context.Context, groupID, consumerID string, subscribedTopics []string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.upsertCalls = append(m.upsertCalls, heartbeatUpsertCall{groupID: groupID, consumerID: consumerID, topics: subscribedTopics})
-	return m.upsertErr
+	fn := m.upsertFn
+	err := m.upsertErr
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, groupID, consumerID, subscribedTopics)
+	}
+	return err
 }
 
 func (m *mockHeartbeatRepo) MarkOffline(ctx context.Context, groupID, consumerID string) error {
@@ -197,13 +210,15 @@ type mockMessageRepo struct {
 	mu sync.Mutex
 
 	// Call records
-	fetchBatchCalls []fetchBatchCall
+	fetchBatchCalls    []fetchBatchCall
+	latestIDsCallCount int
 
 	// Return value controls
 	latestIDs        map[types.PartitionInfo]int64
 	latestIDsErr     error
 	fetchedMessages  []*message.Message
 	fetchMessagesErr error
+	fetchBatchFn     func(context.Context, []message.FetchRequest) ([]*message.Message, error)
 }
 
 type fetchBatchCall struct {
@@ -226,9 +241,16 @@ func (m *mockMessageRepo) Fetch(ctx context.Context, topic string, partition uin
 
 func (m *mockMessageRepo) FetchBatch(ctx context.Context, requests []message.FetchRequest) ([]*message.Message, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.fetchBatchCalls = append(m.fetchBatchCalls, fetchBatchCall{requests: requests})
-	return m.fetchedMessages, m.fetchMessagesErr
+	fn := m.fetchBatchFn
+	fetchedMessages := m.fetchedMessages
+	fetchMessagesErr := m.fetchMessagesErr
+	m.mu.Unlock()
+
+	if fn != nil {
+		return fn(ctx, requests)
+	}
+	return fetchedMessages, fetchMessagesErr
 }
 
 func (m *mockMessageRepo) GetLatestID(ctx context.Context, topic string, partition uint) (int64, error) {
@@ -244,7 +266,14 @@ func (m *mockMessageRepo) getFetchBatchCalls() []fetchBatchCall {
 func (m *mockMessageRepo) GetLatestIDs(ctx context.Context, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.latestIDsCallCount++
 	return m.latestIDs, m.latestIDsErr
+}
+
+func (m *mockMessageRepo) getLatestIDsCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.latestIDsCallCount
 }
 
 func (m *mockMessageRepo) DeleteConsumed(ctx context.Context, topic string, partition uint, maxID int64, retentionDate time.Time, limit int) (int64, error) {
@@ -361,6 +390,55 @@ func TestConsumerActor_Start_Stop(t *testing.T) {
 		actor.Stop()
 		actor.Stop()
 		actor.Stop()
+	})
+
+	t.Run("stop before start is safe", func(t *testing.T) {
+		mocks := newMockConsumerRepos()
+		actor := NewConsumerActor(ConsumerConfig{
+			GroupID: "test-group",
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
+
+		actor.Stop()
+		actor.Start()
+
+		require.Equal(t, StateStopped, actor.State())
+		require.Equal(t, 0, mocks.heartbeat.getMarkOfflineCallCount())
+	})
+
+	t.Run("concurrent start and stop is safe", func(t *testing.T) {
+		mocks := newMockConsumerRepos()
+		actor := NewConsumerActor(ConsumerConfig{
+			GroupID: "test-group",
+		}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
+
+		const callers = 32
+		start := make(chan struct{})
+		done := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(callers)
+		for i := range callers {
+			go func(callStart bool) {
+				defer wg.Done()
+				<-start
+				if callStart {
+					actor.Start()
+					return
+				}
+				actor.Stop()
+			}(i%2 == 0)
+		}
+		close(start)
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("并发 Start/Stop 未在期限内完成")
+		}
+		require.Equal(t, StateStopped, actor.State())
 	})
 }
 
@@ -517,6 +595,73 @@ func TestConsumerActor_Heartbeat_StateTransition(t *testing.T) {
 		// Actor should still be running, state should still be Joining
 		assert.Equal(t, StateJoining, actor.State())
 	})
+}
+
+func TestConsumerActor_HeartbeatOperationTimeoutKeepsActorResponsive(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	upsertStarted := make(chan struct{})
+	var startedOnce sync.Once
+	mocks.heartbeat.upsertFn = func(ctx context.Context, _, _ string, _ []string) error {
+		startedOnce.Do(func() { close(upsertStarted) })
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:                   "test-group",
+		HeartbeatInterval:         time.Second,
+		HeartbeatOperationTimeout: 20 * time.Millisecond,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+	actor.Start()
+	t.Cleanup(actor.Close)
+	actor.SubscribeTopics("test-topic")
+
+	select {
+	case <-upsertStarted:
+	case <-time.After(time.Second):
+		t.Fatal("心跳 Upsert 未开始")
+	}
+	require.Eventually(t, func() bool {
+		return actor.State() == StateJoining
+	}, time.Second, 10*time.Millisecond, "心跳超时后 actor 应继续响应命令")
+}
+
+func TestConsumerActor_CloseCancelsBlockedHeartbeat(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	upsertStarted := make(chan struct{})
+	mocks.heartbeat.upsertFn = func(ctx context.Context, _, _ string, _ []string) error {
+		close(upsertStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:                   "test-group",
+		HeartbeatInterval:         time.Second,
+		HeartbeatOperationTimeout: time.Hour,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+	actor.Start()
+	actor.SubscribeTopics("test-topic")
+
+	select {
+	case <-upsertStarted:
+	case <-time.After(time.Second):
+		t.Fatal("心跳 Upsert 未开始")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		actor.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close 未取消阻塞的心跳")
+	}
+	require.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
 }
 
 func TestConsumerActor_Poll_NotReady(t *testing.T) {
@@ -760,6 +905,109 @@ func TestConsumerActor_Close(t *testing.T) {
 
 		assert.Equal(t, StateStopped, actor.State())
 	})
+}
+
+func TestConsumerActor_Close_ConcurrentCalls(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID: "test-group",
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
+	actor.Start()
+
+	const callers = 32
+	start := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			<-start
+			actor.Close()
+		}()
+	}
+	close(start)
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("并发 Close 未在期限内完成")
+	}
+	require.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
+}
+
+func TestConsumerActor_Stop_ConcurrentCalls(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID: "test-group",
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
+	actor.Start()
+
+	const callers = 32
+	start := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			<-start
+			actor.Stop()
+		}()
+	}
+	close(start)
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("并发 Stop 未在期限内完成")
+	}
+	require.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
+}
+
+func TestConsumerActor_CloseAndStopShareShutdown(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID: "test-group",
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message))
+	actor.Start()
+
+	const callers = 32
+	start := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := range callers {
+		go func(useClose bool) {
+			defer wg.Done()
+			<-start
+			if useClose {
+				actor.Close()
+				return
+			}
+			actor.Stop()
+		}(i%2 == 0)
+	}
+	close(start)
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("混合 Close/Stop 未在期限内完成")
+	}
+	require.Equal(t, 1, mocks.heartbeat.getMarkOfflineCallCount())
 }
 
 func TestConsumerActor_Acknowledge(t *testing.T) {
@@ -1042,10 +1290,15 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 		fakeClock.Advance(2 * time.Second)
 		time.Sleep(100 * time.Millisecond)
 
-		// 关键断言：状态应该恢复到 Ready，而不是卡在 Rebalancing
-		assert.Equal(t, StateReady, actor.State(), "状态应该恢复到 Ready，以便下次心跳可以重试")
+		// 重平衡失败后进入 Joining，暂停旧分区消费并等待心跳重试。
+		assert.Equal(t, StateJoining, actor.State())
 		// generation 应该保持不变，因为重平衡失败了
 		assert.Equal(t, uint(1), actor.generationID, "generation 应该保持不变")
+		pollCtx, cancelPoll := context.WithTimeout(context.Background(), time.Second)
+		_, pollErr := actor.Poll(pollCtx, 0)
+		cancelPoll()
+		var rebalanceErr *ErrRebalanceInProgress
+		require.ErrorAs(t, pollErr, &rebalanceErr)
 
 		// 现在修复错误，让重平衡成功
 		mocks.progress.mu.Lock()
@@ -1065,6 +1318,50 @@ func TestConsumerActor_Rebalance(t *testing.T) {
 		assert.Equal(t, uint(2), actor.generationID, "generation 应该更新为 2")
 		assert.Len(t, actor.assignment, 2, "应该有 2 个分区分配")
 	})
+}
+
+func TestConsumerActor_ConsumeFromLatestPausesWhenLatestIDLookupFails(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	partition := types.PartitionInfo{Topic: "test-topic", Partition: 0}
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       1,
+		AssignedPartitions: []types.PartitionInfo{partition},
+	})
+	mocks.message.latestIDsErr = errors.New("latest ID query failed")
+
+	actor := NewConsumerActor(ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: time.Second,
+		ConsumeStrategy:   ConsumeFromLatest,
+	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock))
+	actor.Start()
+	defer actor.Close()
+	actor.SubscribeTopics("test-topic")
+
+	require.Eventually(t, func() bool {
+		return mocks.message.getLatestIDsCallCount() > 0 && actor.State() == StateJoining
+	}, time.Second, 10*time.Millisecond)
+	pausedState := getActorState(t, actor)
+	require.Equal(t, uint(0), pausedState.GenerationID)
+	require.Empty(t, pausedState.Assignment)
+
+	mocks.message.mu.Lock()
+	mocks.message.latestIDsErr = nil
+	mocks.message.latestIDs[partition] = 42
+	mocks.message.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		fakeClock.Advance(2 * time.Second)
+		state := getActorState(t, actor)
+		return state.State == StateReady && state.GenerationID == 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	_, err := actor.Poll(context.Background(), 0)
+	require.NoError(t, err)
+	requests := mocks.message.getFetchBatchCalls()
+	require.NotEmpty(t, requests)
+	require.Equal(t, int64(41), requests[len(requests)-1].requests[0].AfterID)
 }
 
 // TestBug_CoordinatorRaceWindow 复现 coordinator 两阶段提交竞态导致消费者永久卡死的 bug。
@@ -1190,6 +1487,10 @@ func (w *blockingWaiter) Wait(ctx context.Context, timeout time.Duration) <-chan
 	default:
 	}
 	ch := make(chan struct{})
+	if timeout <= 0 {
+		close(ch)
+		return ch
+	}
 	go func() {
 		select {
 		case <-w.release:
@@ -1200,8 +1501,8 @@ func (w *blockingWaiter) Wait(ctx context.Context, timeout time.Duration) <-chan
 	return ch
 }
 
-// startReadyActorWithWaiter 创建并驱动一个消费者到 Ready(gen=1, [test-topic:0]) 状态
-func startReadyActorWithWaiter(t *testing.T, mocks *mockConsumerRepos, fakeClock *FakeClock, waiter Waiter) *ConsumerActor {
+// startReadyActorWithConfig 创建并驱动一个消费者到 Ready(gen=1, [test-topic:0]) 状态。
+func startReadyActorWithConfig(t *testing.T, mocks *mockConsumerRepos, fakeClock *FakeClock, waiter Waiter, config ConsumerConfig) *ConsumerActor {
 	t.Helper()
 
 	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
@@ -1211,11 +1512,7 @@ func startReadyActorWithWaiter(t *testing.T, mocks *mockConsumerRepos, fakeClock
 		},
 	})
 
-	actor := NewConsumerActor(ConsumerConfig{
-		GroupID:           "test-group",
-		HeartbeatInterval: 1 * time.Second,
-		ConsumeStrategy:   ConsumeFromEarliest,
-	}, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithWaiter(waiter))
+	actor := NewConsumerActor(config, WithHeartbeatRepo(mocks.heartbeat), WithProgressRepo(mocks.progress), WithMessageRepo(mocks.message), WithClock(fakeClock), WithWaiter(waiter))
 
 	actor.Start()
 	actor.SubscribeTopics("test-topic")
@@ -1227,6 +1524,16 @@ func startReadyActorWithWaiter(t *testing.T, mocks *mockConsumerRepos, fakeClock
 	}, 3*time.Second, 50*time.Millisecond, "消费者应进入 Ready 且持有分区")
 
 	return actor
+}
+
+// startReadyActorWithWaiter 使用默认测试配置创建 Ready actor。
+func startReadyActorWithWaiter(t *testing.T, mocks *mockConsumerRepos, fakeClock *FakeClock, waiter Waiter) *ConsumerActor {
+	t.Helper()
+	return startReadyActorWithConfig(t, mocks, fakeClock, waiter, ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: time.Second,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	})
 }
 
 // TestConsumerActor_HeartbeatNotBlockedByPoll Poll 等待期间心跳必须照常执行。
@@ -1320,6 +1627,7 @@ func TestConsumerActor_Poll_RebalanceDuringWait(t *testing.T) {
 	mocks := newMockConsumerRepos()
 	fakeClock := NewFakeClock(time.Now())
 	waiter := newBlockingWaiter()
+	defer close(waiter.release)
 
 	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
 	defer actor.Stop()
@@ -1337,11 +1645,13 @@ func TestConsumerActor_Poll_RebalanceDuringWait(t *testing.T) {
 	}
 
 	// 等待期间发生 generation 变化的重平衡
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       2,
+		AssignedPartitions: []types.PartitionInfo{{Topic: "test-topic", Partition: 0}},
+	})
 	cmd := NewRebalanceCmd(context.Background(), 2, []types.PartitionInfo{{Topic: "test-topic", Partition: 0}})
 	_, err := sendCmd(actor, cmd, cmd.ResultChan())
 	require.NoError(t, err)
-
-	close(waiter.release)
 
 	select {
 	case err := <-pollResult:
@@ -1349,6 +1659,526 @@ func TestConsumerActor_Poll_RebalanceDuringWait(t *testing.T) {
 		assert.True(t, errors.As(err, &rebalanceErr), "等待期间 generation 变化应返回 ErrRebalanceInProgress，实际: %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Poll 未返回")
+	}
+}
+
+// TestConsumerActor_WaitForNotification_AllWaitersWakeOnRebalance 验证
+// rebalance channel 的广播语义。Poll 入口会在此层之上串行化。
+func TestConsumerActor_WaitForNotification_AllWaitersWakeOnRebalance(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+	defer close(waiter.release)
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+	rebalanceCh := actor.currentRebalanceCh()
+
+	waitResults := make(chan error, 2)
+	for range 2 {
+		go func() {
+			waitResults <- actor.waitForNotification(context.Background(), time.Hour, rebalanceCh)
+		}()
+	}
+
+	for range 2 {
+		select {
+		case <-waiter.waitCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Poll 未进入等待状态")
+		}
+	}
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       2,
+		AssignedPartitions: []types.PartitionInfo{{Topic: "test-topic", Partition: 0}},
+	})
+	cmd := NewRebalanceCmd(context.Background(), 2, []types.PartitionInfo{{Topic: "test-topic", Partition: 0}})
+	_, err := sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+
+	for range 2 {
+		select {
+		case err := <-waitResults:
+			require.NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("rebalance 未唤醒全部 waiter")
+		}
+	}
+}
+
+func TestConsumerActor_Poll_SerializesConcurrentCalls(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+	defer close(waiter.release)
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := actor.Poll(context.Background(), time.Hour)
+		firstResult <- err
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个 Poll 未进入等待状态")
+	}
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelSecond()
+	_, err := actor.Poll(secondCtx, time.Hour)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	select {
+	case <-waiter.waitCalled:
+		t.Fatal("并发 Poll 进入了第二个等待流程")
+	default:
+	}
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       2,
+		AssignedPartitions: []types.PartitionInfo{{Topic: "test-topic", Partition: 0}},
+	})
+	cmd := NewRebalanceCmd(context.Background(), 2, []types.PartitionInfo{{Topic: "test-topic", Partition: 0}})
+	_, err = sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+
+	select {
+	case err := <-firstResult:
+		var rebalanceErr *ErrRebalanceInProgress
+		require.ErrorAs(t, err, &rebalanceErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个 Poll 未在 rebalance 后返回")
+	}
+}
+
+func TestConsumerActor_Poll_CloseCancelsActiveAndQueuedCalls(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+	defer close(waiter.release)
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+
+	results := make(chan error, 2)
+	go func() {
+		_, err := actor.Poll(context.Background(), time.Hour)
+		results <- err
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个 Poll 未进入等待状态")
+	}
+
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		_, err := actor.Poll(context.Background(), time.Hour)
+		results <- err
+	}()
+	<-secondStarted
+
+	actor.Close()
+
+	for range 2 {
+		select {
+		case err := <-results:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(2 * time.Second):
+			t.Fatal("Consumer Close 未取消全部 Poll")
+		}
+	}
+}
+
+// TestConsumer_PollLoop_RetriesInternalFetchTimeout 复现生产问题：一次内部
+// FetchBatch 超时后 PollLoop 仍应保活，并在下一次尝试中消费积压消息。
+func TestConsumer_PollLoop_RetriesInternalFetchTimeout(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithConfig(t, mocks, fakeClock, NoopWaiter{}, ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: time.Second,
+		PollFetchTimeout:  20 * time.Millisecond,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	})
+	defer actor.Stop()
+
+	var attempt int
+	mocks.message.fetchBatchFn = func(ctx context.Context, _ []message.FetchRequest) ([]*message.Message, error) {
+		attempt++
+		if attempt == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return []*message.Message{{ID: 42, Topic: "test-topic", Partition: 0}}, nil
+	}
+
+	consumer := &Consumer{
+		config: actor.config,
+		actor:  actor,
+		fetchRetryDelay: func(int) time.Duration {
+			return 0
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	received := make(chan []ConsumerMessage, 1)
+	go func() {
+		errCh <- consumer.PollLoop(ctx, 0, func(messages []ConsumerMessage) {
+			received <- messages
+			cancel()
+		})
+	}()
+
+	select {
+	case messages := <-received:
+		require.Len(t, messages, 1)
+		assert.Equal(t, int64(42), messages[0].ID)
+	case err := <-errCh:
+		t.Fatalf("PollLoop 在恢复前退出: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("PollLoop 未从内部拉取超时中恢复")
+	}
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("PollLoop 未在消费到消息后退出")
+	}
+	require.Len(t, mocks.message.getFetchBatchCalls(), 2)
+	require.True(t, consumer.IsReady())
+}
+
+func TestDefaultFetchRetryDelayBounds(t *testing.T) {
+	for attempt := 1; attempt <= 10; attempt++ {
+		nominal := fetchRetryBaseDelay << min(attempt-1, 5)
+		if nominal > fetchRetryMaxDelay {
+			nominal = fetchRetryMaxDelay
+		}
+		for range 100 {
+			delay := defaultFetchRetryDelay(attempt)
+			require.GreaterOrEqual(t, delay, nominal-nominal/5)
+			require.LessOrEqual(t, delay, nominal)
+		}
+	}
+}
+
+func TestConsumer_PollLoop_FetchBackoffResetsAfterSuccess(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, NoopWaiter{})
+	defer actor.Close()
+
+	var fetchAttempt int
+	mocks.message.fetchBatchFn = func(context.Context, []message.FetchRequest) ([]*message.Message, error) {
+		fetchAttempt++
+		switch fetchAttempt {
+		case 1, 2, 4:
+			return nil, errors.New("temporary database failure")
+		case 3:
+			return []*message.Message{}, nil
+		default:
+			return []*message.Message{{ID: 46, Topic: "test-topic", Partition: 0}}, nil
+		}
+	}
+
+	var retryAttempts []int
+	consumer := &Consumer{
+		config: actor.config,
+		actor:  actor,
+		fetchRetryDelay: func(attempt int) time.Duration {
+			retryAttempts = append(retryAttempts, attempt)
+			return 0
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- consumer.PollLoop(ctx, 0, func([]ConsumerMessage) {
+			cancel()
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("PollLoop 未完成退避复位场景")
+	}
+	require.Equal(t, []int{1, 2, 1}, retryAttempts)
+}
+
+func TestConsumerActor_Poll_InternalFetchTimeoutPreservesCause(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithConfig(t, mocks, fakeClock, NoopWaiter{}, ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: time.Second,
+		PollFetchTimeout:  20 * time.Millisecond,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	})
+	defer actor.Stop()
+
+	mocks.message.fetchBatchFn = func(ctx context.Context, _ []message.FetchRequest) ([]*message.Message, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	_, err := actor.Poll(context.Background(), 0)
+	var fetchErr *ErrFailedFetchMessage
+	require.ErrorAs(t, err, &fetchErr)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestConsumer_PollLoop_StopsOnParentCancellation(t *testing.T) {
+	t.Run("before poll", func(t *testing.T) {
+		mocks := newMockConsumerRepos()
+		fakeClock := NewFakeClock(time.Now())
+		actor := startReadyActorWithWaiter(t, mocks, fakeClock, NoopWaiter{})
+		defer actor.Stop()
+
+		consumer := &Consumer{config: actor.config, actor: actor}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := consumer.PollLoop(ctx, time.Hour, func([]ConsumerMessage) {})
+		require.ErrorIs(t, err, context.Canceled)
+		require.Empty(t, mocks.message.getFetchBatchCalls())
+	})
+
+	t.Run("during fetch", func(t *testing.T) {
+		mocks := newMockConsumerRepos()
+		fakeClock := NewFakeClock(time.Now())
+		actor := startReadyActorWithConfig(t, mocks, fakeClock, NoopWaiter{}, ConsumerConfig{
+			GroupID:           "test-group",
+			HeartbeatInterval: time.Second,
+			PollFetchTimeout:  time.Hour,
+			ConsumeStrategy:   ConsumeFromEarliest,
+		})
+		defer actor.Stop()
+
+		fetchStarted := make(chan struct{})
+		mocks.message.fetchBatchFn = func(ctx context.Context, _ []message.FetchRequest) ([]*message.Message, error) {
+			close(fetchStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		consumer := &Consumer{config: actor.config, actor: actor}
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- consumer.PollLoop(ctx, 0, func([]ConsumerMessage) {})
+		}()
+
+		select {
+		case <-fetchStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("FetchBatch 未开始")
+		}
+		cancel()
+
+		select {
+		case err := <-errCh:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(2 * time.Second):
+			t.Fatal("PollLoop 未在父 context 取消后退出")
+		}
+		require.Len(t, mocks.message.getFetchBatchCalls(), 1)
+	})
+}
+
+// TestConsumer_PollLoop_RebalanceFetchesWithoutLongWait 覆盖 actor 收到
+// rebalance 后的恢复链：唤醒长等待 Poll，随后立即查询数据库积压。
+func TestConsumer_PollLoop_RebalanceFetchesWithoutLongWait(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	waiter := newBlockingWaiter()
+	defer close(waiter.release)
+
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, waiter)
+	defer actor.Stop()
+	mocks.message.fetchedMessages = []*message.Message{{ID: 43, Topic: "test-topic", Partition: 0}}
+
+	consumer := &Consumer{config: actor.config, actor: actor}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	received := make(chan []ConsumerMessage, 1)
+	go func() {
+		errCh <- consumer.PollLoop(ctx, time.Hour, func(messages []ConsumerMessage) {
+			received <- messages
+			cancel()
+		})
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PollLoop 未进入长等待")
+	}
+
+	mocks.heartbeat.setHeartbeat(&heartbeat.Heartbeat{
+		GenerationID:       2,
+		AssignedPartitions: []types.PartitionInfo{{Topic: "test-topic", Partition: 0}},
+	})
+	cmd := NewRebalanceCmd(context.Background(), 2, []types.PartitionInfo{{Topic: "test-topic", Partition: 0}})
+	_, err := sendCmd(actor, cmd, cmd.ResultChan())
+	require.NoError(t, err)
+
+	select {
+	case messages := <-received:
+		require.Len(t, messages, 1)
+		assert.Equal(t, int64(43), messages[0].ID)
+	case err := <-errCh:
+		t.Fatalf("PollLoop 在 rebalance 恢复前退出: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("PollLoop 未在 rebalance 后及时拉取积压消息")
+	}
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("PollLoop 未在 rebalance 恢复后退出")
+	}
+}
+
+func TestConsumer_PollLoop_StopsWhenConsumerClosesDuringTimer(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, NoopWaiter{})
+	consumer := &Consumer{config: actor.config, actor: actor}
+	t.Cleanup(consumer.Close)
+
+	errCh := make(chan error, 1)
+	delivered := make(chan struct{}, 1)
+	go func() {
+		errCh <- consumer.PollLoop(context.Background(), time.Hour, func([]ConsumerMessage) {
+			delivered <- struct{}{}
+		})
+	}()
+
+	consumer.Close()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Consumer Close 后 PollLoop 仍在 timer 中等待")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("Consumer Close 后仍投递了消息")
+	default:
+	}
+}
+
+func TestConsumer_PollLoop_CloseDuringFetchPreventsDelivery(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithConfig(t, mocks, fakeClock, NoopWaiter{}, ConsumerConfig{
+		GroupID:           "test-group",
+		HeartbeatInterval: time.Second,
+		PollFetchTimeout:  time.Hour,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	})
+	consumer := &Consumer{config: actor.config, actor: actor}
+	t.Cleanup(consumer.Close)
+
+	fetchStarted := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	mocks.message.fetchBatchFn = func(context.Context, []message.FetchRequest) ([]*message.Message, error) {
+		close(fetchStarted)
+		<-releaseFetch
+		return []*message.Message{{ID: 44, Topic: "test-topic", Partition: 0}}, nil
+	}
+
+	errCh := make(chan error, 1)
+	delivered := make(chan []ConsumerMessage, 1)
+	go func() {
+		errCh <- consumer.PollLoop(context.Background(), 0, func(messages []ConsumerMessage) {
+			delivered <- messages
+		})
+	}()
+
+	select {
+	case <-fetchStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("FetchBatch 未开始")
+	}
+
+	consumer.Close()
+	close(releaseFetch)
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Consumer Close 后 PollLoop 未退出")
+	}
+	select {
+	case messages := <-delivered:
+		t.Fatalf("Consumer Close 后投递了 %d 条消息", len(messages))
+	default:
+	}
+}
+
+func TestConsumer_CloseWaitsForInFlightCallback(t *testing.T) {
+	mocks := newMockConsumerRepos()
+	fakeClock := NewFakeClock(time.Now())
+	actor := startReadyActorWithWaiter(t, mocks, fakeClock, NoopWaiter{})
+	mocks.message.fetchedMessages = []*message.Message{{ID: 45, Topic: "test-topic", Partition: 0}}
+	consumer := &Consumer{config: actor.config, actor: actor}
+
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
+	defer release()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- consumer.PollLoop(context.Background(), 0, func([]ConsumerMessage) {
+			close(callbackStarted)
+			<-releaseCallback
+		})
+	}()
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onMessage 未开始")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		consumer.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		t.Fatal("Close 在已开始的 onMessage 完成前返回")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onMessage 完成后 Close 未返回")
+	}
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close 后 PollLoop 未退出")
 	}
 }
 

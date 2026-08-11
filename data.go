@@ -107,16 +107,17 @@ func (s ConsumeStrategy) String() string {
 // ConsumerConfig 消费者配置结构
 // 包含数据库连接、Redis连接、消费组设置和性能参数
 type ConsumerConfig struct {
-	DB                  repo.DB               // 数据库连接，用于消息拉取和偏移量提交
-	Redis               redis.UniversalClient // Redis连接，用于实时通知（可选）
-	GroupID             string                // 消费组ID，同一消费组内的消费者共同消费Topic
-	ClientID            string                // 用户自定义的稳定标识，为空则自动生成 {hostname}:{mac地址}
-	NotificationEnabled bool                  // 是否启用Redis实时通知优化
-	HeartbeatInterval   time.Duration         // 心跳间隔，用于向协调器报告存活状态
-	Topics              []string              // 要订阅的Topic列表
-	PollFetchLimit      int                   // 每次Poll操作从单个分区最多拉取的消息数
-	PollFetchTimeout    time.Duration         // Poll操作中数据库查询的超时时间
-	ConsumeStrategy     ConsumeStrategy       // 消费策略，决定消费者首次注册时从哪里开始消费
+	DB                        repo.DB               // 数据库连接，用于消息拉取和偏移量提交
+	Redis                     redis.UniversalClient // Redis连接，用于实时通知（可选）
+	GroupID                   string                // 消费组ID，同一消费组内的消费者共同消费Topic
+	ClientID                  string                // 用户自定义的稳定标识，为空则自动生成 {hostname}:{mac地址}
+	NotificationEnabled       bool                  // 是否启用Redis实时通知优化
+	HeartbeatInterval         time.Duration         // 心跳间隔，用于向协调器报告存活状态
+	HeartbeatOperationTimeout time.Duration         // 单次心跳数据库操作的超时时间
+	Topics                    []string              // 要订阅的Topic列表
+	PollFetchLimit            int                   // 每次Poll操作从单个分区最多拉取的消息数
+	PollFetchTimeout          time.Duration         // Poll操作中数据库查询的超时时间
+	ConsumeStrategy           ConsumeStrategy       // 消费策略，决定消费者首次注册时从哪里开始消费
 
 	// 自动提交相关配置
 	EnableAutoCommit   bool          // 是否启用自动提交偏移量
@@ -128,6 +129,13 @@ func (c ConsumerConfig) GetHeartbeatInterval() time.Duration {
 		return 3 * time.Second
 	}
 	return c.HeartbeatInterval
+}
+
+func (c ConsumerConfig) GetHeartbeatOperationTimeout() time.Duration {
+	if c.HeartbeatOperationTimeout <= 0 {
+		return 5 * time.Second
+	}
+	return c.HeartbeatOperationTimeout
 }
 
 func (c ConsumerConfig) GetPollFetchTimeout() time.Duration {

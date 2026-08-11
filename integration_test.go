@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/donutnomad/dbmq/internal/repo/consumergrouprepo"
 	"github.com/donutnomad/dbmq/internal/repo/consumerprogressrepo"
 	"github.com/donutnomad/dbmq/internal/repo/heartbeatrepo"
 	"github.com/donutnomad/dbmq/internal/repo/messagerepo"
@@ -132,6 +133,102 @@ func TestIntegration_FullFlow(t *testing.T) {
 	require.NoError(t, err, "Failed to find the committed offset in the database")
 	assert.Equal(t, sendResult.Offset, committedOffset.LastConsumedMessageID, "Committed offset in DB does not match sent message offset")
 	log.Printf("Successfully verified committed offset in DB: %d", committedOffset.LastConsumedMessageID)
+}
+
+// TestIntegration_TriggerRebalanceWakesPollLoop 从 TriggerRebalance API 的持久化
+// 副作用开始，覆盖 coordinator -> heartbeat -> actor -> PollLoop 完整恢复链。
+// API 到 IncrementGenerationID 的调用边界由 dbmqapi 单元测试覆盖。
+func TestIntegration_TriggerRebalanceWakesPollLoop(t *testing.T) {
+	dbClient, _ := setupIntegrationTest(t)
+
+	const (
+		topic   = "trigger-rebalance-topic"
+		groupID = "trigger-rebalance-group"
+	)
+
+	admin := NewAdminClient(dbClient)
+	require.NoError(t, admin.CreateTopic(context.Background(), NewTopicRequest{
+		Name:          topic,
+		NumPartitions: 1,
+	}))
+
+	coordinator := NewCoordinator(CoordinatorConfig{
+		LockTable:         integrationLeaderLockTable,
+		NodeAddr:          "trigger-rebalance-node",
+		DB:                dbClient,
+		HeartbeatTimeout:  5 * time.Second,
+		RebalanceInterval: 200 * time.Millisecond,
+	})
+	coordinator.Start()
+	defer coordinator.Stop()
+	require.Eventually(t, coordinator.IsLeader, 10*time.Second, 100*time.Millisecond)
+
+	producer, err := NewProducer(ProducerConfig{DB: dbClient})
+	require.NoError(t, err)
+	_, err = producer.Send(context.Background(), ProducerMessage{
+		Topic: topic,
+		Key:   "pending-message",
+		Value: integrationJSONValue("consume-after-rebalance"),
+	})
+	require.NoError(t, err)
+
+	waiter := newBlockingWaiter()
+	defer close(waiter.release)
+	consumerConfig := ConsumerConfig{
+		DB:                dbClient,
+		GroupID:           groupID,
+		Topics:            []string{topic},
+		HeartbeatInterval: 100 * time.Millisecond,
+		ConsumeStrategy:   ConsumeFromEarliest,
+	}
+	actor := NewConsumerActor(consumerConfig, WithWaiter(waiter))
+	actor.Start()
+	consumer := &Consumer{config: consumerConfig, actor: actor}
+	consumer.SubscribeTopics(topic)
+	defer consumer.Close()
+	require.Eventually(t, consumer.IsReady, 10*time.Second, 100*time.Millisecond)
+
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	defer cancelPoll()
+	errCh := make(chan error, 1)
+	received := make(chan []ConsumerMessage, 1)
+	go func() {
+		errCh <- consumer.PollLoop(pollCtx, time.Hour, func(messages []ConsumerMessage) {
+			received <- messages
+			cancelPoll()
+		})
+	}()
+
+	select {
+	case <-waiter.waitCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PollLoop 未进入长等待")
+	}
+
+	groupRepo := consumergrouprepo.New(dbClient)
+	generationBefore, err := groupRepo.GetGeneration(context.Background(), groupID)
+	require.NoError(t, err)
+	require.NotNil(t, generationBefore)
+	triggeredGeneration, err := groupRepo.IncrementGenerationID(context.Background(), groupID)
+	require.NoError(t, err)
+	require.Greater(t, triggeredGeneration, generationBefore.GenerationID)
+
+	select {
+	case messages := <-received:
+		require.Len(t, messages, 1)
+		require.Equal(t, "pending-message", messages[0].Key)
+	case err := <-errCh:
+		t.Fatalf("PollLoop 在 rebalance 恢复前退出: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("TriggerRebalance 后 PollLoop 未消费积压消息")
+	}
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("PollLoop 消费消息后未退出")
+	}
 }
 
 func TestIntegration_MultiConsumerGroups(t *testing.T) {

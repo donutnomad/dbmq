@@ -2,7 +2,6 @@ package dbmq
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -52,8 +51,23 @@ type ConsumerActor struct {
 	waiter        Waiter // 等待接口，封装通知或超时等待逻辑
 
 	// 生命周期
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
+	shutdownOnce    sync.Once
+	startMu         sync.Mutex
+	started         bool
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	pollPermit      chan struct{}
+	rebalanceMu     sync.Mutex
+	rebalanceCh     chan struct{}
+
+	// 回调准入：deliveryMu 仅保护以下字段，不在 onMessage 执行期间持有，
+	// 因此回调内同步调用 Close/Stop 不会自锁（见 waitDeliveriesIdle 的重入处理）。
+	deliveryMu     sync.Mutex
+	deliveryCount  int
+	deliveryIdle   chan struct{} // 计数归零时关闭，供 shutdown 等待
+	deliveringGIDs map[int64]int // 正在执行 onMessage 的 goroutine，用于识别重入 Close
 }
 
 // ConsumerActorOption 定义 ConsumerActor 的可选配置函数
@@ -106,6 +120,10 @@ func WithWaiter(waiter Waiter) ConsumerActorOption {
 // NewConsumerActor 创建一个新的 ConsumerActor
 // 可选参数 opts 用于自定义配置，如注入自定义的 Repo、Clock、Notifier 实现
 func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *ConsumerActor {
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	pollPermit := make(chan struct{}, 1)
+	pollPermit <- struct{}{}
+
 	// 如果启用了自动提交但没有设置间隔，使用默认值5秒
 	if config.EnableAutoCommit && config.AutoCommitInterval == 0 {
 		config.AutoCommitInterval = 5 * time.Second
@@ -122,6 +140,10 @@ func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *Consu
 		topics:                   config.Topics,
 		clock:                    NewRealClock(),
 		stopCh:                   make(chan struct{}),
+		lifecycleCtx:             lifecycleCtx,
+		lifecycleCancel:          lifecycleCancel,
+		pollPermit:               pollPermit,
+		rebalanceCh:              make(chan struct{}),
 	}
 
 	// 如果配置了数据库，创建默认 repo
@@ -174,28 +196,20 @@ func NewConsumerActor(config ConsumerConfig, opts ...ConsumerActorOption) *Consu
 // Start 启动 actor 主循环
 // 启动后 actor 处于 Uninitialized 状态，需要调用 SubscribeTopics 开始消费
 func (a *ConsumerActor) Start() {
+	a.startMu.Lock()
+	defer a.startMu.Unlock()
+	if a.started || a.lifecycleCtx.Err() != nil {
+		return
+	}
+	a.started = true
 	a.wg.Add(1)
 	go a.run()
 }
 
-// Stop 停止 actor
-// 会等待所有后台 goroutine 结束
+// Stop 优雅停止 actor，语义与 Close 一致。
+// 会等待已开始的 onMessage 回调和所有后台 goroutine 结束。
 func (a *ConsumerActor) Stop() {
-	select {
-	case <-a.stopCh:
-		// 已经关闭
-		return
-	default:
-		close(a.stopCh)
-	}
-	a.wg.Wait()
-
-	// 关闭 notifier
-	if a.notifier != nil {
-		if err := a.notifier.Close(); err != nil {
-			a.logger().Warn("关闭通知器失败", "error", err, "consumer-id", a.id)
-		}
-	}
+	a.shutdown()
 }
 
 // run 是 actor 的主循环
@@ -253,26 +267,27 @@ func (a *ConsumerActor) heartbeatLoop() {
 
 	for {
 		// 发送心跳命令
-		cmd := NewHeartbeatCmd(context.Background())
-		select {
-		case a.cmdCh <- cmd:
-			// 等待结果，失败时记录日志（下次心跳会重试）
-			select {
-			case err := <-cmd.ResultChan():
-				if err != nil {
-					a.logger().Warn("心跳处理失败", "error", err, "consumer-id", a.id)
-				}
-			case <-a.stopCh:
+		cmd := NewHeartbeatCmd(a.lifecycleCtx)
+		result, err := sendCmd(a, cmd, cmd.ResultChan())
+		if err != nil {
+			if a.lifecycleCtx.Err() != nil {
 				return
 			}
-		case <-a.stopCh:
+			a.logger().Warn("心跳命令失败", "error", err, "consumer-id", a.id)
+		} else if result != nil {
+			a.logger().Warn("心跳处理失败", "error", result, "consumer-id", a.id)
+		}
+
+		select {
+		case <-a.lifecycleCtx.Done():
 			return
+		default:
 		}
 
 		// 等待下一次心跳
 		select {
 		case <-ticker.C():
-		case <-a.stopCh:
+		case <-a.lifecycleCtx.Done():
 			return
 		}
 	}
@@ -288,21 +303,22 @@ func (a *ConsumerActor) autoCommitLoop() {
 	for {
 		select {
 		case <-ticker.C():
-			cmd := NewCommitCmd(context.Background())
-			select {
-			case a.cmdCh <- cmd:
-				select {
-				case err := <-cmd.ResultChan():
-					if err != nil {
-						a.logger().Error("自动提交失败", "error", err, "consumer-id", a.id)
-					}
-				case <-a.stopCh:
+			cmd := NewCommitCmd(a.lifecycleCtx)
+			result, err := sendCmd(a, cmd, cmd.ResultChan())
+			if err != nil {
+				if a.lifecycleCtx.Err() != nil {
 					return
 				}
-			case <-a.stopCh:
-				return
+				a.logger().Error("自动提交命令失败", "error", err, "consumer-id", a.id)
+			} else if result != nil {
+				a.logger().Error("自动提交失败", "error", result, "consumer-id", a.id)
 			}
-		case <-a.stopCh:
+			select {
+			case <-a.lifecycleCtx.Done():
+				return
+			default:
+			}
+		case <-a.lifecycleCtx.Done():
 			// 停止时不需要在这里提交，handleClose 已经负责最终提交
 			a.logger().Debug("自动提交循环收到停止信号", "consumer-id", a.id)
 			return
@@ -319,13 +335,16 @@ func (a *ConsumerActor) handleHeartbeat(ctx context.Context) error {
 		return nil
 	}
 
+	heartbeatCtx, cancel := context.WithTimeout(ctx, a.config.GetHeartbeatOperationTimeout())
+	defer cancel()
+
 	// 注册/更新心跳
-	if err := a.heartbeatRepo.Upsert(ctx, a.config.GroupID, a.id, a.topics); err != nil {
+	if err := a.heartbeatRepo.Upsert(heartbeatCtx, a.config.GroupID, a.id, a.topics); err != nil {
 		return errors.Wrap(err, "upsert heartbeat")
 	}
 
 	// 从数据库获取我们自己的状态
-	hb, err := a.heartbeatRepo.Get(ctx, a.config.GroupID, a.id)
+	hb, err := a.heartbeatRepo.Get(heartbeatCtx, a.config.GroupID, a.id)
 	if err != nil {
 		return errors.Wrap(err, "get heartbeat")
 	}
@@ -396,6 +415,146 @@ func (a *ConsumerActor) pollSnapshot(ctx context.Context) (PollSnapshotResult, e
 	return sendCmd(a, cmd, cmd.ResultChan())
 }
 
+// currentRebalanceCh 返回当前代际的 rebalance 广播 channel。
+func (a *ConsumerActor) currentRebalanceCh() <-chan struct{} {
+	a.rebalanceMu.Lock()
+	defer a.rebalanceMu.Unlock()
+	return a.rebalanceCh
+}
+
+// lifecycleDone 返回 actor 生命周期结束信号。
+func (a *ConsumerActor) lifecycleDone() <-chan struct{} {
+	return a.lifecycleCtx.Done()
+}
+
+// deliver 串起回调准入与 shutdown：shutdown 返回后不会有新回调开始。
+// 回调执行期间不持有任何锁，因此 onMessage 内同步调用 Close/Stop 是安全的
+// （此时 shutdown 检测到重入，跳过等待自身回调，不会死锁）。
+func (a *ConsumerActor) deliver(messages []ConsumerMessage, onMessage func([]ConsumerMessage)) bool {
+	a.deliveryMu.Lock()
+	if a.lifecycleCtx.Err() != nil {
+		a.deliveryMu.Unlock()
+		return false
+	}
+	a.deliveryCount++
+	// 标记本 goroutine 正在回调中，供 shutdown 识别重入调用。
+	gid := goroutineID()
+	if a.deliveringGIDs == nil {
+		a.deliveringGIDs = make(map[int64]int)
+	}
+	a.deliveringGIDs[gid]++
+	a.deliveryMu.Unlock()
+
+	defer func() {
+		a.deliveryMu.Lock()
+		a.deliveryCount--
+		if a.deliveringGIDs[gid] <= 1 {
+			delete(a.deliveringGIDs, gid)
+		} else {
+			a.deliveringGIDs[gid]--
+		}
+		if a.deliveryCount == 0 && a.deliveryIdle != nil {
+			close(a.deliveryIdle)
+			a.deliveryIdle = nil
+		}
+		a.deliveryMu.Unlock()
+	}()
+
+	onMessage(messages)
+	return true
+}
+
+// waitDeliveriesIdle 等待所有进行中的 onMessage 回调结束。
+// 若调用方自身就在回调中（重入 Close/Stop），则不等待自己，避免自锁。
+func (a *ConsumerActor) waitDeliveriesIdle() {
+	gid := goroutineID()
+
+	a.deliveryMu.Lock()
+	// 重入：调用方自身就在 onMessage 中，等待自己必然死锁，直接返回。
+	if a.deliveringGIDs[gid] > 0 {
+		a.deliveryMu.Unlock()
+		return
+	}
+	if a.deliveryCount == 0 {
+		a.deliveryMu.Unlock()
+		return
+	}
+	if a.deliveryIdle == nil {
+		a.deliveryIdle = make(chan struct{})
+	}
+	idle := a.deliveryIdle
+	a.deliveryMu.Unlock()
+
+	<-idle
+}
+
+func (a *ConsumerActor) shutdown() {
+	a.shutdownOnce.Do(func() {
+		// 禁止新的 Poll 和回调，并等待已开始的回调完成。
+		// lifecycleCancel 必须早于取 startMu：Start 在 startMu 内检查 lifecycleCtx，
+		// 二者共同保证下方 started==false 分支不会与 run goroutine 并发写状态机。
+		a.lifecycleCancel()
+		a.waitDeliveriesIdle()
+
+		a.startMu.Lock()
+		started := a.started
+		a.startMu.Unlock()
+		if started {
+			cmd := NewCloseCmd()
+			_, _ = sendCmd(a, cmd, cmd.ResultChan())
+		} else if a.stateMachine.Transition(StateStopping) == nil {
+			a.stateMachine.MustTransition(StateStopped)
+		}
+
+		close(a.stopCh)
+		a.wg.Wait()
+
+		if a.notifier != nil {
+			if err := a.notifier.Close(); err != nil {
+				a.logger().Warn("关闭通知器失败", "error", err, "consumer-id", a.id)
+			}
+		}
+	})
+}
+
+// contextWithLifecycle 将调用方 context 与 actor 生命周期绑定。
+func (a *ConsumerActor) contextWithLifecycle(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	pollCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(a.lifecycleCtx, cancel)
+	if a.lifecycleCtx.Err() != nil {
+		cancel()
+	}
+	return pollCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (a *ConsumerActor) acquirePoll(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.pollPermit:
+		return nil
+	}
+}
+
+func (a *ConsumerActor) releasePoll() {
+	a.pollPermit <- struct{}{}
+}
+
+// signalRebalance 唤醒当前所有等待中的 Poll，并为下一代创建新 channel。
+func (a *ConsumerActor) signalRebalance() {
+	a.rebalanceMu.Lock()
+	close(a.rebalanceCh)
+	a.rebalanceCh = make(chan struct{})
+	a.rebalanceMu.Unlock()
+}
+
 // fetchMessages 在调用者 goroutine 中按快照批量拉取消息
 func (a *ConsumerActor) fetchMessages(ctx context.Context, snap PollSnapshotResult) ([]ConsumerMessage, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, a.config.GetPollFetchTimeout())
@@ -413,20 +572,25 @@ func (a *ConsumerActor) fetchMessages(ctx context.Context, snap PollSnapshotResu
 
 	allMessages, err := a.messageRepo.FetchBatch(fetchCtx, requests)
 	if err != nil {
-		if stderrors.Is(err, context.DeadlineExceeded) || stderrors.Is(err, context.Canceled) {
-			slog.WarnContext(ctx, "[dbmq] fetch message timeout", "id", a.ID(), "partitions", snap.Assignment)
-			return nil, err
+		if parentErr := ctx.Err(); parentErr != nil {
+			return nil, parentErr
 		}
 		return nil, &ErrFailedFetchMessage{err}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	return new(ConsumerMessages).FromDomainMessages(allMessages), nil
 }
 
-// waitForNotification 等待通知或超时
-func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration) error {
+// waitForNotification 等待通知、超时或 rebalance 广播。
+func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Duration, rebalanceCh <-chan struct{}) error {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	select {
-	case <-a.waiter.Wait(ctx, timeout):
+	case <-a.waiter.Wait(waitCtx, timeout):
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -436,6 +600,8 @@ func (a *ConsumerActor) waitForNotification(ctx context.Context, timeout time.Du
 		default:
 			return nil
 		}
+	case <-rebalanceCh:
+		return nil
 	case <-a.stopCh:
 		return context.Canceled
 	}
@@ -447,8 +613,7 @@ func (a *ConsumerActor) handleRebalance(ctx context.Context, newGeneration uint,
 }
 
 // rebalanceTimeout 重平衡的 DB 操作超时上限。
-// 防止 context.Background() 路径（心跳循环触发）在 DB 无响应时无限阻塞 actor，
-// 导致心跳饿死。失败后状态回退，下次心跳会重试。
+// 限制 DB 无响应时的 actor 阻塞时间；失败后进入 Joining，下次心跳会重试。
 const rebalanceTimeout = 15 * time.Second
 
 // doRebalance 执行重平衡逻辑
@@ -463,14 +628,15 @@ func (a *ConsumerActor) doRebalance(ctx context.Context, newGeneration uint, new
 	if err := a.stateMachine.Transition(StateRebalancing); err != nil {
 		return errors.Wrapf(err, "state transition failed: %s -> %s", prevState, StateRebalancing)
 	}
+	a.signalRebalance()
 
 	oldPartitions := a.assignment
 
 	// 清理旧状态并获取新分配的偏移量
 	if err := a.clearAndFetchOffsetsForNewAssignment(ctx, newGeneration, newPartitions); err != nil {
-		// 恢复到之前的状态，以便下次心跳可以重新触发重平衡
-		if transErr := a.stateMachine.Transition(prevState); transErr != nil {
-			a.logger().Warn("恢复状态失败", "error", transErr, "from", StateRebalancing, "to", prevState, "consumer-id", a.id)
+		// 保持暂停消费，下次心跳继续重试数据库中的新分配。
+		if transErr := a.stateMachine.Transition(StateJoining); transErr != nil {
+			a.logger().Warn("进入重试状态失败", "error", transErr, "from", StateRebalancing, "to", StateJoining, "consumer-id", a.id)
 		}
 		return errors.Wrap(err, "fetch offsets for new assignment")
 	}
@@ -534,7 +700,10 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 	}
 
 	// 为新增分区确定起始消息ID
-	partitionMaxIDMap := a.determineStartMessageID(ctx, addedPartitions)
+	partitionMaxIDMap, err := a.determineStartMessageID(ctx, addedPartitions)
+	if err != nil {
+		return err
+	}
 	initialProgressWithWatermarks := make(map[types.PartitionInfo]consumerprogress.ProgressWithWatermark)
 	for k, startID := range partitionMaxIDMap {
 		initialProgressWithWatermarks[k] = consumerprogress.ProgressWithWatermark{
@@ -574,7 +743,7 @@ func (a *ConsumerActor) clearAndFetchOffsetsForNewAssignment(ctx context.Context
 }
 
 // determineStartMessageID 根据消费策略确定起始消息ID
-func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions []types.PartitionInfo) map[types.PartitionInfo]int64 {
+func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions []types.PartitionInfo) (map[types.PartitionInfo]int64, error) {
 	ret := make(map[types.PartitionInfo]int64)
 
 	var needFetchFromDB []types.PartitionInfo
@@ -587,12 +756,13 @@ func (a *ConsumerActor) determineStartMessageID(ctx context.Context, partitions 
 
 	if len(needFetchFromDB) > 0 {
 		byPartitions, err := a.messageRepo.GetLatestIDs(ctx, needFetchFromDB)
-		if err == nil {
-			maps.Copy(ret, byPartitions)
+		if err != nil {
+			return nil, errors.Wrap(err, "get latest message IDs")
 		}
+		maps.Copy(ret, byPartitions)
 	}
 
-	return ret
+	return ret, nil
 }
 
 // handleClose 处理关闭命令
@@ -694,18 +864,29 @@ func (a *ConsumerActor) handleUpdateOffsets(offsets map[types.PartitionInfo]int6
 // Poll 从订阅的 Topic 和分区中拉取消息
 // 等待与拉取在调用者 goroutine 中执行，不会阻塞 actor 主循环——
 // 否则心跳命令会排队等待长达整个 Poll timeout，导致消费者被协调器误判死亡。
+// 每个 ConsumerActor 同时执行一个 Poll；并发调用会等待当前 Poll 完成。
 // 会返回的错误:
-// - ErrFailedFetchMessage
+// - ErrFailedFetchMessage（包括内部数据库查询超时；应优先使用 errors.As 分类）
 // - ErrRebalanceInProgress
-// - context.DeadlineExceeded
-// - context.Canceled
+// - context.DeadlineExceeded（调用方 context 到期，且未匹配 ErrFailedFetchMessage）
+// - context.Canceled（调用方取消或 Consumer 关闭，且未匹配 ErrFailedFetchMessage）
 func (a *ConsumerActor) Poll(ctx context.Context, timeout time.Duration) ([]ConsumerMessage, error) {
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	pollCtx, releaseLifecycle := a.contextWithLifecycle(ctx)
+	defer releaseLifecycle()
+	if err := a.acquirePoll(pollCtx); err != nil {
+		return nil, err
+	}
+	defer a.releasePoll()
+
+	if err := pollCtx.Err(); err != nil {
+		return nil, err
 	}
 
+	// 在快照前捕获 channel，覆盖 rebalance 发生在 channel 读取与快照之间的竞态。
+	rebalanceCh := a.currentRebalanceCh()
+
 	// 阶段1：快照校验状态，空分区立即返回
-	snap1, err := a.pollSnapshot(ctx)
+	snap1, err := a.pollSnapshot(pollCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -718,14 +899,14 @@ func (a *ConsumerActor) Poll(ctx context.Context, timeout time.Duration) ([]Cons
 
 	// 阶段2：在调用者 goroutine 中等待通知或超时
 	// （a.waiter 构造后不可变、a.stopCh 仅 close，线程安全）
-	if err := a.waitForNotification(ctx, timeout); err != nil {
+	if err := a.waitForNotification(pollCtx, timeout, rebalanceCh); err != nil {
 		return nil, err
 	}
 
 	// 阶段3：重新快照。fetch 必须使用 snap2 的 Assignment+Offsets：
 	// - 等待期间可能发生同代际 assignment 自愈（见 handleHeartbeat），仅比较 generation 查不出
 	// - 等待期间 commit 会推进 offsets，使用 snap1 的会重复拉取
-	snap2, err := a.pollSnapshot(ctx)
+	snap2, err := a.pollSnapshot(pollCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -743,7 +924,7 @@ func (a *ConsumerActor) Poll(ctx context.Context, timeout time.Duration) ([]Cons
 	// 快照通过后到 FetchBatch 之间存在极小窗口可能拉到刚被撤销分区的消息，
 	// 与旧实现（fetch 后排队的 rebalance 同样在应用处理消息前执行）暴露等价，
 	// at-least-once 语义下可接受
-	return a.fetchMessages(ctx, snap2)
+	return a.fetchMessages(pollCtx, snap2)
 }
 
 // SubscribeTopics 注册消费者要监听的 Topic 列表
@@ -756,18 +937,7 @@ func (a *ConsumerActor) SubscribeTopics(topics ...string) {
 // Close 优雅关闭消费者，停止所有循环并最后提交一次偏移量
 // 此方法是幂等的，多次调用是安全的
 func (a *ConsumerActor) Close() {
-	// 先检查是否已经停止
-	select {
-	case <-a.stopCh:
-		return
-	default:
-	}
-
-	cmd := NewCloseCmd()
-	_, _ = sendCmd(a, cmd, cmd.ResultChan())
-
-	// 停止 actor
-	a.Stop()
+	a.shutdown()
 }
 
 // CommitSync 同步提交所有当前分配分区的消费进度
