@@ -14,6 +14,12 @@ type mysqlRepo struct {
 	db interfaces.DB
 }
 
+const consumePullIndexHint = " FORCE INDEX (`idx_consume_pull`)"
+
+func consumePullQuery() string {
+	return "SELECT * FROM " + MessagePO{}.TableName() + consumePullIndexHint + " WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
+}
+
 // New 创建 MySQL 实现的消息仓储
 func New(db interfaces.DB) message.Repo {
 	return &mysqlRepo{db: db}
@@ -39,12 +45,7 @@ func (r *mysqlRepo) CreateBatch(ctx context.Context, messages []*message.Message
 func (r *mysqlRepo) Fetch(ctx context.Context, topic string, partition uint, afterID int64, limit int) ([]*message.Message, error) {
 	var messages []MessagePO
 	err := r.db.WithContext(ctx).
-		Model(&MessagePO{}).
-		Where("topic = ?", topic).
-		Where("`partition` = ?", partition).
-		Where("id > ?", afterID).
-		Order("id ASC").
-		Limit(limit).
+		Raw(consumePullQuery(), topic, partition, afterID, limit).
 		Scan(&messages).Error
 	if err != nil {
 		return nil, err
@@ -57,14 +58,13 @@ func (r *mysqlRepo) FetchBatch(ctx context.Context, requests []message.FetchRequ
 		return nil, nil
 	}
 
-	tableName := MessagePO{}.TableName()
-	subQuery := "SELECT * FROM " + tableName + " WHERE `topic` = ? AND `partition` = ? AND `id` > ? ORDER BY `id` ASC LIMIT ?"
+	query := consumePullQuery()
 
 	var ret []*message.Message
 	for _, req := range requests {
 		var messages []MessagePO
 		err := r.db.WithContext(ctx).
-			Raw(subQuery, req.Topic, req.Partition, req.AfterID, req.Limit).
+			Raw(query, req.Topic, req.Partition, req.AfterID, req.Limit).
 			Scan(&messages).Error
 		if err != nil {
 			return nil, err
